@@ -1,0 +1,8 @@
+streamlit
+tzdata
+pandas
+numpy
+ib_insync
+py_vollib
+nest_asyncio
+yfinance
