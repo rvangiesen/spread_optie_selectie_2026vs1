@@ -1,8 +1,0 @@
-streamlit
-ib_instreamlit
-pandas
-numpy
-ib_insync
-py_vollib
-nest_asyncio
-yfinance
