@@ -3,6 +3,7 @@ import numpy as np
 import math
 from py_vollib.black_scholes.greeks.analytical import delta, gamma, vega, theta
 from py_vollib.black_scholes import black_scholes
+from risk_model import get_bs_risk_metrics
 
 class BjerksundStensland2002:
     @staticmethod
@@ -89,7 +90,118 @@ class SpreadScanner:
 
     def calculate_ema(self, df, span):
         """Calculates Exponential Moving Average."""
+        if 'close' not in df.columns: return pd.Series()
         return df['close'].ewm(span=span, adjust=False).mean()
+
+    def calculate_rsi(self, series, period=14):
+        """Calculates Relative Strength Index (RSI)."""
+        delta = series.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+        
+        # Exponentially weighted if preferred, but simple rolling mean is standard for basic RSI
+        # TradingView uses RMA (Running Moving Average) which is like an EMA with alpha=1/n
+        gain = (delta.where(delta > 0, 0)).ewm(alpha=1/period, adjust=False).mean()
+        loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/period, adjust=False).mean()
+
+        rs = gain / loss.replace(0, np.nan)
+        rsi = 100 - (100 / (1 + rs))
+        return rsi.fillna(50)
+
+    def calculate_stoch_rsi(self, df, rsi_period=14, stoch_period=9, k_period=3, d_period=6):
+        """
+        Calculates Stochastic RSI (similar to TradingView).
+        Parameters: 14, 9, 3, 6 (RSI, Stoch, K_smooth, D_smooth)
+        """
+        if 'close' not in df.columns: return pd.DataFrame()
+        
+        rsi = self.calculate_rsi(df['close'], rsi_period)
+        
+        # Stochastic component: (RSI - Lowest RSI) / (Highest RSI - Lowest RSI)
+        rsi_min = rsi.rolling(window=stoch_period).min()
+        rsi_max = rsi.rolling(window=stoch_period).max()
+        
+        stoch_rsi = (rsi - rsi_min) / (rsi_max - rsi_min).replace(0, np.nan)
+        stoch_rsi = stoch_rsi.fillna(0) * 100
+        
+        # K and D smoothing
+        # TradingView uses SMA for smoothing K and D in Stochastic RSI
+        k = stoch_rsi.rolling(window=k_period).mean()
+        d = k.rolling(window=d_period).mean()
+        
+        return pd.DataFrame({'k': k, 'd': d}, index=df.index)
+
+    def get_technical_signals(self, hist_df, price):
+        """
+        Analyzes historical data for Stoch RSI entry signals and EMA crossovers.
+        Returns a dict with signal status and descriptive text.
+        """
+        signals = {
+            'ema_status': "N/A",
+            'stoch_rsi_status': "N/A",
+            'entry_a': False, # Bullish Cross < 20
+            'entry_b': False, # Blues (K) rising 20-60
+            'entry_c': False, # K crosses 50
+            'passed': False
+        }
+        
+        if hist_df.empty: return signals
+        
+        # 1. EMA 8/50 Crossover Analysis
+        ema8 = self.calculate_ema(hist_df, 8)
+        ema50 = self.calculate_ema(hist_df, 50)
+        
+        if len(ema8) > 2 and len(ema50) > 2:
+            current_8 = float(ema8.iloc[-1])
+            current_50 = float(ema50.iloc[-1])
+            
+            # Find the most recent crossover
+            cross_diff = (ema8 > ema50).astype(int).diff()
+            cross_indices = cross_diff[cross_diff != 0].index
+            
+            if not cross_indices.empty:
+                last_cross_idx = cross_indices[-1]
+                # Calculate distance in bars
+                bars_ago = (len(hist_df.index) - 1) - hist_df.index.get_loc(last_cross_idx)
+                direction = "Bullish" if cross_diff.loc[last_cross_idx] == 1 else "Bearish"
+                
+                fresh_tag = " [FRESH]" if bars_ago <= 3 else ""
+                signals['ema_status'] = f"{direction} Cross ({bars_ago}d ago){fresh_tag}"
+            else:
+                signals['ema_status'] = "Positive" if current_8 > current_50 else "Negative"
+
+        # 2. Stoch RSI Analysis (14, 9, 3, 6)
+        stoch = self.calculate_stoch_rsi(hist_df, 14, 9, 3, 6)
+        if not stoch.empty and len(stoch) > 2:
+            k = stoch['k'].values
+            d = stoch['d'].values
+            
+            curr_k, curr_d = k[-1], d[-1]
+            prev_k, prev_d = k[-2], d[-2]
+            
+            # Entry A: Bullish Cross (K > D) below 20
+            signals['entry_a'] = (curr_k > curr_d) and (prev_k <= prev_d) and (curr_k < 20)
+            
+            # Entry B: Blauwe lijn (K) goes up above 20 to 60
+            # Condition: K is currently between 20 and 60 AND K is higher than previous bar
+            signals['entry_b'] = (curr_k > 20) and (curr_k < 60) and (curr_k > prev_k)
+            
+            # Entry C: Momentum shift above 50
+            signals['entry_c'] = (curr_k > 50) and (prev_k <= 50)
+
+            # Combined status text
+            status_parts = []
+            if signals['entry_a']: status_parts.append("Entry A (Cross < 20)")
+            if signals['entry_b']: status_parts.append("Entry B (Rising 20-60)")
+            if signals['entry_c']: status_parts.append("Entry C (Cross > 50)")
+            
+            if status_parts:
+                signals['stoch_rsi_status'] = " + ".join(status_parts)
+                signals['passed'] = True
+            else:
+                signals['stoch_rsi_status'] = f"Neutral (K={curr_k:.1f})"
+                
+        return signals
 
     def filter_symbols_by_ema(self, symbols_data, ema_spans, direction='bull', ema_crossover=False):
         """
@@ -299,12 +411,13 @@ class SpreadScanner:
         }
         
         # [NEW] Enforce strike range filter (+/- 30% standard, +/- 50% max)
-        strike_range_pct = params.get('strike_range_pct', 0.30)
+        strike_range_raw = params.get('strike_range_pct', 0.30)
+        strike_range_abs = abs(strike_range_raw)
         # Limit between 0.05 and 0.50 for safety
-        strike_range_pct = max(0.05, min(0.50, strike_range_pct))
+        strike_range_abs = max(0.05, min(0.50, strike_range_abs))
         
-        lower_bound = component_price * (1 - strike_range_pct)
-        upper_bound = component_price * (1 + strike_range_pct)
+        lower_bound = component_price * (1 - strike_range_abs)
+        upper_bound = component_price * (1 + strike_range_abs)
         
         valid_expirations = sorted(list(set([exp for chain in chains for exp in chain.expirations])))
         
@@ -322,6 +435,22 @@ class SpreadScanner:
             # Get strikes for this expiration
             strikes = sorted(list(set([strike for chain in chains for strike in chain.strikes if expiration in chain.expirations])))
             
+            # Calculate dynamic Support Level based on UI setting
+            min_strike_raw = params.get('min_strike_pct', 0.0)
+            itm_level = params.get('itm_support_level', "Standaard")
+            if "Standaard" not in itm_level and component_price > 0:
+                iv_val = params.get('iv', 0.2) if params.get('iv', 0.2) > 0 else 0.2
+                if iv_val < 0.10: iv_val = 0.15 # Vang lege of extreem lage IV spikes op via een realistische bodem
+                em_value = component_price * iv_val * ((max(1, dte) / 365.0) ** 0.5)
+                if "Niveau 1" in itm_level:
+                    safe_dist = em_value
+                elif "Niveau 2" in itm_level:
+                    safe_dist = em_value * 2.0
+                else: 
+                    safe_dist = em_value * 2.5
+                sign = -1.0 if min_strike_raw < 0 else 1.0
+                min_strike_raw = sign * (safe_dist / component_price)
+
             # 1. Handle Long Strategies
             if strategy in ['LongCall', 'LongPut']:
                 right = 'C' if strategy == 'LongCall' else 'P'
@@ -329,6 +458,15 @@ class SpreadScanner:
                     if s < lower_bound or s > upper_bound:
                         skips['strike_range'] += 1
                         continue
+                        
+                    if strategy == 'LongCall':
+                        if s < component_price * (1 + min_strike_raw):
+                            skips['strategy'] += 1
+                            continue
+                    elif strategy == 'LongPut':
+                        if s > component_price * (1 - min_strike_raw):
+                            skips['strategy'] += 1
+                            continue
                         
                     # In Long strategies, we don't have a width, but we might filter by distance from spot
                     spreads.append({
@@ -354,7 +492,8 @@ class SpreadScanner:
                     # Put Spread (Bull Put)
                     strike_p_buy = low_strike
                     strike_p_sell = low_strike + width
-                    if strike_p_sell in strikes and strike_p_sell <= upper_bound:
+                    # Constraint: The entire short Put spread must be below the current spot price
+                    if strike_p_sell in strikes and strike_p_sell <= upper_bound and strike_p_sell < component_price:
                         # Call Spread (Bear Call)
                         for high_strike in [s for s in strikes if s > component_price and lower_bound <= s <= upper_bound]:
                             strike_c_sell = high_strike
@@ -378,48 +517,80 @@ class SpreadScanner:
                 continue
             
             if strategy in ['BullCall', 'BullPut', 'BearCall', 'BearPut']:
-                width = params.get('width', 5)
+                target_width = params.get('width', 5.0)
                 for i, long_strike in enumerate(strikes):
                     if long_strike < lower_bound or long_strike > upper_bound:
                         skips['strike_range'] += 1
                         continue
                         
-                    # Target Short Strike
-                    if 'Bull' in strategy:
-                        target_short_strike = long_strike + width 
-                    else:
-                        target_short_strike = long_strike - width
-                    
-                    if target_short_strike not in strikes: continue
-                    
-                    if target_short_strike < lower_bound or target_short_strike > upper_bound:
-                        skips['strike_range'] += 1
-                        continue
-                    
-                    short_strike = target_short_strike
-                    strike_buy = long_strike
-                    strike_sell = short_strike
-                    right = 'C' if 'Call' in strategy else 'P'
-                    
-                    spreads.append({
-                        'symbol': params.get('symbol', ''),
-                        'strategy': strategy,
-                        'expiry': expiration,
-                        'dte': dte,
-                        'strike_buy': strike_buy,
-                        'strike_sell': strike_sell,
-                        'right': right,
-                        'width': abs(strike_buy - strike_sell),
-                        'iv': params.get('iv', 0.0)
-                    })
+                    # [IMPROVEMENT] Instead of checking for a single target strike,
+                    # find ALL strikes that match the requested width.
+                    # This handles non-standard intervals (e.g. 111/119 for width 8)
+                    for short_strike in strikes:
+                        # Check if this pair matches the width with a small tolerance for floats
+                        actual_width = abs(long_strike - short_strike)
+                        if abs(actual_width - target_width) > 0.001:
+                            continue
+                            
+                        # Use the pre-calculated dynamic minimum distance offset
+                        # min_strike_raw was already calculated at the top of the expiration loop
+                        
+                        # Pattern check: Bull vs Bear
+                        if strategy in ['BullCall', 'BullPut']:
+                            strike_range_raw = params.get('strike_range_pct', 0.30)
+                            is_below = True if strike_range_raw >= 0 else False
+                            
+                            if is_below:
+                                # Spread placed BELOW the current price
+                                if short_strike > component_price * (1 - min_strike_raw):
+                                    skips['strategy'] += 1
+                                    continue
+                                if short_strike <= long_strike: # Buy is further from price
+                                    skips['strategy'] += 1
+                                    continue
+                            else:
+                                # Spread placed ABOVE the current price
+                                if short_strike < component_price * (1 + min_strike_raw):
+                                    skips['strategy'] += 1
+                                    continue
+                                if long_strike <= short_strike: # Buy is further from price
+                                    skips['strategy'] += 1
+                                    continue
+                        elif strategy in ['BearCall', 'BearPut']:
+                            # Rules for Bear spreads (strict according to user):
+                            # Buy (long_strike) > Sell (short_strike) > koers (component_price) safely buffered
+                            min_allowed_short = component_price * (1 + min_strike_raw)
+                            if long_strike <= short_strike:
+                                skips['strategy'] += 1
+                                continue
+                            if short_strike < min_allowed_short:
+                                skips['strategy'] += 1
+                                continue
+                        if short_strike < lower_bound or short_strike > upper_bound:
+                            skips['strike_range'] += 1
+                            continue
+                        
+                        right = 'C' if 'Call' in strategy else 'P'
+                        
+                        spreads.append({
+                            'symbol': params.get('symbol', ''),
+                            'strategy': strategy,
+                            'expiry': expiration,
+                            'dte': dte,
+                            'strike_buy': long_strike,
+                            'strike_sell': short_strike,
+                            'right': right,
+                            'width': actual_width,
+                            'iv': params.get('iv', 0.0)
+                        })
                 continue
         
         # Log Summary if 0 results
         if not spreads and log_func:
             summary = []
-            if skips['dte'] > 0: summary.append(f"DTE ({skips['dte']})")
-            if skips['strike'] > 0: summary.append(f"Strikes ({skips['strike']})")
-            if skips['strategy'] > 0: summary.append(f"OTM/ITM ({skips['strategy']})")
+            if skips.get('dte', 0) > 0: summary.append(f"DTE ({skips['dte']})")
+            if skips.get('strike_range', 0) > 0: summary.append(f"Strikes ({skips['strike_range']})")
+            if skips.get('strategy', 0) > 0: summary.append(f"OTM/ITM ({skips['strategy']})")
             
             if summary:
                 log_func(f"   ⚠️ 0 {strategy} kandidaten. Skips door: {', '.join(summary)}")
@@ -439,7 +610,7 @@ class SpreadScanner:
         """
         result = {'max_pain': 0.0, 'call_wall': 0.0, 'put_wall': 0.0, 'gex_wall': 0.0}
         
-        if chain_data.empty or 'oi' not in chain_data.columns:
+        if chain_data.empty or 'openInterest' not in chain_data.columns:
             return result
             
         strikes = sorted(chain_data['strike'].unique())
@@ -451,17 +622,17 @@ class SpreadScanner:
             
             # Pain for Calls (if price > strike)
             calls = chain_data[chain_data['right'] == 'C']
-            calls = calls[calls['oi'] > 0]
+            calls = calls[calls['openInterest'] > 0]
             itm_calls = calls[calls['strike'] < price_point]
             if not itm_calls.empty:
-                total_pain += ((price_point - itm_calls['strike']) * itm_calls['oi']).sum()
+                total_pain += ((price_point - itm_calls['strike']) * itm_calls['openInterest']).sum()
             
             # Pain for Puts (if price < strike)
             puts = chain_data[chain_data['right'] == 'P']
-            puts = puts[puts['oi'] > 0]
+            puts = puts[puts['openInterest'] > 0]
             itm_puts = puts[puts['strike'] > price_point]
             if not itm_puts.empty:
-                total_pain += ((itm_puts['strike'] - price_point) * itm_puts['oi']).sum()
+                total_pain += ((itm_puts['strike'] - price_point) * itm_puts['openInterest']).sum()
             
             pain_values[price_point] = total_pain
             
@@ -480,13 +651,13 @@ class SpreadScanner:
             
         # 2. Call Wall (Max Call OI)
         calls = chain_data[chain_data['right'] == 'C']
-        if not calls.empty and calls['oi'].max() > 0:
-            result['call_wall'] = calls.loc[calls['oi'].idxmax()]['strike']
+        if not calls.empty and calls['openInterest'].max() > 0:
+            result['call_wall'] = calls.loc[calls['openInterest'].idxmax()]['strike']
             
         # 3. Put Wall (Max Put OI)
         puts = chain_data[chain_data['right'] == 'P']
-        if not puts.empty and puts['oi'].max() > 0:
-            result['put_wall'] = puts.loc[puts['oi'].idxmax()]['strike']
+        if not puts.empty and puts['openInterest'].max() > 0:
+            result['put_wall'] = puts.loc[puts['openInterest'].idxmax()]['strike']
             
         # 4. GEX Wall (Max Gamma * OI) -- simplified proxy for GEX
         # Total GEX per strike = (Gamma * OI * Spot). Spot is constant, so prioritize Gamma*OI.
@@ -495,7 +666,7 @@ class SpreadScanner:
         if 'gamma' in chain_data.columns:
              # Calculate GEX proxy per row
              # Use absolute gamma * OI
-             chain_data['gex_proxy'] = chain_data['gamma'].abs() * chain_data['oi']
+             chain_data['gex_proxy'] = chain_data['gamma'].abs() * chain_data['openInterest']
              
              # Group by strike
              gex_by_strike = chain_data.groupby('strike')['gex_proxy'].sum()
@@ -512,7 +683,7 @@ class SpreadScanner:
         Calculates the price level where net Market Maker Gamma exposure crosses zero.
         Simplified version based on Call Gamma - Put Gamma.
         """
-        if 'gamma' not in chain_data.columns or 'oi' not in chain_data.columns:
+        if 'gamma' not in chain_data.columns or 'openInterest' not in chain_data.columns:
             return 0.0
             
         # Group by strike
@@ -526,8 +697,8 @@ class SpreadScanner:
             cg = chain_data[(chain_data['strike'] == s) & (chain_data['right'] == 'C')]
             pg = chain_data[(chain_data['strike'] == s) & (chain_data['right'] == 'P')]
             
-            c_gex = (cg['gamma'] * cg['oi']).sum() if not cg.empty else 0
-            p_gex = (pg['gamma'] * pg['oi']).sum() if not pg.empty else 0
+            c_gex = (cg['gamma'] * cg['openInterest']).sum() if not cg.empty else 0
+            p_gex = (pg['gamma'] * pg['openInterest']).sum() if not pg.empty else 0
             
             net_gamma_by_strike[s] = c_gex - p_gex
             
@@ -538,7 +709,7 @@ class SpreadScanner:
         flip_strike = min(net_gamma_by_strike, key=lambda k: abs(net_gamma_by_strike[k]))
         return flip_strike
 
-    def calculate_metrics(self, spreads_df, ib_client, symbol, underlying_price=None, chain_data=None, underlying_iv=0.0, hist_iv_df=None, log_func=None):
+    def calculate_metrics(self, spreads_df, ib_client, symbol, underlying_price=None, chain_data=None, underlying_iv=0.0, hist_iv_df=None, log_func=None, koopadvies_p=0.01, atr_10=0.0, target_profit_usd=5.0):
         """
         Enriches spreads using Real Prices (Bid/Ask) if available in chain_data.
         OPTIMIZED: Uses dictionary lookups and avoids iterrows for high performance.
@@ -564,7 +735,10 @@ class SpreadScanner:
                 ask = row.get('ask', 0.0)
                 close = row.get('close', 0.0)
                 last = row.get('last', 0.0)
-                model_p = row.get('model_price', 0.0)
+                model_p = row.get('opt_price', 0.0)
+                
+                mid = (bid + ask) / 2 if (bid > 0 and ask > 0) else 0.0
+                last_p = last if last > 0 else 0.0
                 
                 # Default to model price if available (great for weekends)
                 price = model_p
@@ -607,13 +781,16 @@ class SpreadScanner:
 
                 # Normalize right to 'C' or 'P' for consistent lookup
                 r_norm = 'C' if str(row['right']).upper().startswith('C') else 'P'
-                lookup[(float(row['strike']), r_norm)] = (float(price), greeks)
+                # [FIX] Round strike to 4 decimals for robust lookup
+                # Store (Effective Price, Greeks, Mid, Last, Bid, Ask)
+                lookup[(round(float(row['strike']), 4), r_norm)] = (float(price), greeks, float(mid), float(last_p), float(bid), float(ask))
         
         # Helper for vectorizable lookup
         def get_data(strike, right):
             # Normalize right to C/P
             r_norm = 'C' if right.upper().startswith('C') else 'P'
-            res = lookup.get((float(strike), r_norm))
+            # [FIX] Round strike for lookup
+            res = lookup.get((round(float(strike), 4), r_norm))
             if res: return res, True # Found in real data
             
             # [PHANTOM FIX] Only fallback if user explicitly allows it (hidden for now) or for debugging.
@@ -629,8 +806,16 @@ class SpreadScanner:
         net_vega = np.zeros(n)
         prices_buy = np.zeros(n)
         prices_sell = np.zeros(n)
+        mids_buy = np.zeros(n)
+        mids_sell = np.zeros(n)
+        lasts_buy = np.zeros(n)
+        lasts_sell = np.zeros(n)
         deltas_buy = np.zeros(n)
         deltas_sell = np.zeros(n)
+        bids_buy = np.zeros(n)
+        asks_buy = np.zeros(n)
+        bids_sell = np.zeros(n)
+        asks_sell = np.zeros(n)
         
         # Tracking valid rows
         valid_mask = np.ones(n, dtype=bool)
@@ -646,16 +831,20 @@ class SpreadScanner:
                     valid_mask[i] = False
                     continue
                     
-                pb, gb = res_p[0]
-                cb, cb_greeks = res_c[0]
+                pb, gb, mb, lb, bb, ab = res_p[0]
+                cb, cb_greeks, cmb, clb, cbb, cab = res_c[0]
                 
                 prices_buy[i] = pb + cb
+                mids_buy[i] = mb + cmb
+                lasts_buy[i] = lb + clb
                 prices_sell[i] = 0.0
                 net_delta[i] = gb['delta'] + cb_greeks['delta']
                 net_gamma[i] = gb['gamma'] + cb_greeks['gamma']
                 net_theta[i] = gb['theta'] + cb_greeks['theta']
                 net_vega[i] = gb['vega'] + cb_greeks['vega']
                 deltas_buy[i] = gb['delta']
+                bids_buy[i] = bb + cbb
+                asks_buy[i] = ab + cab
             elif row.right == 'IC':
                 res_pb = get_data(row.strike_p_buy, 'P')
                 res_ps = get_data(row.strike_p_sell, 'P')
@@ -672,18 +861,26 @@ class SpreadScanner:
                 res_cs_dat, found_cs = res_cs
                 res_cb_dat, found_cb = res_cb
                 
-                pb, pg_buy = res_pb_dat
-                ps, pg_sell = res_ps_dat
-                cs, cg_sell = res_cs_dat
-                cb, cg_buy = res_cb_dat
+                pb, pg_buy, pmb, plb, pbb, pab = res_pb_dat
+                ps, pg_sell, pms, pls, pbs, pas = res_ps_dat
+                cs, cg_sell, cms, cls, cbs, cas = res_cs_dat
+                cb, cg_buy, cmb, clb, cbb, cab = res_cb_dat
                 prices_buy[i] = pb + cb
                 prices_sell[i] = ps + cs
+                mids_buy[i] = pmb + cmb
+                mids_sell[i] = pms + cms
+                lasts_buy[i] = plb + clb
+                lasts_sell[i] = pls + cls
                 net_delta[i] = pg_buy['delta'] - pg_sell['delta'] + cg_buy['delta'] - cg_sell['delta']
                 net_gamma[i] = pg_buy['gamma'] - pg_sell['gamma'] + cg_buy['gamma'] - cg_sell['gamma']
                 net_theta[i] = pg_buy['theta'] - pg_sell['theta'] + cg_buy['theta'] - cg_sell['theta']
                 net_vega[i] =  pg_buy['vega'] - pg_sell['vega'] + cg_buy['vega'] - cg_sell['vega']
                 deltas_buy[i] = pg_buy['delta']
                 deltas_sell[i] = pg_sell['delta']
+                bids_buy[i] = pbb + cbb
+                asks_buy[i] = pab + cab
+                bids_sell[i] = pbs + cbs
+                asks_sell[i] = pas + cas
             else:
                 # Vertical Spreads or Single Legs
                 res_b = get_data(row.strike_buy, row.right)
@@ -693,42 +890,91 @@ class SpreadScanner:
                     if not res_b[1]:
                         valid_mask[i] = False
                         continue
-                    pb, gb = res_b[0]
+                    pb, gb, mb, lb, bb, ab = res_b[0]
                     prices_buy[i] = pb
+                    mids_buy[i] = mb
+                    lasts_buy[i] = lb
                     prices_sell[i] = 0.0
                     net_delta[i] = gb['delta']
                     net_gamma[i] = gb['gamma']
                     net_theta[i] = gb['theta']
                     net_vega[i] = gb['vega']
                     deltas_buy[i] = gb['delta']
+                    bids_buy[i] = bb
+                    asks_buy[i] = ab
                 else:
                     res_s = get_data(row.strike_sell, row.right)
                     if not res_b[1] or not res_s[1]:
                         valid_mask[i] = False
                         continue
                     
-                    pb, gb = res_b[0]
-                    ps, gs = res_s[0]
+                    pb, gb, mb, lb, bb, ab = res_b[0]
+                    ps, gs, ms, ls, bs, a_s = res_s[0]
                     
                     prices_buy[i] = pb
                     prices_sell[i] = ps
+                    mids_buy[i] = mb
+                    mids_sell[i] = ms
+                    lasts_buy[i] = lb
+                    lasts_sell[i] = ls
                     net_delta[i] = gb['delta'] - gs['delta']
                     net_gamma[i] = gb['gamma'] - gs['gamma']
                     net_theta[i] = gb['theta'] - gs['theta']
                     net_vega[i] = gb['vega'] - gs['vega']
                     deltas_buy[i] = gb['delta']
                     deltas_sell[i] = gs['delta']
+                    bids_buy[i] = bb
+                    asks_buy[i] = ab
+                    bids_sell[i] = bs
+                    asks_sell[i] = a_s
         
         # 4. Integrate back and FILTER
         spreads_df['price_buy'] = prices_buy
         spreads_df['price_sell'] = prices_sell
         spreads_df['net_price'] = prices_buy - prices_sell
+        spreads_df['mid_price'] = mids_buy - mids_sell
+        spreads_df['last_price'] = lasts_buy - lasts_sell
         spreads_df['delta'] = net_delta
         spreads_df['gamma'] = net_gamma
         spreads_df['theta'] = net_theta
         spreads_df['vega'] = net_vega
         spreads_df['delta_buy'] = deltas_buy
         spreads_df['delta_sell'] = deltas_sell
+        
+        # Calculate Spread Natural Bid and Ask
+        # If buying the spread: Pay Ask for long legs, receive Bid for short legs. So Cost (Ask) = asks_buy - bids_sell
+        # If selling the spread: Receive Bid for long legs, pay Ask for short legs. So Credit (Bid) = bids_buy - asks_sell
+        # Since logic treats debits as spreads_df['net_price'], net_price > 0 is debit, < 0 is credit.
+        # We will expose spread_ask (the price to buy the spread) and spread_bid (the price to sell the spread) explicitly.
+        # But wait, net_price is price_buy - price_sell.
+        # When net_price < 0, it means we receive money (Credit Spread).
+        # We will provide absolute values for Mid and Bid/Ask of the premium to avoid confusion.
+        
+        spreads_df['spread_mid_abs'] = np.abs(mids_buy - mids_sell)
+        
+        # Credit spread: We receive money. Credit = prices_sell - prices_buy.
+        # Natural Credit Bid (what we get) = bids_sell - asks_buy
+        # Natural Credit Ask (what buyers want) = asks_sell - bids_buy
+        
+        # Debit spread: We pay money. Debit = prices_buy - prices_sell.
+        # Natural Debit Ask (what we pay) = asks_buy - bids_sell
+        # Natural Debit Bid = bids_buy - asks_sell
+        
+        is_credit = spreads_df['net_price'] < 0
+        
+        # Store absolute magnitude of the Ask and Mid for GUI
+        # For Credit spreads, the "Ask" is the Natural Ask of the spread (asks_sell - bids_buy)
+        # For Debit spreads, the "Ask" is the Natural Ask of the spread (asks_buy - bids_sell)
+        spread_ask_abs = np.where(is_credit, asks_sell - bids_buy, asks_buy - bids_sell)
+        spread_ask_abs = np.maximum(0.0, spread_ask_abs) # ensure positive display
+        spreads_df['spread_ask_abs'] = spread_ask_abs
+        
+        # For worst-case entry (Laat): Debit pays Ask (asks_buy - bids_sell), Credit receives Bid (bids_sell - asks_buy)
+        worst_entry_signed = np.where(is_credit, -(bids_sell - asks_buy), asks_buy - bids_sell)
+        spreads_df['worst_entry_signed'] = worst_entry_signed
+        
+        # Difference between worst-case Natural Ask and Mid (represents Slippage/Liquidity)
+        spreads_df['b_l_verschil'] = spreads_df['spread_ask_abs'] - spreads_df['spread_mid_abs']
         
         # Apply filter to remove phantom rows
         original_count = len(spreads_df)
@@ -737,17 +983,42 @@ class SpreadScanner:
         
         if removed > 0 and self.log_func:
             self.log_func(f"      🚫 {removed} fantoom-strikes verwijderd (geen Bid/Ask in TWS).")
-        elif original_count > 0 and self.log_func:
+            
+        # --- NEW ARBITRAGE/RISK-FREE FILTER ---
+        # A credit spread is risk free if the credit received (-debit) is >= the spread width
+        debits_temp = spreads_df['net_price'].values
+        widths_temp = spreads_df['width'].values
+        is_risk_free = (debits_temp < 0) & (widths_temp > 0) & (-debits_temp >= widths_temp)
+        
+        removed_rf = is_risk_free.sum()
+        if removed_rf > 0 and self.log_func:
+            self.log_func(f"      ⚠️ {removed_rf} risicoloze trades (credit >= width) verwijderd (TWS weigert deze).")
+            
+        spreads_df = spreads_df[~is_risk_free].copy()
+        
+        if original_count > 0 and self.log_func and removed == 0 and removed_rf == 0:
             self.log_func(f"      ✅ Alle {len(spreads_df)} strikes geverifieerd in TWS.")
         
         # Financial Metrics (Use filtered DataFrame columns to avoid length mismatch)
-        debits = spreads_df['net_price'].values
+        debits_mid = spreads_df['net_price'].values
+        debits_worst = spreads_df['worst_entry_signed'].values
         widths = spreads_df['width'].values
         
-        # Max Profit Calculation (Vectorized)
+        # Max Profit Calculation (Vectorized) using WORST entry for realistic max profit
         is_long = (widths == 0) | (spreads_df['strategy'] == 'Strangle')
-        profits = np.where(debits < 0, -debits * 100, (widths - debits) * 100)
-        profits[is_long] = 10000.0 # Unlimited proxy
+        profits = np.where(debits_worst < 0, -debits_worst * 100, (widths - debits_worst) * 100)
+        
+        # Override for infinite max profit legs (Long Call / Long Put)
+        # Assuming a 10% favorable move in underlying price to cap max profit
+        s_buy = spreads_df['strike_buy'].values
+        right = spreads_df['right'].values
+        
+        call_val = np.maximum(0, (underlying_price * 1.10) - s_buy)
+        put_val = np.maximum(0, s_buy - (underlying_price * 0.90))
+        
+        long_profits = np.where(right == 'C', call_val * 100, put_val * 100) - (debits_worst * 100)
+        
+        profits = np.where(is_long, long_profits, profits)
         
         # Handle data missing (using filtered columns)
         p_buy_f = spreads_df['price_buy'].values
@@ -769,15 +1040,12 @@ class SpreadScanner:
             intr = np.where(rights == 'C', intr_call, intr_put)
             return np.maximum(0.0, prices - intr)
 
-        # Note: Extrinsic calculation for IC is slightly different
         spread_rights = spreads_df['right'].values
-        strikes_buy = spreads_df['strike_buy'].values
         # For IC, we sum extensics of all 4 legs? Simplified: sum of net buy/sell extrinsic.
         # But let's keep it simple for now as it's a proxy.
-        spreads_df['extrinsic_buy'] = get_extrinsic_vec(spreads_df['price_buy'].values, strikes_buy, spread_rights, underlying_price)
-        # net_extrinsic
-        spreads_df['extrinsic_sell'] = 0.0 # simplified for speed, can refine if needed
-        spreads_df['net_extrinsic'] = spreads_df['extrinsic_buy'] # proxy
+        spreads_df['extrinsic_buy'] = get_extrinsic_vec(spreads_df['price_buy'].values, spreads_df['strike_buy'].values, spread_rights, underlying_price)
+        spreads_df['extrinsic_sell'] = get_extrinsic_vec(spreads_df['price_sell'].values, spreads_df['strike_sell'].values, spread_rights, underlying_price)
+        spreads_df['net_extrinsic'] = spreads_df['extrinsic_buy'] - spreads_df['extrinsic_sell']
 
         # Market Structure (Scalar)
         for k, v in market_structure.items(): spreads_df[k] = v
@@ -831,6 +1099,179 @@ class SpreadScanner:
                 spreads_df['iv_rank'] = 0.0
                 spreads_df['iv_percentile'] = 0.0
 
+        # 6. Universeel Koopadvies (1% Target Rule)
+        # Evaluates the spread's mathematical payout against +/- 1% targets.
+        if spreads_df.empty:
+            spreads_df['koopadvies'] = pd.Series(dtype=str)
+            return spreads_df
+
+        p = koopadvies_p
+        u_price = float(underlying_price) if underlying_price is not None else 0.0
+        
+        spreads_df['koopadvies'] = ""
+        spreads_df['winst_midden'] = 0.0
+        spreads_df['winst_laat'] = 0.0
+        
+        if u_price > 0:
+            target_up = u_price * (1 + p)
+            target_down = u_price * (1 - p)
+            
+            # Universal Variables
+            s_buy = spreads_df['strike_buy'].values
+            s_sell = spreads_df['strike_sell'].values
+            s_p_buy = spreads_df.get('strike_p_buy', spreads_df['strike_buy']).values
+            s_p_sell = spreads_df.get('strike_p_sell', spreads_df['strike_sell']).values
+            s_c_buy = spreads_df.get('strike_c_buy', spreads_df['strike_buy']).values
+            s_c_sell = spreads_df.get('strike_c_sell', spreads_df['strike_sell']).values
+            
+            right = spreads_df['right'].values
+            is_C = right == 'C'
+            is_P = right == 'P'
+            is_IC = right == 'IC'
+            is_STR = right == 'STR'
+            
+            def get_payout(tgt):
+                # Single and Vertical Spreads
+                v_long_c = np.where(is_C, np.maximum(0, tgt - s_buy), 0)
+                v_long_p = np.where(is_P, np.maximum(0, s_buy - tgt), 0)
+                v_long = v_long_c + v_long_p
+                
+                v_short_c = np.where((is_C) & (s_sell > 0), np.maximum(0, tgt - s_sell), 0)
+                v_short_p = np.where((is_P) & (s_sell > 0), np.maximum(0, s_sell - tgt), 0)
+                v_short = v_short_c + v_short_p
+                
+                v_out = v_long - v_short
+                
+                # Multi-leg Combinations
+                ic_out = (np.maximum(0, s_p_buy - tgt) - np.maximum(0, s_p_sell - tgt)) + (np.maximum(0, tgt - s_c_buy) - np.maximum(0, tgt - s_c_sell))
+                str_out = np.maximum(0, s_p_buy - tgt) + np.maximum(0, tgt - s_c_buy)
+                
+                return np.where(is_IC, ic_out, np.where(is_STR, str_out, v_out))
+                
+            payout_up = get_payout(target_up)
+            payout_down = get_payout(target_down)
+            
+            # Identify Directional Expectation
+            strat = spreads_df['strategy']
+            is_bull = strat.isin(['BullCall', 'BullPut', 'LongCall'])
+            is_bear = strat.isin(['BearCall', 'BearPut', 'LongPut'])
+            # Neutral/Volatile (IronCondor, Strangle) inherently check both directions and take the worst case.
+            
+            final_payout = np.where(is_bull, payout_up, np.where(is_bear, payout_down, np.minimum(payout_up, payout_down)))
+            
+            n_price = spreads_df['net_price'].values
+            n_price_worst = spreads_df['worst_entry_signed'].values
+            
+            # Since n_price represents the direct Entry price mapping (negative means credit received)
+            profit_mid = final_payout - n_price
+            profit_worst = final_payout - n_price_worst
+            
+            spreads_df['koopadvies'] = np.where(profit_worst > 0, "✅", "❌")
+            spreads_df['winst_midden'] = profit_mid * 100
+            spreads_df['winst_laat'] = profit_worst * 100
+            
+            bep = np.zeros_like(s_buy, dtype=float)
+            st_vals = strat.values
+            for idx, st_val in enumerate(st_vals):
+                entry = n_price_worst[idx]
+                if st_val in ['LongCall', 'BullCall']:
+                    bep[idx] = s_buy[idx] + entry
+                elif st_val in ['LongPut', 'BearPut']:
+                    bep[idx] = s_buy[idx] - entry
+                elif st_val == 'BearCall':
+                    bep[idx] = s_sell[idx] + (-entry)
+                elif st_val == 'BullPut':
+                    bep[idx] = s_sell[idx] - (-entry)
+                else:
+                    bep[idx] = 0.0 # IC/Strangle have two BEPs or are too complex to display in 1 num
+            spreads_df['BEP'] = bep
+            
+            # Calculate distance to BEP in percentage
+            valid_bep = (bep > 0) & (u_price > 0)
+            dist_pct = np.where(valid_bep, (np.abs(bep - u_price) / u_price) * 100, 0.0)
+            spreads_df['bep_afstand_pct'] = dist_pct
+
+        # --- Part 6: Risk Metrics (Bjerksund-Stensland 2002) ---
+        n = len(spreads_df)
+        ttp_days = np.full(n, 99.0)
+        tei_scores = np.zeros(n)
+        is_efficient = np.zeros(n, dtype=bool)
+        
+        # Auto-fetch ATR if not provided
+        if (atr_10 is None or atr_10 == 0) and ib_client is not None:
+             try:
+                 atr_10 = ib_client.get_atr(symbol)
+                 if log_func: log_func(f"      [RiskModel] ATR(10) opgehaald: {atr_10:.2f}")
+             except:
+                 atr_10 = 0.0
+
+        if atr_10 > 0 and underlying_price > 0:
+            # We need to ensure we have the strikes in a compatible format
+            s_buy_vals = spreads_df['strike_buy'].values
+            dte_vals = spreads_df['dte'].values
+            
+            # Directions for Risk Model
+            strat_vals = spreads_df['strategy'].values
+            
+            for i in range(n):
+                try:
+                    # Evaluate risk relative to the 'Buy' leg strike
+                    k_val = float(s_buy_vals[i])
+                    iv_val = float(underlying_iv) # Use underlying IV as proxy if row IV missing
+                    
+                    # Target direction: Bearish strategies profit on price DROP
+                    s_type = strat_vals[i]
+                    signed_target = 5.0
+                    if s_type in ['BearCall', 'BearPut', 'LongPut']:
+                        signed_target = -5.0
+                    
+                    rm = get_bs_risk_metrics(
+                        S=float(underlying_price),
+                        K=k_val,
+                        T=max(0.001, float(dte_vals[i]))/365.0,
+                        r=0.04,
+                        q=0.015,
+                        sigma=max(0.05, iv_val),
+                        atr_10=float(atr_10),
+                        target_profit_usd=signed_target
+                    )
+                    ttp_days[i] = rm['days_to_profit']
+                    tei_scores[i] = rm['tei_score']
+                    is_efficient[i] = rm['is_efficient']
+                except Exception:
+                    pass
+
+        # Assignment of new Risk Columns
+        spreads_df['TTP (D)'] = ttp_days
+        spreads_df['TEI Score'] = tei_scores
+        spreads_df['Efficient'] = is_efficient
+
+        # --- Part 7: AntiGravity Score (AG Score) ---
+        # Combineert winstkans, rendement/risico (TEI), en veiligheidsmarges
+        # pop is 0-100. TEI is normally 0.5 - 3.0.
+        ag_score = spreads_df['pop'] * np.maximum(spreads_df['TEI Score'], 0.1)
+        
+        # Bonus voor 1% regel (koopadvies)
+        ag_score = np.where(spreads_df['koopadvies'] == "✅", ag_score * 1.5, ag_score)
+        
+        # Bonus voor Max Pain buffer
+        if 'max_pain_buffer_ok' in spreads_df.columns:
+            ag_score = np.where(spreads_df['max_pain_buffer_ok'], ag_score * 1.2, ag_score)
+            
+        # Bonus voor BEP Afstand (Beloon diepere marge / veiligere trades)
+        # 5% marge geeft bijv. een bonus multiplier van ~ 1.20x (20% bonus) 
+        if 'bep_afstand_pct' in spreads_df.columns:
+            bep_buffer_pct = np.maximum(0, spreads_df['bep_afstand_pct'])
+            bep_bonus_multiplier = 1.0 + (bep_buffer_pct / 100.0) * 4.0
+            ag_score = ag_score * bep_bonus_multiplier
+        
+        # Penalty voor heel krappe afstand tot koers (strike_buy dicht op koers)
+        dist_pct = np.abs(spreads_df['strike_buy'] - underlying_price) / max(0.001, underlying_price)
+        ag_score = np.where(dist_pct < 0.01, ag_score * 0.8, ag_score)
+        
+        spreads_df['AG_Score'] = np.round(ag_score, 1)
+        spreads_df['underlying_price'] = underlying_price
+
         return spreads_df
 
     def calculate_iv_indices(self, current_iv, hist_iv_df):
@@ -847,13 +1288,19 @@ class SpreadScanner:
         # IV Rank: (Current - Min) / (Max - Min)
         low = np.min(ivs)
         high = np.max(ivs)
-        if high > low:
+        
+        # Enforce realistic range to avoid division by near-zero (common in paper trading/spotty history)
+        if (high - low) > 0.001: 
             ivr = (current_iv - low) / (high - low) * 100
         else:
-            ivr = 0.0
+            ivr = 100.0 if current_iv > high else 0.0
+            
+        # Traditional IV Rank is capped between 0 and 100%
+        ivr = np.clip(ivr, 0, 100)
             
         # IV Percentile: Percentage of days where IV was lower than current
         ivp = (ivs < current_iv).sum() / len(ivs) * 100
+        ivp = np.clip(ivp, 0, 100)
         
         return np.round(ivr, 1), np.round(ivp, 1)
     def filter_spreads(self, spreads_df, filters, log_func=None):
@@ -943,6 +1390,15 @@ class SpreadScanner:
                     drop_stats['Max Pain Dist'] = dropped
                     if log_func: log_func(f"   🔻 Filter Max Pain Dist > {filters['max_pain_dist']}: {dropped} dropped")
             
+        # Filter Only Koopadvies
+        if filters.get('only_koopadvies', False):
+            before = len(df)
+            df = df[df['koopadvies'] == "✅"]
+            dropped = before - len(df)
+            if dropped > 0:
+                drop_stats['Koopadvies'] = dropped
+                if log_func: log_func(f"   🔻 Filter Niet-Koopadvies: {dropped} dropped")
+            
         if log_func:
             if df.empty and drop_stats:
                 # Provide a consolidated reason if all were dropped
@@ -1004,7 +1460,10 @@ class SpreadScanner:
         sort_asc = []
         
         for crit in sort_criteria:
-            if crit == 'expected_move':
+            if crit == 'AG Score':
+                sort_cols.append('AG_Score')
+                sort_asc.append(False)
+            elif crit == 'expected_move':
                 # Placeholder: prioritize spreads covering expected move?
                 pass 
             elif crit == 'gamma':
