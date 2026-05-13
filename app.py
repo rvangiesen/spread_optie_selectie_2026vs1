@@ -94,7 +94,7 @@ elif "Neutraal" in marktvisie:
 st.sidebar.markdown(f"**Actieve Strategieën:** {', '.join(active_strategies)}")
 
 # Batch Scanner Input
-scan_mode = st.sidebar.selectbox("Scan Modus", ["Enkel Symbool", "Batch Scan (Lijst)", "Batch Scan (Bestand)", "Live TWS Scanner"])
+scan_mode = st.sidebar.selectbox("Scan Modus", ["Enkel Symbool", "Batch Scan (Lijst)", "Batch Scan (Bestand)", "Live TWS Scanner", "BarChart Optie Flow (CSV)", "Auto-Pilot (Downloads map)"])
 
 symbols_to_scan = []
 scan_code = "MOST_ACTIVE" 
@@ -129,8 +129,11 @@ elif scan_mode == "Batch Scan (Bestand)":
             else:
                 df = pd.read_excel(uploaded_file)
 
-            if 'Symbol' in df.columns:
-                symbols_to_scan = df['Symbol'].tolist()
+            # Normalize columns to uppercase to avoid case-sensitivity issues
+            df.columns = df.columns.str.upper().str.strip()
+            
+            if 'SYMBOL' in df.columns:
+                symbols_to_scan = df['SYMBOL'].dropna().tolist()
                 st.sidebar.success(f"{len(symbols_to_scan)} symbolen geladen.")
             else:
                 st.sidebar.error("Bestand moet kolom 'Symbol' bevatten.")
@@ -138,12 +141,50 @@ elif scan_mode == "Batch Scan (Bestand)":
             st.sidebar.error(f"Fout bij laden: {e}")
     sec_type = "Aandeel" # Assume stocks for custom lists usually
 
+elif scan_mode == "BarChart Optie Flow (CSV)":
+    st.sidebar.info("Importeer Barchart CSV's om 'Smart Money' trade setups te genereren.")
+    barchart_files = st.sidebar.file_uploader("Upload Barchart CSV", type=['csv'], accept_multiple_files=True)
+    barchart_dfs = []
+    
+    if barchart_files:
+        for f in barchart_files:
+            try:
+                df = pd.read_csv(f)
+                # Normalize columns to uppercase
+                df.columns = df.columns.str.upper().str.strip()
+                if 'SYMBOL' in df.columns:
+                    # Rename back to Symbol for compatibility downstream if necessary, or keep SYMBOL
+                    df = df.rename(columns={'SYMBOL': 'Symbol'})
+                    barchart_dfs.append(df)
+            except Exception as e:
+                st.sidebar.error(f"Fout in {f.name}: {e}")
+        
+        if barchart_dfs:
+            combined_barchart = pd.concat(barchart_dfs, ignore_index=True)
+            st.session_state['barchart_raw'] = combined_barchart
+            symbols_to_scan = list(combined_barchart['Symbol'].dropna().unique())
+            st.sidebar.success(f"{len(barchart_dfs)} bestand(en) ingeladen. {len(symbols_to_scan)} unieke symbolen.")
+        else:
+            st.session_state['barchart_raw'] = pd.DataFrame()
+            st.sidebar.warning("Geen geldige symbolen in de CSV(s) gevonden.")
+    sec_type = "Aandeel"
+
 elif scan_mode == "Live TWS Scanner":
     st.sidebar.info("Haalt live 'Most Active', 'Top Gainers' etc. op van TWS")
     scan_code = st.sidebar.selectbox("Scan Criteria", ["MOST_ACTIVE", "TOP_PERC_GAIN", "HOT_BY_VOLUME", "OPT_VOLUME_MOST_ACTIVE"])
     num_rows = st.sidebar.slider("Aantal resultaten", 10, 50, 20)
     sec_type = "Aandeel"
     # Logic to fetch happens inside "Start Scan" to avoid premature connection
+
+elif scan_mode == "Auto-Pilot (Downloads map)":
+    st.sidebar.info("Wacht op een specifiek tijdstip en laadt dan de 'AG SYMBOLS VOOR SCANNER' file uit je Downloads map.")
+    
+    import datetime
+    default_t = datetime.time(15, 40)
+    auto_pilot_time = st.sidebar.time_input("Start Tijd (Uur/Min)", value=default_t, help="Kies bijv. 15:40 voor zomertijd of 16:40 / 14:40 voor wintertijd (10 min na beursopening).")
+    
+    # We delay loading symbols_to_scan until the actual execute phase so the user can replace the file while waiting
+    sec_type = "Aandeel"
 
 # Filters
 st.sidebar.subheader("Filters & Criteria")
@@ -235,7 +276,7 @@ today = datetime.datetime.now().weekday()
 if today >= 5: # 5 = Saturday, 6 = Sunday
     st.warning("⚠️ **Weekend Modus Actief**: TWS levert momenteel beperkte live data. De scanner gebruikt de prijzen van afgelopen vrijdag (sluiting) als fallback voor berekeningen.")
 
-tab1, tab2, tab3, tab4 = st.tabs(["🚀 Scanner", "📊 Resultaten", "🛒 Orders", "📈 S&P 500 Spreads"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["🚀 Scanner", "📊 Resultaten", "🛒 Orders", "📈 S&P 500 Spreads", "💰 Dividend CC"])
 
 # --- TAB 1: SCANNER ---
 with tab1:
@@ -248,19 +289,66 @@ with tab1:
 
         col1, col2, col3 = st.columns(3)
         with col1:
-             if st.button("Start Scan", type="primary"):
-                 # EXECUTION logic...
+            start_pressed = st.button("Start Scan / Activeer Auto-Pilot", type="primary")
 
-                 # Use a random client ID to avoid "Client ID already in use" from zombie sessions
-                 import random
-                 scan_client_id = random.randint(10000, 99999)
+            if start_pressed:
+                if scan_mode == "Auto-Pilot (Downloads map)":
+                    import os, time, datetime
+                    downloads_path = os.path.join(os.path.expanduser('~'), 'Downloads')
+                    csv_path = os.path.join(downloads_path, 'AG SYMBOLS VOOR SCANNER.csv')
+                    xlsx_path = os.path.join(downloads_path, 'AG SYMBOLS VOOR SCANNER.xlsx')
+                    
+                    now = datetime.datetime.now()
+                    
+                    # Check if time already passed today (with a 5 min grace period)
+                    if now.time() >= auto_pilot_time:
+                        st.warning(f"Waarschuwing: Het is nu {now.strftime('%H:%M')}, wat al na de ingestelde tijd van {auto_pilot_time.strftime('%H:%M')} is. Scanner start direct!")
+                        time.sleep(3)
+                    else:
+                        st.info(f"⏱️ **Auto-Pilot Actief**. Scherm open laten. Scanner pauzeert tot {auto_pilot_time.strftime('%H:%M')}.")
+                        timer_ph = st.empty()
+                        while True:
+                            current_now = datetime.datetime.now()
+                            if current_now.time() >= auto_pilot_time:
+                                break
+                            timer_ph.markdown(f"**Huidige tijd:** {current_now.strftime('%H:%M:%S')} - wacht tot {auto_pilot_time.strftime('%H:%M:00')} om TWS en de scan te starten...")
+                            time.sleep(1)
+                        timer_ph.empty()
+                        st.success("Tijd bereikt! Scanner wordt gestart...")
+                        
+                    target_file = None
+                    if os.path.exists(csv_path): target_file = csv_path
+                    elif os.path.exists(xlsx_path): target_file = xlsx_path
+                    
+                    if not target_file:
+                        st.error(f"Bestand niet gevonden! Controleer of '{csv_path}' of '.xlsx' bestaat.")
+                        st.stop()
+                    else:
+                        try:
+                            if target_file.endswith('.csv'): df_auto = pd.read_csv(target_file)
+                            else: df_auto = pd.read_excel(target_file)
+                            
+                            # Normalize columns
+                            df_auto.columns = df_auto.columns.str.upper().str.strip()
+                            if 'SYMBOL' in df_auto.columns:
+                                symbols_to_scan = df_auto['SYMBOL'].dropna().tolist()
+                                st.success(f"{len(symbols_to_scan)} symbolen ingeladen uit {target_file}.")
+                            else:
+                                st.error("Bestand moet een kolom 'Symbol' bevatten.")
+                                st.stop()
+                        except Exception as e:
+                            st.error(f"Fout bij lezen Auto-Pilot bestand: {e}")
+                            st.stop()
 
-                 scan_ib = IBClient()
-                 success, msg = scan_ib.connect(tws_host, tws_port, scan_client_id)
+                import random
+                scan_client_id = random.randint(10000, 99999)
 
-                 if not success:
-                     st.error(f"Kan geen verbinding maken voor scan (ID: {scan_client_id}): {msg}")
-                 else:
+                scan_ib = IBClient()
+                success, msg = scan_ib.connect(tws_host, tws_port, scan_client_id)
+
+                if not success:
+                    st.error(f"Kan geen verbinding maken voor scan (ID: {scan_client_id}): {msg}")
+                else:
                      try:
                          # Set DataType
                          dtype = 1 if use_live_data else 3
@@ -329,6 +417,18 @@ with tab1:
                                  log(f"🎯 Koopadvies Drempel: {koopadvies_p*100:.1f}%")
                              if datetime.datetime.now().weekday() >= 5:
                                  log("📅 Weekend gedetecteerd: Gebruik 'Close' prijzen als fallback.")
+
+                             barchart_df_parsed = pd.DataFrame()
+                             if scan_mode == "BarChart Optie Flow (CSV)" and 'barchart_raw' in st.session_state:
+                                 status_text.text("Parsen van Barchart Option Flow CSV via VBA logica...")
+                                 log("📊 Barchart 'Smart Money' filters toepassen...")
+                                 barchart_df_parsed = scanner.parse_barchart_flow(st.session_state['barchart_raw'])
+                                 log(f"   ✅ {len(barchart_df_parsed)} Smart Money Setup(s) succesvol vertaald naar verticals.")
+                                 # Limit current symbols to just the ones that actually passed the flow filters
+                                 if not barchart_df_parsed.empty:
+                                     current_symbols = list(barchart_df_parsed['symbol'].unique())
+                                 else:
+                                     current_symbols = []
 
                              # 1. Technical Filter (EMA) Batch
                              if use_ema and ema_spans:
@@ -527,13 +627,29 @@ with tab1:
 
                                      def run_gen(d_max):
                                          res = pd.DataFrame()
-                                         p = {'symbol': sym, 'min_dte': min_dte, 'koopadvies_p': koopadvies_p, 'only_koopadvies': only_koopadvies, 'max_dte': d_max, 
-                                             'width': width, 'iv': underlying_iv, 'strike_range_pct': strike_range_pct, 'min_strike_pct': min_strike_pct,
-                                             'itm_support_level': itm_support_level}
-                                         for strat in active_strategies:
-                                             fs = scanner.generate_spreads(chains, strat, price, p, log_func=log)
-                                             if fs is not None and not fs.empty:
-                                                 res = pd.concat([res, fs], ignore_index=True)
+                                         
+                                         if scan_mode == "BarChart Optie Flow (CSV)":
+                                             if not barchart_df_parsed.empty:
+                                                 sym_spreads = barchart_df_parsed[barchart_df_parsed['symbol'] == sym].copy()
+                                                 if not sym_spreads.empty:
+                                                     if underlying_iv > 0: sym_spreads['iv'] = underlying_iv
+                                                     res = sym_spreads
+                                         else:
+                                             widths_to_check = [int(width)]
+                                             if price > 0:
+                                                 if price < 50 and 5 not in widths_to_check:
+                                                     widths_to_check.append(5)
+                                                 if price > 400 and 15 not in widths_to_check:
+                                                     widths_to_check.append(15)
+                                                     
+                                             for w in widths_to_check:
+                                                 p = {'symbol': sym, 'min_dte': min_dte, 'koopadvies_p': koopadvies_p, 'only_koopadvies': only_koopadvies, 'max_dte': d_max, 
+                                                     'width': w, 'iv': underlying_iv, 'strike_range_pct': strike_range_pct, 'min_strike_pct': min_strike_pct,
+                                                     'itm_support_level': itm_support_level}
+                                                 for strat in active_strategies:
+                                                     fs = scanner.generate_spreads(chains, strat, price, p, log_func=log)
+                                                     if fs is not None and not fs.empty:
+                                                         res = pd.concat([res, fs], ignore_index=True)
                                          return res
 
                                      raw_spreads_all = run_gen(max_dte_to_use)
@@ -609,13 +725,19 @@ with tab1:
                                              log_func=log, koopadvies_p=koopadvies_p
                                          )
 
+                                         if scan_mode == "BarChart Optie Flow (CSV)":
+                                             d_min_dl, d_min_gm, d_max_dt, d_min_dt = -1.0, -1.0, 9999, 0
+                                         else:
+                                             d_min_dl, d_min_gm, d_max_dt, d_min_dt = min_delta, min_gamma, max_dte, min_dte
+                                             
                                          current_filters = {
                                              'min_pop': min_pop,
                                              'min_profit': min_profit,
-                                             'min_delta': min_delta,
-                                             'min_gamma': min_gamma,
-                                             'max_dte': max_dte,
-                                             'min_dte': min_dte, 'koopadvies_p': koopadvies_p, 'only_koopadvies': only_koopadvies
+                                             'min_delta': d_min_dl,
+                                             'min_gamma': d_min_gm,
+                                             'max_dte': d_max_dt,
+                                             'min_dte': d_min_dt, 
+                                             'koopadvies_p': koopadvies_p, 'only_koopadvies': only_koopadvies
                                          }
                                          if use_max_pain_filter:
                                              current_filters['max_pain_dist'] = max_pain_dist
@@ -902,7 +1024,8 @@ with tab2:
         st.divider()
         # Exporteer in Europees/Nederlands Excel formaat (puntkomma en komma als decimaal) met UTF-8 BOM
         csv = results.to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig')
-        st.download_button("Download CSV Resultaten (Voor Excel)", csv, "spreads_nederlands.csv", "text/csv")
+        file_name = f"{datetime.date.today().strftime('%Y%m%d')} RESULTATEN OPTIE SELECTIE SCAN.csv"
+        st.download_button("Download CSV Resultaten (Voor Excel)", csv, file_name, "text/csv")
     else:
         st.info("Start een scan om resultaten te zien.")
 
@@ -1389,3 +1512,170 @@ with tab4:
                             st.error("Kon voor geen van deze fondsen optiedata vinden op TWS.")
                     finally:
                         export_ib.disconnect()
+
+# --- TAB 5: DIVIDEND COVERED CALLS ---
+with tab5:
+    st.subheader("💰 Dividend Covered Call Scanner")
+    st.markdown("Scan lijsten op aandelen die aankomende week dividend uitkeren, op zoek naar Covered Call kansen. Ideaal voor het opvangen van dividend én premie waarbij de strike buiten bereik (OTM) wordt gekozen.")
+    
+    col_div1, col_div2 = st.columns([1, 2])
+    with col_div1:
+        div_list_choice = st.selectbox("Kies of plak symbolen", ["S&P 100", "Top 10 Tech", "AEX", "Eigen (upload/barchart)"], key="div_list_choice")
+        if div_list_choice == "S&P 100":
+            div_symbols = ["AAPL", "MSFT", "AMZN", "NVDA", "GOOGL", "META", "TSLA", "BRK.B", "UNH", "JNJ", "XOM", "JPM", "V", "PG", "MA", "HD", "CVX", "ABBV", "LLY", "MRK"]
+        elif div_list_choice == "Top 10 Tech":
+            div_symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "NFLX", "AMD", "INTC"]
+        elif div_list_choice == "AEX":
+            div_symbols = ["ADYEN", "ASML", "UNA", "RDSA", "INGA", "HEIA", "KPN", "DSM", "RAND", "MT", "AKZA", "PHIA"]
+        else:
+            div_symbols = symbols_to_scan # Fallback from main sidebar
+
+        target_gain_pct = st.slider("Beoogde Covered Call Winstmarge (%)", min_value=1, max_value=20, value=5, step=1, help="De aanbevolen Call strike wordt op deze afstand boven de huidige koers gelegd.")
+        days_ahead = st.slider("Zoek Ex-Dividend in komende X dagen", min_value=2, max_value=60, value=14)
+    
+    if st.button("Scan Aankomende Dividenden 🚀", type="primary"):
+        if not div_symbols:
+            st.error("Selecteer een lijst met symbolen om te scannen.")
+        else:
+            st.info(f"Start zoeken naar dividenden in {len(div_symbols)} aandelen...")
+            div_ib = IBClient()
+            success, msg = div_ib.connect(tws_host, tws_port, random.randint(100, 999))
+            
+            dividend_results = []
+            if success:
+                div_ib.set_data_type(1 if use_live_data else 3)
+                progress_bar_div = st.progress(0)
+                status_text_div = st.empty()
+                
+                try:
+                    import yfinance as yf
+                    import datetime
+                    import pandas as pd
+                    now = pd.Timestamp.now().date()
+                    for i, sym in enumerate(div_symbols):
+                        progress_bar_div.progress((i + 1) / len(div_symbols))
+                        status_text_div.text(f"Gegevens ophalen voor {sym}...")
+                        
+                        div_info = div_ib.get_dividend_info(sym)
+                        ex_div = div_info.get('ex_div_date')
+                        
+                        if ex_div:
+                            days_to_ex = (ex_div - now).days
+                            if 0 <= days_to_ex <= days_ahead:
+                                contract = Stock(sym, 'SMART', 'USD')
+                                mkt = div_ib.get_market_data_snapshot(contract, use_hist_fallback=True)
+                                price = mkt.get('price', 0.0)
+                                if price <= 0:
+                                    try:
+                                        t = yf.Ticker(sym)
+                                        df_hist = t.history(period="1d")
+                                        if not df_hist.empty:
+                                            price = df_hist['Close'].iloc[-1]
+                                    except:
+                                        price = 0.0
+                                
+                                if price > 0:
+                                    target_strike = price * (1 + target_gain_pct / 100.0)
+                                    
+                                    # Voeg greeks toe om de echte call premie te vinden
+                                    sec_type_str = 'STK'
+                                    chains = div_ib.get_option_chains_params(sym, sec_type=sec_type_str)
+                                    real_exp = None
+                                    final_strike = target_strike
+                                    call_ask = 0.0
+                                    call_bid = 0.0
+                                    
+                                    if chains:
+                                        # Pak de chain (voorkeur SMART)
+                                        chain = chains[0]
+                                        for c in chains:
+                                            if getattr(c, 'exchange', '') == 'SMART':
+                                                chain = c
+                                                break
+                                                
+                                        valid_exps = sorted(chain.expirations)
+                                        # Zoek een expiratie datum NA de verwachte dividend payout, standaard 14 dagen
+                                        target_exp_date = now + datetime.timedelta(days=int(max(14, days_to_ex + 2)))
+                                        target_exp_str = target_exp_date.strftime('%Y%m%d')
+                                        
+                                        for exp in valid_exps:
+                                            if exp >= target_exp_str:
+                                                real_exp = exp
+                                                break
+                                        if not real_exp and valid_exps:
+                                            real_exp = valid_exps[-1]
+                                            
+                                        if real_exp:
+                                            valid_strikes = sorted([s for s in chain.strikes if s >= target_strike])
+                                            if valid_strikes:
+                                                final_strike = valid_strikes[0]
+                                            elif chain.strikes:
+                                                final_strike = max(chain.strikes)
+                                                
+                                            # Haal prijs op van de target Call
+                                            greeks = div_ib.get_chain_greeks_and_oi(sym, real_exp, [final_strike])
+                                            if not greeks.empty:
+                                                # C voor Call
+                                                calls = greeks[greeks['right'] == 'C']
+                                                if not calls.empty:
+                                                    call_ask = float(calls['ask'].iloc[0])
+                                                    call_bid = float(calls['bid'].iloc[0])
+                                                    
+                                    div_rate = div_info.get('dividend_rate', 0.0)
+                                    used_premie = call_bid if call_bid > 0 else call_ask
+                                    
+                                    # Berekeningen
+                                    # Winst bij uitoefening (als koers > strike)
+                                    winst_executie = ((final_strike - price) + used_premie + div_rate) * 100
+                                    # Winst bij koersstijging van 5% ZONDER uitoefening (optie loopt waardeloos of gedeeltelijk af)
+                                    # (Koers stijgt puur 5% plus premie ontvangen) - we gaan er vanuit dat je de winst behoudt
+                                    winst_5pct_stijging = ((price * 0.05) + used_premie + div_rate) * 100
+                                    # BEP (De kostprijs - ontvangen premie - dividend_bijdrage)
+                                    bep = price - used_premie - div_rate
+                                    
+                                    dividend_results.append({
+                                        'Symbol': sym,
+                                        'Koers': round(price, 2),
+                                        'Ex-Div Datum': ex_div.strftime('%d-%m-%Y'),
+                                        'Dagen tot Ex-Div': days_to_ex,
+                                        'Div. Yield (%)': round(div_info.get('dividend_yield', 0.0) * 100, 2),
+                                        'Div. Bedrag': round(div_rate, 2),
+                                        'Call Exp': real_exp if real_exp else 'N/A',
+                                        'Call Strike': round(final_strike, 2),
+                                        'Call Bied (Premie)': round(call_bid, 2) if call_bid > 0 else 'N/A',
+                                        'Call Laatprijs': round(call_ask, 2) if call_ask > 0 else 'N/A',
+                                        'BEP': round(bep, 2),
+                                        'Winst bij Uitoefening ($)': round(winst_executie, 2),
+                                        'Winst +5% Stijging ($)': round(winst_5pct_stijging, 2)
+                                    })
+                                    
+                except Exception as e:
+                    st.error(f"Fout tijdens ophalen dividenden: {e}")
+                finally:
+                    div_ib.disconnect()
+                    
+                status_text_div.text("Gereed!")
+                if dividend_results:
+                    df_div = pd.DataFrame(dividend_results)
+                    df_div = df_div.sort_values(by='Dagen tot Ex-Div')
+                    st.session_state['dividend_results'] = df_div
+                    st.success(f"{len(dividend_results)} aandelen gevonden die dividend uitkeren!")
+                    st.dataframe(df_div, use_container_width=True, hide_index=True)
+                else:
+                    st.warning("Geen dividenden gevonden voor de geselecteerde aandelen in deze periode.")
+            else:
+                st.error("Kon niet verbinden met TWS voor prijsinformatie.")
+
+    if 'dividend_results' in st.session_state and not st.session_state['dividend_results'].empty:
+        import io
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+            st.session_state['dividend_results'].to_excel(writer, index=False, sheet_name='Dividend_CC')
+        
+        st.download_button(
+            label="Exporteer Dividend Lijst (Excel)",
+            data=buffer.getvalue(),
+            file_name=f"Dividend_Covered_Calls_{datetime.date.today().strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary"
+        )

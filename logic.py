@@ -596,6 +596,83 @@ class SpreadScanner:
                 log_func(f"   ⚠️ 0 {strategy} kandidaten. Skips door: {', '.join(summary)}")
               
         return pd.DataFrame(spreads)
+    def parse_barchart_flow(self, df):
+        """
+        Parses a Barchart Option Flow DataFrame, filters for 'Smart Money' trades
+        (large size + specific execution codes), and proposes vertical spreads.
+        Follows user's VBA logic rules.
+        """
+        spreads = []
+        if df.empty: return pd.DataFrame()
+            
+        for idx, row in df.iterrows():
+            try:
+                t_type = str(row.get('Type', '')).upper().strip()
+                t_strike = float(row.get('Strike', 0))
+                t_price = float(row.get('Price~', 0))
+                t_dte = int(row.get('DTE', 0))
+                t_size = int(row.get('Size', 0))
+                t_delta = float(row.get('Delta', 0))
+                t_code = str(row.get('Code', '')).strip()
+                symbol = str(row.get('Symbol', '')).strip()
+                
+                # DTE filter
+                if t_dte < 7 or t_dte > 365: continue
+                # Size filter
+                if t_size < 800: continue
+                
+                # Code filter
+                valid_codes = ["MLCT", "MLFT", "MLAT", "TLFT", "TLAT", "SLCN", "ISOI", "SLAN", "SLAI"]
+                if t_code not in valid_codes: continue
+                
+                short_strike = None
+                strategy = None
+                
+                # ITM CALL -> Bull Call Vertical
+                if t_type == "CALL":
+                    if t_strike < t_price and 0.35 <= t_delta <= 0.95:
+                        strategy = 'BullCall'
+                        if t_strike < 180: short_strike = t_strike + 20
+                        elif t_strike < 200: short_strike = t_strike + 15
+                        else: short_strike = t_strike + 10
+                
+                # ITM PUT -> Bear Put Vertical
+                elif t_type == "PUT":
+                    if t_strike > t_price and -0.95 <= t_delta <= -0.30:
+                        strategy = 'BearPut'
+                        if t_strike > 220: short_strike = t_strike - 20
+                        elif t_strike > 200: short_strike = t_strike - 15
+                        else: short_strike = t_strike - 10
+                        
+                if strategy and short_strike:
+                    # Parse expires (e.g., '2026-05-15T16:30:00-05:00' -> '20260515')
+                    raw_exp = str(row.get('Expires', ''))
+                    if 'T' in raw_exp:
+                        exp_date = raw_exp.split('T')[0].replace('-', '')
+                    else:
+                        exp_date = raw_exp.replace('-', '')
+                        
+                    iv_str = str(row.get('IV', '0')).replace('%', '')
+                    base_iv = float(iv_str) / 100.0 if iv_str.replace('.','',1).isdigit() else 0.0
+                        
+                    spreads.append({
+                        'symbol': symbol,
+                        'strategy': strategy,
+                        'expiry': exp_date,
+                        'dte': t_dte,
+                        'strike_buy': t_strike,
+                        'strike_sell': short_strike,
+                        'right': 'C' if strategy == 'BullCall' else 'P',
+                        'width': abs(t_strike - short_strike),
+                        'iv': base_iv,
+                        'barchart_size': t_size,
+                        'barchart_premium': row.get('Premium', 0)
+                    })
+            except Exception as e:
+                if self.log_func: self.log_func(f"Fout bij parsen rij {idx}: {e}")
+                continue
+                
+        return pd.DataFrame(spreads)
 
     def analyze_market_structure(self, chain_data):
         """
