@@ -3,6 +3,8 @@ import pandas as pd
 import numpy as np
 import asyncio
 import nest_asyncio
+import datetime
+import yfinance as yf
 
 # Fix for Streamlit's event loop issue with ib_insync
 # Apply nest_asyncio to allow nested event loops (CRITICAL for Streamlit)
@@ -1724,9 +1726,6 @@ with tab5:
                 status_text_div = st.empty()
                 
                 try:
-                    import yfinance as yf
-                    import datetime
-                    import pandas as pd
                     now = pd.Timestamp.now().date()
                     for i, sym in enumerate(div_symbols):
                         progress_bar_div.progress((i + 1) / len(div_symbols))
