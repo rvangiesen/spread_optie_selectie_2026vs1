@@ -312,7 +312,6 @@ class IBClient:
         import queue
         import time
         import yfinance as yf
-        import pandas as pd
         from ib_insync import util
 
         # 1. Try TWS (Direct Async with Loop-Pumping)
@@ -468,7 +467,6 @@ class IBClient:
         import asyncio
         import time
         from ib_insync import util
-        import pandas as pd
         
         # Qualify first
         qualified = self.qualify_contract_safe(contract)
@@ -732,7 +730,6 @@ class IBClient:
                  'und_price': greeks['und_price']
              })
              
-        import pandas as pd
         return pd.DataFrame(data_list)
     def get_scanner_data(self, scan_code='MOST_ACTIVE', instrument='STK', location='STK.US.MAJOR', rows=50):
         """
@@ -963,7 +960,6 @@ class IBClient:
     def get_dividend_info(self, symbol):
         import yfinance as yf
         import datetime
-        import pandas as pd
         
         yf_sym = symbol
         if yf_sym == 'SPX': yf_sym = '^SPX'
