@@ -267,6 +267,136 @@ else:
     use_stoch_rsi = False
     stoch_entry_a = stoch_entry_b = stoch_entry_c = False
 
+@st.dialog("🔬 Functie onderzoek Filters & Criteria")
+def run_research_dialog():
+    st.write(
+        "Dit onderzoek voert een geautomatiseerde parameter-sweep uit over 16 verschillende selectieparameters van het AntiGravity-systeem "
+        "(waaronder spreadbreedte, winstkans, strike range, Max Pain buffer, GEX/DEX sentiment en technische filters).\n\n"
+        "Er wordt een wiskundig onderbouwd Word-rapport (.docx) gegenereerd met statistieken en de top 10 spreads per parameter-instelling."
+    )
+    
+    # Check if we have cached scan results
+    has_cache = 'results' in st.session_state and not st.session_state.results.empty
+    
+    mode = st.radio(
+        "Kies Gegevensbron:",
+        ["Referentie SPY Scan (yfinance - Aanbevolen)", "Huidige Gecachte Scangegevens gebruiken"] if has_cache else ["Referentie SPY Scan (yfinance - Aanbevolen)"]
+    )
+    
+    if st.button("Start Onderzoek", type="primary", use_container_width=True):
+        progress_bar = st.progress(0.0)
+        status_text = st.empty()
+        log_ph = st.expander("Gedetailleerde Logboeken", expanded=True)
+        
+        log_lines = []
+        def log_cb(msg):
+            log_lines.append(msg)
+            log_ph.code("\n".join(log_lines))
+            
+        def progress_cb(pct, msg):
+            progress_bar.progress(pct)
+            status_text.text(f"{int(pct*100)}% - {msg}")
+            
+        try:
+            import os
+            downloads_dir = os.path.join(os.path.expanduser('~'), 'Downloads')
+            output_file = os.path.join(downloads_dir, "Functie_onderzoek_filters_criteria.docx")
+            
+            # Check if output_file is writable (if it exists and is open/locked in Word)
+            if os.path.exists(output_file):
+                try:
+                    with open(output_file, 'r+'):
+                        pass
+                except PermissionError:
+                    # File is locked, find a writable fallback name
+                    base_name = "Functie_onderzoek_filters_criteria"
+                    ext = ".docx"
+                    idx = 1
+                    while True:
+                        fallback_file = os.path.join(downloads_dir, f"{base_name}_{idx}{ext}")
+                        if not os.path.exists(fallback_file):
+                            output_file = fallback_file
+                            break
+                        try:
+                            with open(fallback_file, 'r+'):
+                                output_file = fallback_file
+                                break
+                        except PermissionError:
+                            idx += 1
+                    log_cb(f"⚠️ Waarschuwing: 'Functie_onderzoek_filters_criteria.docx' is geopend in Word.")
+                    log_cb(f"   Rapport wordt opgeslagen als: {os.path.basename(output_file)}")
+
+            from research_runner import FCResearchRunner
+            runner = FCResearchRunner()
+            
+            # Fetch SPY chain
+            ref_data = runner.fetch_reference_data("SPY", log_callback=log_cb)
+            progress_cb(0.1, "Gegevens geladen. Sweeps starten...")
+            
+            results = runner.run_all_sweeps(ref_data, progress_callback=progress_cb, log_callback=log_cb)
+            
+            runner.build_docx_report(ref_data, results, output_file)
+            
+            # Also save a copy in workspace for application download button fallback
+            try:
+                import shutil
+                shutil.copy(output_file, "Functie_onderzoek_filters_criteria.docx")
+            except Exception:
+                pass
+                
+            st.session_state.research_completed = True
+            st.session_state.research_file_path = output_file
+            st.success(f"✅ Winst-onderzoek succesvol voltooid!\n\nHebt rapport is automatisch opgeslagen in je Downloads map:\n`{output_file}`")
+            
+            # Button to open file directly in Microsoft Word
+            if st.button("📖 Open Rapport direct in Word", type="primary", use_container_width=True):
+                try:
+                    os.startfile(output_file)
+                    st.success("Word wordt gestart...")
+                except Exception as e:
+                    st.error(f"Kon Word niet automatisch openen: {e}")
+            
+            with open(output_file, "rb") as f:
+                st.download_button(
+                    label="📥 Handmatig Downloaden (indien nodig)",
+                    data=f,
+                    file_name=os.path.basename(output_file),
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    use_container_width=True
+                )
+        except Exception as e:
+            st.error(f"Er is een fout opgetreden: {e}")
+
+st.sidebar.markdown("---")
+if st.sidebar.button("🔬 Functie onderzoek F&C", help="Voer een statistische sweep uit over alle F&C-parameters en genereer een Word-rapport"):
+    run_research_dialog()
+
+# Show persistent download & open buttons in sidebar if research has been completed
+import os
+if st.session_state.get('research_completed'):
+    local_output_file = st.session_state.get('research_file_path')
+    if not local_output_file:
+        downloads_dir = os.path.join(os.path.expanduser('~'), 'Downloads')
+        local_output_file = os.path.join(downloads_dir, "Functie_onderzoek_filters_criteria.docx")
+    
+    if os.path.exists(local_output_file):
+        col_dl1, col_dl2 = st.sidebar.columns(2)
+        with col_dl1:
+            with open(local_output_file, "rb") as f:
+                st.sidebar.download_button(
+                    label="📥 Download",
+                    data=f,
+                    file_name=os.path.basename(local_output_file),
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    use_container_width=True
+                )
+        with col_dl2:
+            if st.sidebar.button("📖 Open Word", use_container_width=True):
+                try:
+                    os.startfile(local_output_file)
+                except Exception:
+                    pass
+
 # Main Area
 st.title("Optie Contract Selectie Tool - AntiGravity")
 
@@ -882,16 +1012,48 @@ with tab2:
         results = st.session_state['results']
         st.subheader(f"Gevonden Resultaten ({len(results)})")
 
-        # Display Columns
+        # Transformeer koopadvies om de strike-waarden en status te tonen
+        if 'koopadvies' in results.columns and 'koopadvies_status' not in results.columns:
+            results['koopadvies_status'] = results['koopadvies']
+            
+            # Helper om strike-waarden netjes te formatteren
+            def format_koopadvies_strikes(row):
+                strat = row.get('strategy', '')
+                right = row.get('right', '')
+                status = row.get('koopadvies_status', '❌')
+                icon = "🟢" if status == "✅" else "🔴"
+                
+                if strat == 'IronCondor':
+                    p_buy = row.get('strike_p_buy', 0.0)
+                    p_sell = row.get('strike_p_sell', 0.0)
+                    c_sell = row.get('strike_c_sell', 0.0)
+                    c_buy = row.get('strike_c_buy', 0.0)
+                    strikes_str = f"P {p_buy:.1f}/{p_sell:.1f} | C {c_sell:.1f}/{c_buy:.1f}"
+                elif strat == 'Strangle':
+                    p_buy = row.get('strike_p_buy', 0.0)
+                    c_buy = row.get('strike_c_buy', 0.0)
+                    strikes_str = f"P {p_buy:.1f} | C {c_buy:.1f}"
+                else:
+                    buy = row.get('strike_buy', 0.0)
+                    sell = row.get('strike_sell', 0.0)
+                    if sell > 0:
+                        strikes_str = f"{right} {buy:.1f}/{sell:.1f}"
+                    else:
+                        strikes_str = f"{right} {buy:.1f}"
+                return f"{icon} {strikes_str}"
+                
+            results['koopadvies'] = results.apply(format_koopadvies_strikes, axis=1)
+
+        # Weergave kolommen
         display_cols = [
-            'symbol', 'underlying_price', 'AG_Score', 'strategy', 'expiry', 'strike_buy', 'strike_sell', 'width', 
+            'koopadvies', 'symbol', 'underlying_price', 'AG_Score', 'strategy', 'expiry', 'strike_buy', 'strike_sell', 'width', 
             'strike_p_buy', 'strike_p_sell', 'strike_c_sell', 'strike_c_buy',
-            'spread_mid_abs', 'spread_ask_abs', 'b_l_verschil', 'max_profit', 'pop',
+            'spread_mid_abs', 'spread_ask_abs', 'b_l_verschil', 'max_profit', 'sluitingswinst', 'pop',
             'TTP (D)', 'TEI Score', 'Efficient',
-            'BEP', 'bep_afstand_pct', 'koopadvies', 'supports', 'resistances',
-            'Sentiment', 'price_buy', 'price_sell', 'net_extrinsic',
-            'delta_buy', 'delta_sell', 'delta', 'gamma', 'theta', 'dte', 
-            'EMA_Cross', 'Stoch_RSI', 'iv_percentile', 'iv_rank', 'underlying_iv', 'expected_move', 
+            'BEP', 'bep_afstand_pct', 'supports', 'resistances',
+            'Sentiment', 'price_buy', 'price_sell', 'net_extrinsic', 'expected_move',
+            'delta_buy', 'delta_sell', 'delta', 'delta_koers', 'gamma', 'theta', 'dte', 
+            'EMA_Cross', 'Stoch_RSI', 'iv_percentile', 'iv_rank', 'underlying_iv', 
             'gamma_flip', 'call_wall', 'put_wall', 'gex_wall'
         ]
 
@@ -936,7 +1098,6 @@ with tab2:
             "spread_ask_abs": st.column_config.NumberColumn("Laatprijs", format="$%.2f"),
             "BEP": st.column_config.NumberColumn("BEP", format="$%.2f", help="Break Even Point gebaseerd op Laat prijs"),
             "bep_afstand_pct": st.column_config.NumberColumn("BEP Afstand", format="%.1f%%", help="Afstand in % tot het Break-Even Punt"),
-            "koopadvies": st.column_config.TextColumn("K", help="✅ als winst >= Target 1% marge op Laatprijs"),
             "EMA_Cross": st.column_config.TextColumn("EMA 8/50"),
             "Stoch_RSI": st.column_config.TextColumn("Stoch RSI Status"),
             "Sentiment": st.column_config.TextColumn("Sentiment"),
@@ -946,6 +1107,7 @@ with tab2:
             "delta_buy": st.column_config.NumberColumn("Delta Buy", format="%.3f"),
             "delta_sell": st.column_config.NumberColumn("Delta Sell", format="%.3f"),
             "delta": st.column_config.NumberColumn("Net Delta", format="%.3f"),
+            "delta_koers": st.column_config.NumberColumn("Delta Koers", format="%.3f", help="Snelheid en versnelling van winstrespons: abs(Net Delta) + Net Gamma"),
             "gamma": st.column_config.NumberColumn("Gamma", format="%.4f"),
             "theta": st.column_config.NumberColumn("Theta", format="%.3f"),
             "dte": st.column_config.NumberColumn("DTE", format="%d", help="Rood = Earnings beperking kon niet worden gehaald"),
@@ -954,7 +1116,10 @@ with tab2:
             "max_pain_selection": st.column_config.NumberColumn("Max Pain 2", format="$%.2f"),
             "max_pain_buffer_ok": st.column_config.CheckboxColumn("MP Buffer OK", help="Spread is > 5 punten van Max Pain"),
             "dist_max_pain": st.column_config.NumberColumn("MP Afstand", format="$%.2f"),
-            "koopadvies": st.column_config.TextColumn("Koopadvies", help="✅ als winstgevend bij p% beweging"),
+            "max_profit": st.column_config.NumberColumn("Max Winst", format="$%.2f", help="Maximale winst in dollars"),
+            "sluitingswinst": st.column_config.NumberColumn("Sluitingswinst (EM)", format="$%.2f", help="Geschatte winst/verlies bij vervroegde sluiting (na 5 dagen of halverwege) bij 1 Expected Move koersstijging/-daling in gunstige richting"),
+            "pop": st.column_config.NumberColumn("Kans op Winst (PoP)", format="%.1f%%", help="Probability of Profit"),
+            "koopadvies": st.column_config.TextColumn("Koopadvies", help="Groen = Koopadvies (winstgevend bij p% beweging), Rood = Geen koopadvies", pinned=True),
             "TTP (D)": st.column_config.NumberColumn("TTP (Dagen)", format="%.1f", help="Days to Profit ($5 doel)"),
             "TEI Score": st.column_config.NumberColumn("TEI Score", format="%.2f", help="Target Efficiency Index (BS Model)"),
             "Efficient": st.column_config.TextColumn("Efficiënt", help="Blauw = TEI Score > 1.2 en TTP < DTE/2"),
@@ -963,17 +1128,28 @@ with tab2:
         # Ensure columns exist before displaying
         final_cols = [c for c in display_cols if c in results.columns]
 
-        # Helper for Red DTE when relaxed_earnings is True
+        # Helper voor rode DTE (bij relaxed_earnings) en Koopadvies achtergrondkleur
         def style_results(row):
             styles = [''] * len(row)
             if 'relaxed_earnings' in row.index and row['relaxed_earnings'] == True:
-                # Find index of 'dte' in row
+                # Vind index van 'dte' in rij
                 if 'dte' in row.index:
                     try:
                         idx = row.index.get_loc('dte')
                         styles[idx] = 'color: red; font-weight: bold'
                     except:
                         pass
+            # Kleur achtergrond van Koopadvies kolom op basis van status
+            if 'koopadvies' in row.index and 'koopadvies_status' in row.index:
+                try:
+                    k_idx = row.index.get_loc('koopadvies')
+                    status = row['koopadvies_status']
+                    if status == "✅":
+                        styles[k_idx] = 'background-color: #15803d; color: white; font-weight: bold;'
+                    else:
+                        styles[k_idx] = 'background-color: #b91c1c; color: white; font-weight: bold;'
+                except:
+                    pass
             return styles
 
         # Filter config to only existing columns
