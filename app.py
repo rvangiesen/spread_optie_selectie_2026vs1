@@ -3,6 +3,8 @@ import pandas as pd
 import numpy as np
 import asyncio
 import nest_asyncio
+import datetime
+import yfinance as yf
 
 # Fix for Streamlit's event loop issue with ib_insync
 # Apply nest_asyncio to allow nested event loops (CRITICAL for Streamlit)
@@ -96,7 +98,7 @@ elif "Neutraal" in marktvisie:
 st.sidebar.markdown(f"**Actieve Strategieën:** {', '.join(active_strategies)}")
 
 # Batch Scanner Input
-scan_mode = st.sidebar.selectbox("Scan Modus", ["Enkel Symbool", "Batch Scan (Lijst)", "Batch Scan (Bestand)", "Live TWS Scanner"])
+scan_mode = st.sidebar.selectbox("Scan Modus", ["Enkel Symbool", "Batch Scan (Lijst)", "Batch Scan (Bestand)", "Live TWS Scanner", "BarChart Optie Flow (CSV)", "Auto-Pilot (Downloads map)"])
 
 symbols_to_scan = []
 scan_code = "MOST_ACTIVE" 
@@ -131,8 +133,11 @@ elif scan_mode == "Batch Scan (Bestand)":
             else:
                 df = pd.read_excel(uploaded_file)
 
-            if 'Symbol' in df.columns:
-                symbols_to_scan = df['Symbol'].tolist()
+            # Normalize columns to uppercase to avoid case-sensitivity issues
+            df.columns = df.columns.str.upper().str.strip()
+            
+            if 'SYMBOL' in df.columns:
+                symbols_to_scan = df['SYMBOL'].dropna().tolist()
                 st.sidebar.success(f"{len(symbols_to_scan)} symbolen geladen.")
             else:
                 st.sidebar.error("Bestand moet kolom 'Symbol' bevatten.")
@@ -140,12 +145,50 @@ elif scan_mode == "Batch Scan (Bestand)":
             st.sidebar.error(f"Fout bij laden: {e}")
     sec_type = "Aandeel" # Assume stocks for custom lists usually
 
+elif scan_mode == "BarChart Optie Flow (CSV)":
+    st.sidebar.info("Importeer Barchart CSV's om 'Smart Money' trade setups te genereren.")
+    barchart_files = st.sidebar.file_uploader("Upload Barchart CSV", type=['csv'], accept_multiple_files=True)
+    barchart_dfs = []
+    
+    if barchart_files:
+        for f in barchart_files:
+            try:
+                df = pd.read_csv(f)
+                # Normalize columns to uppercase
+                df.columns = df.columns.str.upper().str.strip()
+                if 'SYMBOL' in df.columns:
+                    # Rename back to Symbol for compatibility downstream if necessary, or keep SYMBOL
+                    df = df.rename(columns={'SYMBOL': 'Symbol'})
+                    barchart_dfs.append(df)
+            except Exception as e:
+                st.sidebar.error(f"Fout in {f.name}: {e}")
+        
+        if barchart_dfs:
+            combined_barchart = pd.concat(barchart_dfs, ignore_index=True)
+            st.session_state['barchart_raw'] = combined_barchart
+            symbols_to_scan = list(combined_barchart['Symbol'].dropna().unique())
+            st.sidebar.success(f"{len(barchart_dfs)} bestand(en) ingeladen. {len(symbols_to_scan)} unieke symbolen.")
+        else:
+            st.session_state['barchart_raw'] = pd.DataFrame()
+            st.sidebar.warning("Geen geldige symbolen in de CSV(s) gevonden.")
+    sec_type = "Aandeel"
+
 elif scan_mode == "Live TWS Scanner":
     st.sidebar.info("Haalt live 'Most Active', 'Top Gainers' etc. op van TWS")
     scan_code = st.sidebar.selectbox("Scan Criteria", ["MOST_ACTIVE", "TOP_PERC_GAIN", "HOT_BY_VOLUME", "OPT_VOLUME_MOST_ACTIVE"])
     num_rows = st.sidebar.slider("Aantal resultaten", 10, 50, 20)
     sec_type = "Aandeel"
     # Logic to fetch happens inside "Start Scan" to avoid premature connection
+
+elif scan_mode == "Auto-Pilot (Downloads map)":
+    st.sidebar.info("Wacht op een specifiek tijdstip en laadt dan de 'AG SYMBOLS VOOR SCANNER' file uit je Downloads map.")
+    
+    import datetime
+    default_t = datetime.time(15, 40)
+    auto_pilot_time = st.sidebar.time_input("Start Tijd (Uur/Min)", value=default_t, help="Kies bijv. 15:40 voor zomertijd of 16:40 / 14:40 voor wintertijd (10 min na beursopening).")
+    
+    # We delay loading symbols_to_scan until the actual execute phase so the user can replace the file while waiting
+    sec_type = "Aandeel"
 
 # Filters
 st.sidebar.subheader("Filters & Criteria")
@@ -228,6 +271,136 @@ else:
     use_stoch_rsi = False
     stoch_entry_a = stoch_entry_b = stoch_entry_c = False
 
+@st.dialog("🔬 Functie onderzoek Filters & Criteria")
+def run_research_dialog():
+    st.write(
+        "Dit onderzoek voert een geautomatiseerde parameter-sweep uit over 16 verschillende selectieparameters van het AntiGravity-systeem "
+        "(waaronder spreadbreedte, winstkans, strike range, Max Pain buffer, GEX/DEX sentiment en technische filters).\n\n"
+        "Er wordt een wiskundig onderbouwd Word-rapport (.docx) gegenereerd met statistieken en de top 10 spreads per parameter-instelling."
+    )
+    
+    # Check if we have cached scan results
+    has_cache = 'results' in st.session_state and not st.session_state.results.empty
+    
+    mode = st.radio(
+        "Kies Gegevensbron:",
+        ["Referentie SPY Scan (yfinance - Aanbevolen)", "Huidige Gecachte Scangegevens gebruiken"] if has_cache else ["Referentie SPY Scan (yfinance - Aanbevolen)"]
+    )
+    
+    if st.button("Start Onderzoek", type="primary", use_container_width=True):
+        progress_bar = st.progress(0.0)
+        status_text = st.empty()
+        log_ph = st.expander("Gedetailleerde Logboeken", expanded=True)
+        
+        log_lines = []
+        def log_cb(msg):
+            log_lines.append(msg)
+            log_ph.code("\n".join(log_lines))
+            
+        def progress_cb(pct, msg):
+            progress_bar.progress(pct)
+            status_text.text(f"{int(pct*100)}% - {msg}")
+            
+        try:
+            import os
+            downloads_dir = os.path.join(os.path.expanduser('~'), 'Downloads')
+            output_file = os.path.join(downloads_dir, "Functie_onderzoek_filters_criteria.docx")
+            
+            # Check if output_file is writable (if it exists and is open/locked in Word)
+            if os.path.exists(output_file):
+                try:
+                    with open(output_file, 'r+'):
+                        pass
+                except PermissionError:
+                    # File is locked, find a writable fallback name
+                    base_name = "Functie_onderzoek_filters_criteria"
+                    ext = ".docx"
+                    idx = 1
+                    while True:
+                        fallback_file = os.path.join(downloads_dir, f"{base_name}_{idx}{ext}")
+                        if not os.path.exists(fallback_file):
+                            output_file = fallback_file
+                            break
+                        try:
+                            with open(fallback_file, 'r+'):
+                                output_file = fallback_file
+                                break
+                        except PermissionError:
+                            idx += 1
+                    log_cb(f"⚠️ Waarschuwing: 'Functie_onderzoek_filters_criteria.docx' is geopend in Word.")
+                    log_cb(f"   Rapport wordt opgeslagen als: {os.path.basename(output_file)}")
+
+            from research_runner import FCResearchRunner
+            runner = FCResearchRunner()
+            
+            # Fetch SPY chain
+            ref_data = runner.fetch_reference_data("SPY", log_callback=log_cb)
+            progress_cb(0.1, "Gegevens geladen. Sweeps starten...")
+            
+            results = runner.run_all_sweeps(ref_data, progress_callback=progress_cb, log_callback=log_cb)
+            
+            runner.build_docx_report(ref_data, results, output_file)
+            
+            # Also save a copy in workspace for application download button fallback
+            try:
+                import shutil
+                shutil.copy(output_file, "Functie_onderzoek_filters_criteria.docx")
+            except Exception:
+                pass
+                
+            st.session_state.research_completed = True
+            st.session_state.research_file_path = output_file
+            st.success(f"✅ Winst-onderzoek succesvol voltooid!\n\nHebt rapport is automatisch opgeslagen in je Downloads map:\n`{output_file}`")
+            
+            # Button to open file directly in Microsoft Word
+            if st.button("📖 Open Rapport direct in Word", type="primary", use_container_width=True):
+                try:
+                    os.startfile(output_file)
+                    st.success("Word wordt gestart...")
+                except Exception as e:
+                    st.error(f"Kon Word niet automatisch openen: {e}")
+            
+            with open(output_file, "rb") as f:
+                st.download_button(
+                    label="📥 Handmatig Downloaden (indien nodig)",
+                    data=f,
+                    file_name=os.path.basename(output_file),
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    use_container_width=True
+                )
+        except Exception as e:
+            st.error(f"Er is een fout opgetreden: {e}")
+
+st.sidebar.markdown("---")
+if st.sidebar.button("🔬 Functie onderzoek F&C", help="Voer een statistische sweep uit over alle F&C-parameters en genereer een Word-rapport"):
+    run_research_dialog()
+
+# Show persistent download & open buttons in sidebar if research has been completed
+import os
+if st.session_state.get('research_completed'):
+    local_output_file = st.session_state.get('research_file_path')
+    if not local_output_file:
+        downloads_dir = os.path.join(os.path.expanduser('~'), 'Downloads')
+        local_output_file = os.path.join(downloads_dir, "Functie_onderzoek_filters_criteria.docx")
+    
+    if os.path.exists(local_output_file):
+        col_dl1, col_dl2 = st.sidebar.columns(2)
+        with col_dl1:
+            with open(local_output_file, "rb") as f:
+                st.sidebar.download_button(
+                    label="📥 Download",
+                    data=f,
+                    file_name=os.path.basename(local_output_file),
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    use_container_width=True
+                )
+        with col_dl2:
+            if st.sidebar.button("📖 Open Word", use_container_width=True):
+                try:
+                    os.startfile(local_output_file)
+                except Exception:
+                    pass
+
 # Main Area
 st.title("Optie Contract Selectie Tool - AntiGravity")
 
@@ -237,7 +410,7 @@ today = datetime.datetime.now().weekday()
 if today >= 5: # 5 = Saturday, 6 = Sunday
     st.warning("⚠️ **Weekend Modus Actief**: TWS levert momenteel beperkte live data. De scanner gebruikt de prijzen van afgelopen vrijdag (sluiting) als fallback voor berekeningen.")
 
-tab1, tab2, tab3, tab4 = st.tabs(["🚀 Scanner", "📊 Resultaten", "🛒 Orders", "📈 S&P 500 Spreads"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["🚀 Scanner", "📊 Resultaten", "🛒 Orders", "📈 S&P 500 Spreads", "💰 Dividend CC"])
 
 # --- TAB 1: SCANNER ---
 with tab1:
@@ -250,19 +423,66 @@ with tab1:
 
         col1, col2, col3 = st.columns(3)
         with col1:
-             if st.button("Start Scan", type="primary"):
-                 # EXECUTION logic...
+            start_pressed = st.button("Start Scan / Activeer Auto-Pilot", type="primary")
 
-                 # Use a random client ID to avoid "Client ID already in use" from zombie sessions
-                 import random
-                 scan_client_id = random.randint(10000, 99999)
+            if start_pressed:
+                if scan_mode == "Auto-Pilot (Downloads map)":
+                    import os, time, datetime
+                    downloads_path = os.path.join(os.path.expanduser('~'), 'Downloads')
+                    csv_path = os.path.join(downloads_path, 'AG SYMBOLS VOOR SCANNER.csv')
+                    xlsx_path = os.path.join(downloads_path, 'AG SYMBOLS VOOR SCANNER.xlsx')
+                    
+                    now = datetime.datetime.now()
+                    
+                    # Check if time already passed today (with a 5 min grace period)
+                    if now.time() >= auto_pilot_time:
+                        st.warning(f"Waarschuwing: Het is nu {now.strftime('%H:%M')}, wat al na de ingestelde tijd van {auto_pilot_time.strftime('%H:%M')} is. Scanner start direct!")
+                        time.sleep(3)
+                    else:
+                        st.info(f"⏱️ **Auto-Pilot Actief**. Scherm open laten. Scanner pauzeert tot {auto_pilot_time.strftime('%H:%M')}.")
+                        timer_ph = st.empty()
+                        while True:
+                            current_now = datetime.datetime.now()
+                            if current_now.time() >= auto_pilot_time:
+                                break
+                            timer_ph.markdown(f"**Huidige tijd:** {current_now.strftime('%H:%M:%S')} - wacht tot {auto_pilot_time.strftime('%H:%M:00')} om TWS en de scan te starten...")
+                            time.sleep(1)
+                        timer_ph.empty()
+                        st.success("Tijd bereikt! Scanner wordt gestart...")
+                        
+                    target_file = None
+                    if os.path.exists(csv_path): target_file = csv_path
+                    elif os.path.exists(xlsx_path): target_file = xlsx_path
+                    
+                    if not target_file:
+                        st.error(f"Bestand niet gevonden! Controleer of '{csv_path}' of '.xlsx' bestaat.")
+                        st.stop()
+                    else:
+                        try:
+                            if target_file.endswith('.csv'): df_auto = pd.read_csv(target_file)
+                            else: df_auto = pd.read_excel(target_file)
+                            
+                            # Normalize columns
+                            df_auto.columns = df_auto.columns.str.upper().str.strip()
+                            if 'SYMBOL' in df_auto.columns:
+                                symbols_to_scan = df_auto['SYMBOL'].dropna().tolist()
+                                st.success(f"{len(symbols_to_scan)} symbolen ingeladen uit {target_file}.")
+                            else:
+                                st.error("Bestand moet een kolom 'Symbol' bevatten.")
+                                st.stop()
+                        except Exception as e:
+                            st.error(f"Fout bij lezen Auto-Pilot bestand: {e}")
+                            st.stop()
 
-                 scan_ib = IBClient()
-                 success, msg = scan_ib.connect(tws_host, tws_port, scan_client_id)
+                import random
+                scan_client_id = random.randint(10000, 99999)
 
-                 if not success:
-                     st.error(f"Kan geen verbinding maken voor scan (ID: {scan_client_id}): {msg}")
-                 else:
+                scan_ib = IBClient()
+                success, msg = scan_ib.connect(tws_host, tws_port, scan_client_id)
+
+                if not success:
+                    st.error(f"Kan geen verbinding maken voor scan (ID: {scan_client_id}): {msg}")
+                else:
                      try:
                          # Set DataType
                          dtype = 1 if use_live_data else 3
@@ -331,6 +551,18 @@ with tab1:
                                  log(f"🎯 Koopadvies Drempel: {koopadvies_p*100:.1f}%")
                              if datetime.datetime.now().weekday() >= 5:
                                  log("📅 Weekend gedetecteerd: Gebruik 'Close' prijzen als fallback.")
+
+                             barchart_df_parsed = pd.DataFrame()
+                             if scan_mode == "BarChart Optie Flow (CSV)" and 'barchart_raw' in st.session_state:
+                                 status_text.text("Parsen van Barchart Option Flow CSV via VBA logica...")
+                                 log("📊 Barchart 'Smart Money' filters toepassen...")
+                                 barchart_df_parsed = scanner.parse_barchart_flow(st.session_state['barchart_raw'])
+                                 log(f"   ✅ {len(barchart_df_parsed)} Smart Money Setup(s) succesvol vertaald naar verticals.")
+                                 # Limit current symbols to just the ones that actually passed the flow filters
+                                 if not barchart_df_parsed.empty:
+                                     current_symbols = list(barchart_df_parsed['symbol'].unique())
+                                 else:
+                                     current_symbols = []
 
                              # 1. Technical Filter (EMA) Batch
                              if use_ema and ema_spans:
@@ -528,13 +760,29 @@ with tab1:
 
                                      def run_gen(d_max):
                                          res = pd.DataFrame()
-                                         p = {'symbol': sym, 'min_dte': min_dte, 'koopadvies_p': koopadvies_p, 'only_koopadvies': only_koopadvies, 'max_dte': d_max, 
-                                             'width': width, 'iv': underlying_iv, 'strike_range_pct': strike_range_pct, 'min_strike_pct': min_strike_pct,
-                                             'itm_support_level': itm_support_level}
-                                         for strat in active_strategies:
-                                             fs = scanner.generate_spreads(chains, strat, price, p, log_func=log)
-                                             if fs is not None and not fs.empty:
-                                                 res = pd.concat([res, fs], ignore_index=True)
+                                         
+                                         if scan_mode == "BarChart Optie Flow (CSV)":
+                                             if not barchart_df_parsed.empty:
+                                                 sym_spreads = barchart_df_parsed[barchart_df_parsed['symbol'] == sym].copy()
+                                                 if not sym_spreads.empty:
+                                                     if underlying_iv > 0: sym_spreads['iv'] = underlying_iv
+                                                     res = sym_spreads
+                                         else:
+                                             widths_to_check = [int(width)]
+                                             if price > 0:
+                                                 if price < 50 and 5 not in widths_to_check:
+                                                     widths_to_check.append(5)
+                                                 if price > 400 and 15 not in widths_to_check:
+                                                     widths_to_check.append(15)
+                                                     
+                                             for w in widths_to_check:
+                                                 p = {'symbol': sym, 'min_dte': min_dte, 'koopadvies_p': koopadvies_p, 'only_koopadvies': only_koopadvies, 'max_dte': d_max, 
+                                                     'width': w, 'iv': underlying_iv, 'strike_range_pct': strike_range_pct, 'min_strike_pct': min_strike_pct,
+                                                     'itm_support_level': itm_support_level}
+                                                 for strat in active_strategies:
+                                                     fs = scanner.generate_spreads(chains, strat, price, p, log_func=log)
+                                                     if fs is not None and not fs.empty:
+                                                         res = pd.concat([res, fs], ignore_index=True)
                                          return res
 
                                      raw_spreads_all = run_gen(max_dte_to_use)
@@ -610,13 +858,19 @@ with tab1:
                                              log_func=log, koopadvies_p=koopadvies_p
                                          )
 
+                                         if scan_mode == "BarChart Optie Flow (CSV)":
+                                             d_min_dl, d_min_gm, d_max_dt, d_min_dt = -1.0, -1.0, 9999, 0
+                                         else:
+                                             d_min_dl, d_min_gm, d_max_dt, d_min_dt = min_delta, min_gamma, max_dte, min_dte
+                                             
                                          current_filters = {
                                              'min_pop': min_pop,
                                              'min_profit': min_profit,
-                                             'min_delta': min_delta,
-                                             'min_gamma': min_gamma,
-                                             'max_dte': max_dte,
-                                             'min_dte': min_dte, 'koopadvies_p': koopadvies_p, 'only_koopadvies': only_koopadvies
+                                             'min_delta': d_min_dl,
+                                             'min_gamma': d_min_gm,
+                                             'max_dte': d_max_dt,
+                                             'min_dte': d_min_dt, 
+                                             'koopadvies_p': koopadvies_p, 'only_koopadvies': only_koopadvies
                                          }
                                          if use_max_pain_filter:
                                              current_filters['max_pain_dist'] = max_pain_dist
@@ -760,16 +1014,48 @@ with tab2:
         results = st.session_state['results']
         st.subheader(f"Gevonden Resultaten ({len(results)})")
 
-        # Display Columns
+        # Transformeer koopadvies om de strike-waarden en status te tonen
+        if 'koopadvies' in results.columns and 'koopadvies_status' not in results.columns:
+            results['koopadvies_status'] = results['koopadvies']
+            
+            # Helper om strike-waarden netjes te formatteren
+            def format_koopadvies_strikes(row):
+                strat = row.get('strategy', '')
+                right = row.get('right', '')
+                status = row.get('koopadvies_status', '❌')
+                icon = "🟢" if status == "✅" else "🔴"
+                
+                if strat == 'IronCondor':
+                    p_buy = row.get('strike_p_buy', 0.0)
+                    p_sell = row.get('strike_p_sell', 0.0)
+                    c_sell = row.get('strike_c_sell', 0.0)
+                    c_buy = row.get('strike_c_buy', 0.0)
+                    strikes_str = f"P {p_buy:.1f}/{p_sell:.1f} | C {c_sell:.1f}/{c_buy:.1f}"
+                elif strat == 'Strangle':
+                    p_buy = row.get('strike_p_buy', 0.0)
+                    c_buy = row.get('strike_c_buy', 0.0)
+                    strikes_str = f"P {p_buy:.1f} | C {c_buy:.1f}"
+                else:
+                    buy = row.get('strike_buy', 0.0)
+                    sell = row.get('strike_sell', 0.0)
+                    if sell > 0:
+                        strikes_str = f"{right} {buy:.1f}/{sell:.1f}"
+                    else:
+                        strikes_str = f"{right} {buy:.1f}"
+                return f"{icon} {strikes_str}"
+                
+            results['koopadvies'] = results.apply(format_koopadvies_strikes, axis=1)
+
+        # Weergave kolommen
         display_cols = [
-            'symbol', 'underlying_price', 'AG_Score', 'strategy', 'expiry', 'strike_buy', 'strike_sell', 'width', 
+            'koopadvies', 'symbol', 'underlying_price', 'AG_Score', 'strategy', 'expiry', 'strike_buy', 'strike_sell', 'width', 
             'strike_p_buy', 'strike_p_sell', 'strike_c_sell', 'strike_c_buy',
-            'spread_mid_abs', 'spread_ask_abs', 'b_l_verschil', 'max_profit', 'pop',
+            'spread_mid_abs', 'spread_ask_abs', 'b_l_verschil', 'max_profit', 'sluitingswinst', 'pop',
             'TTP (D)', 'TEI Score', 'Efficient',
-            'BEP', 'bep_afstand_pct', 'koopadvies', 'supports', 'resistances',
-            'Sentiment', 'price_buy', 'price_sell', 'net_extrinsic',
-            'delta_buy', 'delta_sell', 'delta', 'gamma', 'theta', 'dte', 
-            'EMA_Cross', 'Stoch_RSI', 'iv_percentile', 'iv_rank', 'underlying_iv', 'expected_move', 
+            'BEP', 'bep_afstand_pct', 'supports', 'resistances',
+            'Sentiment', 'price_buy', 'price_sell', 'net_extrinsic', 'expected_move',
+            'delta_buy', 'delta_sell', 'delta', 'delta_koers', 'gamma', 'theta', 'dte', 
+            'EMA_Cross', 'Stoch_RSI', 'iv_percentile', 'iv_rank', 'underlying_iv', 
             'gamma_flip', 'call_wall', 'put_wall', 'gex_wall'
         ]
 
@@ -814,7 +1100,6 @@ with tab2:
             "spread_ask_abs": st.column_config.NumberColumn("Laatprijs", format="$%.2f"),
             "BEP": st.column_config.NumberColumn("BEP", format="$%.2f", help="Break Even Point gebaseerd op Laat prijs"),
             "bep_afstand_pct": st.column_config.NumberColumn("BEP Afstand", format="%.1f%%", help="Afstand in % tot het Break-Even Punt"),
-            "koopadvies": st.column_config.TextColumn("K", help="✅ als winst >= Target 1% marge op Laatprijs"),
             "EMA_Cross": st.column_config.TextColumn("EMA 8/50"),
             "Stoch_RSI": st.column_config.TextColumn("Stoch RSI Status"),
             "Sentiment": st.column_config.TextColumn("Sentiment"),
@@ -824,6 +1109,7 @@ with tab2:
             "delta_buy": st.column_config.NumberColumn("Delta Buy", format="%.3f"),
             "delta_sell": st.column_config.NumberColumn("Delta Sell", format="%.3f"),
             "delta": st.column_config.NumberColumn("Net Delta", format="%.3f"),
+            "delta_koers": st.column_config.NumberColumn("Delta Koers", format="%.3f", help="Snelheid en versnelling van winstrespons: abs(Net Delta) + Net Gamma"),
             "gamma": st.column_config.NumberColumn("Gamma", format="%.4f"),
             "theta": st.column_config.NumberColumn("Theta", format="%.3f"),
             "dte": st.column_config.NumberColumn("DTE", format="%d", help="Rood = Earnings beperking kon niet worden gehaald"),
@@ -832,7 +1118,10 @@ with tab2:
             "max_pain_selection": st.column_config.NumberColumn("Max Pain 2", format="$%.2f"),
             "max_pain_buffer_ok": st.column_config.CheckboxColumn("MP Buffer OK", help="Spread is > 5 punten van Max Pain"),
             "dist_max_pain": st.column_config.NumberColumn("MP Afstand", format="$%.2f"),
-            "koopadvies": st.column_config.TextColumn("Koopadvies", help="✅ als winstgevend bij p% beweging"),
+            "max_profit": st.column_config.NumberColumn("Max Winst", format="$%.2f", help="Maximale winst in dollars"),
+            "sluitingswinst": st.column_config.NumberColumn("Sluitingswinst (EM)", format="$%.2f", help="Geschatte winst/verlies bij vervroegde sluiting (na 5 dagen of halverwege) bij 1 Expected Move koersstijging/-daling in gunstige richting"),
+            "pop": st.column_config.NumberColumn("Kans op Winst (PoP)", format="%.1f%%", help="Probability of Profit"),
+            "koopadvies": st.column_config.TextColumn("Koopadvies", help="Groen = Koopadvies (winstgevend bij p% beweging), Rood = Geen koopadvies", pinned=True),
             "TTP (D)": st.column_config.NumberColumn("TTP (Dagen)", format="%.1f", help="Days to Profit ($5 doel)"),
             "TEI Score": st.column_config.NumberColumn("TEI Score", format="%.2f", help="Target Efficiency Index (BS Model)"),
             "Efficient": st.column_config.TextColumn("Efficiënt", help="Blauw = TEI Score > 1.2 en TTP < DTE/2"),
@@ -841,17 +1130,28 @@ with tab2:
         # Ensure columns exist before displaying
         final_cols = [c for c in display_cols if c in results.columns]
 
-        # Helper for Red DTE when relaxed_earnings is True
+        # Helper voor rode DTE (bij relaxed_earnings) en Koopadvies achtergrondkleur
         def style_results(row):
             styles = [''] * len(row)
             if 'relaxed_earnings' in row.index and row['relaxed_earnings'] == True:
-                # Find index of 'dte' in row
+                # Vind index van 'dte' in rij
                 if 'dte' in row.index:
                     try:
                         idx = row.index.get_loc('dte')
                         styles[idx] = 'color: red; font-weight: bold'
                     except:
                         pass
+            # Kleur achtergrond van Koopadvies kolom op basis van status
+            if 'koopadvies' in row.index and 'koopadvies_status' in row.index:
+                try:
+                    k_idx = row.index.get_loc('koopadvies')
+                    status = row['koopadvies_status']
+                    if status == "✅":
+                        styles[k_idx] = 'background-color: #15803d; color: white; font-weight: bold;'
+                    else:
+                        styles[k_idx] = 'background-color: #b91c1c; color: white; font-weight: bold;'
+                except:
+                    pass
             return styles
 
         # Filter config to only existing columns
@@ -902,7 +1202,8 @@ with tab2:
         st.divider()
         # Exporteer in Europees/Nederlands Excel formaat (puntkomma en komma als decimaal) met UTF-8 BOM
         csv = results.to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig')
-        st.download_button("Download CSV Resultaten (Voor Excel)", csv, "spreads_nederlands.csv", "text/csv")
+        file_name = f"{datetime.date.today().strftime('%Y%m%d')} RESULTATEN OPTIE SELECTIE SCAN.csv"
+        st.download_button("Download CSV Resultaten (Voor Excel)", csv, file_name, "text/csv")
     else:
         st.info("Start een scan om resultaten te zien.")
 
@@ -1389,3 +1690,167 @@ with tab4:
                             st.error("Kon voor geen van deze fondsen optiedata vinden op TWS.")
                     finally:
                         export_ib.disconnect()
+
+# --- TAB 5: DIVIDEND COVERED CALLS ---
+with tab5:
+    st.subheader("💰 Dividend Covered Call Scanner")
+    st.markdown("Scan lijsten op aandelen die aankomende week dividend uitkeren, op zoek naar Covered Call kansen. Ideaal voor het opvangen van dividend én premie waarbij de strike buiten bereik (OTM) wordt gekozen.")
+    
+    col_div1, col_div2 = st.columns([1, 2])
+    with col_div1:
+        div_list_choice = st.selectbox("Kies of plak symbolen", ["S&P 100", "Top 10 Tech", "AEX", "Eigen (upload/barchart)"], key="div_list_choice")
+        if div_list_choice == "S&P 100":
+            div_symbols = ["AAPL", "MSFT", "AMZN", "NVDA", "GOOGL", "META", "TSLA", "BRK.B", "UNH", "JNJ", "XOM", "JPM", "V", "PG", "MA", "HD", "CVX", "ABBV", "LLY", "MRK"]
+        elif div_list_choice == "Top 10 Tech":
+            div_symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "NFLX", "AMD", "INTC"]
+        elif div_list_choice == "AEX":
+            div_symbols = ["ADYEN", "ASML", "UNA", "RDSA", "INGA", "HEIA", "KPN", "DSM", "RAND", "MT", "AKZA", "PHIA"]
+        else:
+            div_symbols = symbols_to_scan # Fallback from main sidebar
+
+        target_gain_pct = st.slider("Beoogde Covered Call Winstmarge (%)", min_value=1, max_value=20, value=5, step=1, help="De aanbevolen Call strike wordt op deze afstand boven de huidige koers gelegd.")
+        days_ahead = st.slider("Zoek Ex-Dividend in komende X dagen", min_value=2, max_value=60, value=14)
+    
+    if st.button("Scan Aankomende Dividenden 🚀", type="primary"):
+        if not div_symbols:
+            st.error("Selecteer een lijst met symbolen om te scannen.")
+        else:
+            st.info(f"Start zoeken naar dividenden in {len(div_symbols)} aandelen...")
+            div_ib = IBClient()
+            success, msg = div_ib.connect(tws_host, tws_port, random.randint(100, 999))
+            
+            dividend_results = []
+            if success:
+                div_ib.set_data_type(1 if use_live_data else 3)
+                progress_bar_div = st.progress(0)
+                status_text_div = st.empty()
+                
+                try:
+                    now = pd.Timestamp.now().date()
+                    for i, sym in enumerate(div_symbols):
+                        progress_bar_div.progress((i + 1) / len(div_symbols))
+                        status_text_div.text(f"Gegevens ophalen voor {sym}...")
+                        
+                        div_info = div_ib.get_dividend_info(sym)
+                        ex_div = div_info.get('ex_div_date')
+                        
+                        if ex_div:
+                            days_to_ex = (ex_div - now).days
+                            if 0 <= days_to_ex <= days_ahead:
+                                contract = Stock(sym, 'SMART', 'USD')
+                                mkt = div_ib.get_market_data_snapshot(contract, use_hist_fallback=True)
+                                price = mkt.get('price', 0.0)
+                                if price <= 0:
+                                    try:
+                                        t = yf.Ticker(sym)
+                                        df_hist = t.history(period="1d")
+                                        if not df_hist.empty:
+                                            price = df_hist['Close'].iloc[-1]
+                                    except:
+                                        price = 0.0
+                                
+                                if price > 0:
+                                    target_strike = price * (1 + target_gain_pct / 100.0)
+                                    
+                                    # Voeg greeks toe om de echte call premie te vinden
+                                    sec_type_str = 'STK'
+                                    chains = div_ib.get_option_chains_params(sym, sec_type=sec_type_str)
+                                    real_exp = None
+                                    final_strike = target_strike
+                                    call_ask = 0.0
+                                    call_bid = 0.0
+                                    
+                                    if chains:
+                                        # Pak de chain (voorkeur SMART)
+                                        chain = chains[0]
+                                        for c in chains:
+                                            if getattr(c, 'exchange', '') == 'SMART':
+                                                chain = c
+                                                break
+                                                
+                                        valid_exps = sorted(chain.expirations)
+                                        # Zoek een expiratie datum NA de verwachte dividend payout, standaard 14 dagen
+                                        target_exp_date = now + datetime.timedelta(days=int(max(14, days_to_ex + 2)))
+                                        target_exp_str = target_exp_date.strftime('%Y%m%d')
+                                        
+                                        for exp in valid_exps:
+                                            if exp >= target_exp_str:
+                                                real_exp = exp
+                                                break
+                                        if not real_exp and valid_exps:
+                                            real_exp = valid_exps[-1]
+                                            
+                                        if real_exp:
+                                            valid_strikes = sorted([s for s in chain.strikes if s >= target_strike])
+                                            if valid_strikes:
+                                                final_strike = valid_strikes[0]
+                                            elif chain.strikes:
+                                                final_strike = max(chain.strikes)
+                                                
+                                            # Haal prijs op van de target Call
+                                            greeks = div_ib.get_chain_greeks_and_oi(sym, real_exp, [final_strike])
+                                            if not greeks.empty:
+                                                # C voor Call
+                                                calls = greeks[greeks['right'] == 'C']
+                                                if not calls.empty:
+                                                    call_ask = float(calls['ask'].iloc[0])
+                                                    call_bid = float(calls['bid'].iloc[0])
+                                                    
+                                    div_rate = div_info.get('dividend_rate', 0.0)
+                                    used_premie = call_bid if call_bid > 0 else call_ask
+                                    
+                                    # Berekeningen
+                                    # Winst bij uitoefening (als koers > strike)
+                                    winst_executie = ((final_strike - price) + used_premie + div_rate) * 100
+                                    # Winst bij koersstijging van 5% ZONDER uitoefening (optie loopt waardeloos of gedeeltelijk af)
+                                    # (Koers stijgt puur 5% plus premie ontvangen) - we gaan er vanuit dat je de winst behoudt
+                                    winst_5pct_stijging = ((price * 0.05) + used_premie + div_rate) * 100
+                                    # BEP (De kostprijs - ontvangen premie - dividend_bijdrage)
+                                    bep = price - used_premie - div_rate
+                                    
+                                    dividend_results.append({
+                                        'Symbol': sym,
+                                        'Koers': round(price, 2),
+                                        'Ex-Div Datum': ex_div.strftime('%d-%m-%Y'),
+                                        'Dagen tot Ex-Div': days_to_ex,
+                                        'Div. Yield (%)': round(div_info.get('dividend_yield', 0.0) * 100, 2),
+                                        'Div. Bedrag': round(div_rate, 2),
+                                        'Call Exp': real_exp if real_exp else 'N/A',
+                                        'Call Strike': round(final_strike, 2),
+                                        'Call Bied (Premie)': round(call_bid, 2) if call_bid > 0 else 'N/A',
+                                        'Call Laatprijs': round(call_ask, 2) if call_ask > 0 else 'N/A',
+                                        'BEP': round(bep, 2),
+                                        'Winst bij Uitoefening ($)': round(winst_executie, 2),
+                                        'Winst +5% Stijging ($)': round(winst_5pct_stijging, 2)
+                                    })
+                                    
+                except Exception as e:
+                    st.error(f"Fout tijdens ophalen dividenden: {e}")
+                finally:
+                    div_ib.disconnect()
+                    
+                status_text_div.text("Gereed!")
+                if dividend_results:
+                    df_div = pd.DataFrame(dividend_results)
+                    df_div = df_div.sort_values(by='Dagen tot Ex-Div')
+                    st.session_state['dividend_results'] = df_div
+                    st.success(f"{len(dividend_results)} aandelen gevonden die dividend uitkeren!")
+                    st.dataframe(df_div, use_container_width=True, hide_index=True)
+                else:
+                    st.warning("Geen dividenden gevonden voor de geselecteerde aandelen in deze periode.")
+            else:
+                st.error("Kon niet verbinden met TWS voor prijsinformatie.")
+
+    if 'dividend_results' in st.session_state and not st.session_state['dividend_results'].empty:
+        import io
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+            st.session_state['dividend_results'].to_excel(writer, index=False, sheet_name='Dividend_CC')
+        
+        st.download_button(
+            label="Exporteer Dividend Lijst (Excel)",
+            data=buffer.getvalue(),
+            file_name=f"Dividend_Covered_Calls_{datetime.date.today().strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary"
+        )

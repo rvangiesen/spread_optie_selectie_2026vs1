@@ -152,3 +152,5 @@ cython_debug/
 !README.md
 !walkthrough.md
 debug_log.txt
+*.docx
+Opnemen youtube (achtigen) met geluid/

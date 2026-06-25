@@ -32,7 +32,8 @@ class IBClient:
         """Connects to the TWS/Gateway API."""
         try:
             if not self.ib.isConnected():
-                self.ib.connect(host, port, clientId=client_id)
+                # Increase timeout to 10 seconds to prevent timeouts during initial account sync
+                self.ib.connect(host, port, clientId=client_id, timeout=10.0)
                 self.connected = True
                 self.host = host
                 self.port = port
@@ -311,7 +312,6 @@ class IBClient:
         import queue
         import time
         import yfinance as yf
-        import pandas as pd
         from ib_insync import util
 
         # 1. Try TWS (Direct Async with Loop-Pumping)
@@ -467,7 +467,6 @@ class IBClient:
         import asyncio
         import time
         from ib_insync import util
-        import pandas as pd
         
         # Qualify first
         qualified = self.qualify_contract_safe(contract)
@@ -836,7 +835,6 @@ class IBClient:
                  'und_price': greeks['und_price']
              })
              
-        import pandas as pd
         return pd.DataFrame(data_list)
     def get_scanner_data(self, scan_code='MOST_ACTIVE', instrument='STK', location='STK.US.MAJOR', rows=50):
         """
@@ -1063,3 +1061,43 @@ class IBClient:
             })
             
         return pd.DataFrame(data)
+
+    def get_dividend_info(self, symbol):
+        import yfinance as yf
+        import datetime
+        
+        yf_sym = symbol
+        if yf_sym == 'SPX': yf_sym = '^SPX'
+        if yf_sym == 'UNA': yf_sym = 'UNA.AS'
+        if yf_sym == 'RDSA': yf_sym = 'SHELL.AS'
+        
+        info_dict = {
+            'dividend_yield': 0.0,
+            'dividend_rate': 0.0,
+            'ex_div_date': None,
+            'pay_date': None
+        }
+        
+        try:
+            ticker = yf.Ticker(yf_sym)
+            info = ticker.info
+            
+            y_val = info.get('dividendYield', 0.0)
+            info_dict['dividend_yield'] = y_val if y_val else 0.0
+            
+            r_val = info.get('dividendRate', 0.0)
+            info_dict['dividend_rate'] = r_val if r_val else 0.0
+            
+            ex_div = info.get('exDividendDate')
+            if ex_div:
+                info_dict['ex_div_date'] = pd.to_datetime(ex_div, unit='s').date()
+            else:
+                # Try calendar fallback for ex-dividend
+                cal = getattr(ticker, 'calendar', {})
+                if isinstance(cal, dict) and 'Ex-Dividend Date' in cal:
+                    info_dict['ex_div_date'] = cal['Ex-Dividend Date']
+        except Exception as e:
+            # print(f"[IBClient] Error fetching dividend for {symbol}: {e}")
+            pass
+            
+        return info_dict

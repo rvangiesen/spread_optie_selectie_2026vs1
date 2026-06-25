@@ -1,12 +1,6 @@
-# 🚀 AntiGravity: Project 2 Spread Selectie Tool
+# 🚀 Handleiding: Project 2 Opstarten & GitHub Beheer
 
-Welkom bij de **AntiGravity Optie Contract Selectie Tool** (Project 2). Dit project haalt optie- en marktgegevens op van Interactive Brokers (TWS/Lynx) of Yahoo Finance, berekent geavanceerde risico- en winstparameters (waaronder Bjerksund-Stensland, Delta Koers en verwachte sluitingswinsten) en presenteert deze in een overzichtelijke Streamlit webapplicatie.
-
----
-
-## 📖 Gebruikershandleidingen
-* **Gebruik van de App**: [Handleiding_Optie_Contract_Selectie.md](Handleiding_Optie_Contract_Selectie.md) (uitleg van knoppen, filters, sentimentmodel, ranking en orderplaatsing).
-* **Project Opstarten & GitHub**: [Handleiding_Project2_Opstarten_en_Git.md](Handleiding_Project2_Opstarten_en_Git.md) (zie hieronder voor een samenvatting).
+Deze handleiding legt stap-voor-stap uit hoe je de **AntiGravity Optie Contract Selectie Tool** (Project 2) opstart in Python en hoe je wijzigingen bijwerkt op GitHub.
 
 ---
 

@@ -596,6 +596,83 @@ class SpreadScanner:
                 log_func(f"   ⚠️ 0 {strategy} kandidaten. Skips door: {', '.join(summary)}")
               
         return pd.DataFrame(spreads)
+    def parse_barchart_flow(self, df):
+        """
+        Parses a Barchart Option Flow DataFrame, filters for 'Smart Money' trades
+        (large size + specific execution codes), and proposes vertical spreads.
+        Follows user's VBA logic rules.
+        """
+        spreads = []
+        if df.empty: return pd.DataFrame()
+            
+        for idx, row in df.iterrows():
+            try:
+                t_type = str(row.get('Type', '')).upper().strip()
+                t_strike = float(row.get('Strike', 0))
+                t_price = float(row.get('Price~', 0))
+                t_dte = int(row.get('DTE', 0))
+                t_size = int(row.get('Size', 0))
+                t_delta = float(row.get('Delta', 0))
+                t_code = str(row.get('Code', '')).strip()
+                symbol = str(row.get('Symbol', '')).strip()
+                
+                # DTE filter
+                if t_dte < 7 or t_dte > 365: continue
+                # Size filter
+                if t_size < 800: continue
+                
+                # Code filter
+                valid_codes = ["MLCT", "MLFT", "MLAT", "TLFT", "TLAT", "SLCN", "ISOI", "SLAN", "SLAI"]
+                if t_code not in valid_codes: continue
+                
+                short_strike = None
+                strategy = None
+                
+                # ITM CALL -> Bull Call Vertical
+                if t_type == "CALL":
+                    if t_strike < t_price and 0.35 <= t_delta <= 0.95:
+                        strategy = 'BullCall'
+                        if t_strike < 180: short_strike = t_strike + 20
+                        elif t_strike < 200: short_strike = t_strike + 15
+                        else: short_strike = t_strike + 10
+                
+                # ITM PUT -> Bear Put Vertical
+                elif t_type == "PUT":
+                    if t_strike > t_price and -0.95 <= t_delta <= -0.30:
+                        strategy = 'BearPut'
+                        if t_strike > 220: short_strike = t_strike - 20
+                        elif t_strike > 200: short_strike = t_strike - 15
+                        else: short_strike = t_strike - 10
+                        
+                if strategy and short_strike:
+                    # Parse expires (e.g., '2026-05-15T16:30:00-05:00' -> '20260515')
+                    raw_exp = str(row.get('Expires', ''))
+                    if 'T' in raw_exp:
+                        exp_date = raw_exp.split('T')[0].replace('-', '')
+                    else:
+                        exp_date = raw_exp.replace('-', '')
+                        
+                    iv_str = str(row.get('IV', '0')).replace('%', '')
+                    base_iv = float(iv_str) / 100.0 if iv_str.replace('.','',1).isdigit() else 0.0
+                        
+                    spreads.append({
+                        'symbol': symbol,
+                        'strategy': strategy,
+                        'expiry': exp_date,
+                        'dte': t_dte,
+                        'strike_buy': t_strike,
+                        'strike_sell': short_strike,
+                        'right': 'C' if strategy == 'BullCall' else 'P',
+                        'width': abs(t_strike - short_strike),
+                        'iv': base_iv,
+                        'barchart_size': t_size,
+                        'barchart_premium': row.get('Premium', 0)
+                    })
+            except Exception as e:
+                if self.log_func: self.log_func(f"Fout bij parsen rij {idx}: {e}")
+                continue
+                
+        return pd.DataFrame(spreads)
 
     def analyze_market_structure(self, chain_data):
         """
@@ -785,16 +862,37 @@ class SpreadScanner:
                 # Store (Effective Price, Greeks, Mid, Last, Bid, Ask)
                 lookup[(round(float(row['strike']), 4), r_norm)] = (float(price), greeks, float(mid), float(last_p), float(bid), float(ask))
         
-        # Helper for vectorizable lookup
-        def get_data(strike, right):
-            # Normalize right to C/P
+        # Helper for vectorizable lookup met theoretische fallback voor weekend/ontbrekende data
+        def get_data(strike, right, dte):
+            # Normalizeer right naar C/P
             r_norm = 'C' if right.upper().startswith('C') else 'P'
-            # [FIX] Round strike for lookup
+            # Rond strike af voor betrouwbare lookup
             res = lookup.get((round(float(strike), 4), r_norm))
-            if res: return res, True # Found in real data
+            if res: return res, True # Gevonden in echte TWS data
             
-            # [PHANTOM FIX] Only fallback if user explicitly allows it (hidden for now) or for debugging.
-            # For the scanner, we ONLY want real TWS strikes.
+            # Theoretische fallback als data niet in TWS staat (bijv. in het weekend)
+            if underlying_price > 0:
+                try:
+                    t_years = max(0.001, float(dte)) / 365.0
+                    r = 0.04
+                    q = 0.015
+                    iv_val = underlying_iv if underlying_iv > 0 else 0.2
+                    
+                    price_calc = BjerksundStensland2002.price_american_option(
+                        r_norm.lower(), float(underlying_price), float(strike), t_years, r, q, iv_val
+                    )
+                    price = max(0.01, float(price_calc))
+                    
+                    # Bereken Grieken lokaal
+                    temp_row = {'dte': dte, 'iv': iv_val, 'right': r_norm.lower(), 'strike_buy': float(strike)}
+                    greeks = self.calculate_greeks(temp_row, underlying_price)
+                    
+                    # Retourneer (prijs, greeks, mid, last, bid, ask)
+                    return (price, greeks, price, price, price, price), True
+                except Exception as ex:
+                    if self.log_func:
+                        self.log_func(f"      ⚠️ Fout bij genereren data voor strike {strike}: {ex}")
+            
             return None, False
 
         # 3. Fast Vectorized Collection
@@ -824,8 +922,8 @@ class SpreadScanner:
         for i, row in enumerate(it):
             # Check strategy type
             if row.right == 'STR':
-                res_p = get_data(row.strike_p_buy, 'P')
-                res_c = get_data(row.strike_c_buy, 'C')
+                res_p = get_data(row.strike_p_buy, 'P', row.dte)
+                res_c = get_data(row.strike_c_buy, 'C', row.dte)
                 
                 if not res_p[1] or not res_c[1]:
                     valid_mask[i] = False
@@ -846,10 +944,10 @@ class SpreadScanner:
                 bids_buy[i] = bb + cbb
                 asks_buy[i] = ab + cab
             elif row.right == 'IC':
-                res_pb = get_data(row.strike_p_buy, 'P')
-                res_ps = get_data(row.strike_p_sell, 'P')
-                res_cs = get_data(row.strike_c_sell, 'C')
-                res_cb = get_data(row.strike_c_buy, 'C')
+                res_pb = get_data(row.strike_p_buy, 'P', row.dte)
+                res_ps = get_data(row.strike_p_sell, 'P', row.dte)
+                res_cs = get_data(row.strike_c_sell, 'C', row.dte)
+                res_cb = get_data(row.strike_c_buy, 'C', row.dte)
                 
                 if not res_pb[1] or not res_ps[1] or not res_cs[1] or not res_cb[1]:
                     valid_mask[i] = False
@@ -883,7 +981,7 @@ class SpreadScanner:
                 asks_sell[i] = pas + cas
             else:
                 # Vertical Spreads or Single Legs
-                res_b = get_data(row.strike_buy, row.right)
+                res_b = get_data(row.strike_buy, row.right, row.dte)
                 is_single_leg = (getattr(row, 'strike_sell', 0.0) == 0.0)
                 
                 if is_single_leg:
@@ -903,7 +1001,7 @@ class SpreadScanner:
                     bids_buy[i] = bb
                     asks_buy[i] = ab
                 else:
-                    res_s = get_data(row.strike_sell, row.right)
+                    res_s = get_data(row.strike_sell, row.right, row.dte)
                     if not res_b[1] or not res_s[1]:
                         valid_mask[i] = False
                         continue
@@ -940,6 +1038,7 @@ class SpreadScanner:
         spreads_df['vega'] = net_vega
         spreads_df['delta_buy'] = deltas_buy
         spreads_df['delta_sell'] = deltas_sell
+        spreads_df['delta_koers'] = np.abs(net_delta) + net_gamma
         
         # Calculate Spread Natural Bid and Ask
         # If buying the spread: Pay Ask for long legs, receive Bid for short legs. So Cost (Ask) = asks_buy - bids_sell
@@ -1062,13 +1161,15 @@ class SpreadScanner:
         spreads_df['dist_put_wall'] = sc - market_structure['put_wall']
         
         # PoP (Vectorized) - Nearest Leg Delta
-        # User: "De delta van de dichst bijzijnde is ook de geschatte kans op winst"
+        # Voor credit spreads, PoP = (1 - abs(delta)) * 100. Voor debit, PoP = abs(delta) * 100.
         dist_buy = np.abs(spreads_df['strike_buy'].values - underlying_price)
         dist_sell = np.abs(spreads_df['strike_sell'].values - underlying_price)
         
         # nearest_leg_delta
         nld = np.where(dist_buy <= dist_sell, spreads_df['delta_buy'].values, spreads_df['delta_sell'].values)
-        spreads_df['pop'] = np.round(np.abs(nld) * 100, 1)
+        is_credit_strat = spreads_df['net_price'].values < 0
+        pop_vals = np.where(is_credit_strat, (1.0 - np.abs(nld)) * 100, np.abs(nld) * 100)
+        spreads_df['pop'] = np.round(pop_vals, 1)
 
         # Safety Buffer: Distance to Max Pain
         # "wil ik dan altijd 5 punten van de max pain wegblijven"
@@ -1098,6 +1199,79 @@ class SpreadScanner:
             else:
                 spreads_df['iv_rank'] = 0.0
                 spreads_df['iv_percentile'] = 0.0
+        else:
+            spreads_df['expected_move'] = 0.0
+            spreads_df['underlying_iv'] = 0.0
+            spreads_df['iv_rank'] = 0.0
+            spreads_df['iv_percentile'] = 0.0
+
+        # --- CALCULATE SLUITINGSWINST (EXPECTED MOVE CLOSING PROFIT) ---
+        # Berekent de geschatte winst ($) bij een vervroegde sluiting (na 5 dagen of halverwege)
+        # als de koers met 1 Expected Move in de gunstige richting beweegt.
+        closing_profits = []
+        if not spreads_df.empty:
+            r = 0.04
+            q = 0.015
+            iv_val = underlying_iv if underlying_iv > 0 else 0.2
+            
+            for idx, row in spreads_df.iterrows():
+                # Bepaal de gunstige koersrichting (S_target)
+                strat = str(row['strategy']).lower()
+                is_bullish = ('bull' in strat) or ('longcall' in strat)
+                is_bearish = ('bear' in strat) or ('longput' in strat)
+                
+                em_val = float(row.get('expected_move', 0.0))
+                if em_val == 0.0 and underlying_price > 0:
+                    em_val = underlying_price * iv_val * np.sqrt(float(row['dte']) / 365.0)
+                
+                if is_bullish:
+                    s_target = underlying_price + em_val
+                elif is_bearish:
+                    s_target = underlying_price - em_val
+                else: # Neutraal / overig
+                    s_target = underlying_price
+                
+                # Resterende looptijd bij sluiten (bijv. na 5 dagen, of halverwege als dte < 10)
+                dte_val = float(row['dte'])
+                dte_target = dte_val - 5.0 if dte_val > 10.0 else dte_val * 0.5
+                dte_target = max(0.1, dte_target)
+                t_target = dte_target / 365.0
+                
+                def get_theo_price(strike, right_str):
+                    if pd.isna(strike) or strike <= 0:
+                        return 0.0
+                    r_norm = 'c' if str(right_str).upper().startswith('C') else 'p'
+                    try:
+                        price_calc = BjerksundStensland2002.price_american_option(
+                            r_norm, float(s_target), float(strike), t_target, r, q, iv_val
+                        )
+                        return max(0.01, float(price_calc))
+                    except:
+                        return 0.01
+
+                # Bereken nieuwe netto prijs van de optie/spread
+                right = str(row['right']).upper()
+                if right == 'STR':
+                    pb_new = get_theo_price(row.get('strike_p_buy', row['strike_buy']), 'P')
+                    cb_new = get_theo_price(row.get('strike_c_buy', row['strike_buy']), 'C')
+                    net_price_new = pb_new + cb_new
+                elif right == 'IC':
+                    pb_new = get_theo_price(row.get('strike_p_buy', 0.0), 'P')
+                    ps_new = get_theo_price(row.get('strike_p_sell', 0.0), 'P')
+                    cs_new = get_theo_price(row.get('strike_c_sell', 0.0), 'C')
+                    cb_new = get_theo_price(row.get('strike_c_buy', 0.0), 'C')
+                    net_price_new = (pb_new + cb_new) - (ps_new + cs_new)
+                else: # Vertical Spread of Single Leg
+                    pb_new = get_theo_price(row['strike_buy'], row['right'])
+                    ps_new = get_theo_price(row['strike_sell'], row['right']) if row['strike_sell'] > 0 else 0.0
+                    net_price_new = pb_new - ps_new
+                
+                # Winst = (netto prijs bij sluiten - netto prijs bij openen) * 100
+                net_price_entry = float(row['net_price'])
+                profit_est = (net_price_new - net_price_entry) * 100
+                closing_profits.append(profit_est)
+        
+        spreads_df['sluitingswinst'] = closing_profits
 
         # 6. Universeel Koopadvies (1% Target Rule)
         # Evaluates the spread's mathematical payout against +/- 1% targets.
