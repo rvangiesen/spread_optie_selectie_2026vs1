@@ -575,11 +575,37 @@ class IBClient:
             # print(f"DEBUG_LOG: ATR calculation error for {symbol}: {e}")
             return 0.0
 
-    def get_option_chains_params(self, symbol, sec_type='STK', exchange='SMART', currency='USD'):
+    def get_option_chains_params(self, symbol, sec_type='STK', exchange='SMART', currency='USD', use_yf=False):
         """
         Fetches option chain parameters (strikes, expirations) for a given underlying.
         Returns a list of SecDefOptParams objects.
         """
+        if use_yf:
+            import yfinance as yf
+            class YFOptParams:
+                def __init__(self, expirations, strikes):
+                    self.expirations = expirations
+                    self.strikes = strikes
+            try:
+                yf_sym = symbol
+                if yf_sym == 'SPX': yf_sym = '^SPX'
+                elif yf_sym == 'NDX': yf_sym = '^NDX'
+                elif yf_sym == 'VIX': yf_sym = '^VIX'
+                
+                tk = yf.Ticker(yf_sym)
+                expirations = tk.options
+                if not expirations:
+                    return []
+                ib_expirations = [e.replace('-', '') for e in expirations]
+                
+                # Fetch strikes from the first expiration
+                chain = tk.option_chain(expirations[0])
+                strikes = sorted(list(set(chain.calls['strike'].tolist() + chain.puts['strike'].tolist())))
+                return [YFOptParams(ib_expirations, strikes)]
+            except Exception as e:
+                print(f"[IBClient] YF Error fetching option chains: {e}")
+                return []
+
         if not self.is_connected():
             return []
         
@@ -606,7 +632,86 @@ class IBClient:
             # print(f"[IBClient] Error fetching option chains: {e}")
             return []
 
-    def get_chain_greeks_and_oi(self, symbol, expiration, strikes, multiplier='100'):
+    def get_chain_greeks_and_oi(self, symbol, expiration, strikes, multiplier='100', use_yf=False):
+        if use_yf:
+            import yfinance as yf
+            import pandas as pd
+            import numpy as np
+            from datetime import datetime
+            import math
+            try:
+                yf_sym = symbol
+                if yf_sym == 'SPX': yf_sym = '^SPX'
+                elif yf_sym == 'NDX': yf_sym = '^NDX'
+                elif yf_sym == 'VIX': yf_sym = '^VIX'
+                
+                tk = yf.Ticker(yf_sym)
+                yf_exp = f"{expiration[:4]}-{expiration[4:6]}-{expiration[6:8]}"
+                chain = tk.option_chain(yf_exp)
+                
+                # Fetch underlying price for greeks
+                und_price = tk.history(period="1d")['Close'].iloc[-1] if not tk.history(period="1d").empty else 0.0
+                
+                data_list = []
+                
+                # DTE calculation for Greeks
+                exp_date = datetime.strptime(yf_exp, '%Y-%m-%d')
+                dte = (exp_date - datetime.now()).days
+                t_years = max(0.001, dte / 365.0)
+                risk_free = 0.04 # 4% approximate risk free rate
+                
+                def add_to_list(df, right):
+                    # Filter by strikes
+                    df = df[df['strike'].isin(strikes)]
+                    for _, row in df.iterrows():
+                        strike = row['strike']
+                        bid = row.get('bid', 0.0)
+                        ask = row.get('ask', 0.0)
+                        last = row.get('lastPrice', 0.0)
+                        vol = row.get('volume', 0)
+                        oi = row.get('openInterest', 0)
+                        iv = row.get('impliedVolatility', 0.0)
+                        
+                        mid_p = (bid + ask) / 2 if (bid > 0 and ask > 0) else last
+                        if mid_p <= 0: continue
+                        
+                        delta, gamma, vega, theta = 0.0, 0.0, 0.0, 0.0
+                        if und_price > 0 and iv > 0:
+                            try:
+                                import py_vollib.black_scholes.greeks.analytical as greeks
+                                flag = 'c' if right == 'C' else 'p'
+                                delta = greeks.delta(flag, und_price, strike, t_years, risk_free, iv)
+                                gamma = greeks.gamma(flag, und_price, strike, t_years, risk_free, iv)
+                                vega = greeks.vega(flag, und_price, strike, t_years, risk_free, iv) / 100.0
+                                theta = greeks.theta(flag, und_price, strike, t_years, risk_free, iv) / 365.0
+                            except Exception:
+                                pass # ignore calculation errors
+                                
+                        data_list.append({
+                            'strike': strike,
+                            'right': right,
+                            'bid': bid,
+                            'ask': ask,
+                            'mid': mid_p,
+                            'volume': vol or 0,
+                            'openInterest': oi or 0,
+                            'delta': delta,
+                            'gamma': gamma,
+                            'vega': vega,
+                            'theta': theta,
+                            'iv': iv,
+                            'opt_price': mid_p,
+                            'und_price': und_price
+                        })
+                        
+                add_to_list(chain.calls, 'C')
+                add_to_list(chain.puts, 'P')
+                
+                return pd.DataFrame(data_list)
+            except Exception as e:
+                print(f"[IBClient] YF Error fetching option chains: {e}")
+                return pd.DataFrame()
+
         try:
             # 1. Create specific C/P contracts for requested strikes
             target_contracts = []

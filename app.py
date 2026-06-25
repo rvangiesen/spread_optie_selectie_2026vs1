@@ -59,6 +59,8 @@ if 'default_client_id' not in st.session_state:
     st.session_state.default_client_id = random.randint(1000, 9999)
 client_id = st.sidebar.number_input("Client ID", value=st.session_state.default_client_id, help="Wijzig dit als je 'client id already in use' errors krijgt")
 use_live_data = st.sidebar.checkbox("Gebruik Real-Time Data (Abonnement vereist)", value=True)
+use_free_data = st.sidebar.checkbox("Gebruik Gratis Yahoo Finance Data (Opties)", value=False, help="Haalt optieketens op via Yahoo Finance. Geen IBKR data abonnement nodig.")
+
 
 if st.sidebar.button("Test Verbinding & Opslaan"):
     # Test connection ephemerally
@@ -366,7 +368,6 @@ with tab1:
                                          ret_count = 0
                                          while len(filtered) < 5 and ret_count < 2:
                                              log(f"   🔄 Auto-Tune: Versoepelen filters (poging {ret_count+1})...")
-                                             current_filters['min_profit'] *= 0.5
                                              if 'min_delta' in current_filters: current_filters['min_delta'] = max(0.05, current_filters['min_delta'] - 0.05)
                                              if 'max_pain_dist' in current_filters: current_filters['max_pain_dist'] += 10.0
                                              filtered = scanner.filter_spreads(processed_spreads, current_filters, log_func=log)
@@ -510,7 +511,7 @@ with tab1:
 
                                      log(f"   Optieketens opvragen...")
                                      sec_type_str = 'IND' if contract.secType == 'IND' else 'STK'
-                                     chains = scan_ib.get_option_chains_params(sym, sec_type=sec_type_str)
+                                     chains = scan_ib.get_option_chains_params(sym, sec_type=sec_type_str, use_yf=use_free_data)
 
                                      if not chains:
                                          log(f"   ⚠️ Geen optie chains gevonden voor {sym}")
@@ -584,7 +585,7 @@ with tab1:
                                          spread_strikes = found_strikes
                                          final_strikes = sorted(list(set(wide_strikes) | spread_strikes))
 
-                                         chain_data = scan_ib.get_chain_greeks_and_oi(sym, exp, final_strikes)
+                                         chain_data = scan_ib.get_chain_greeks_and_oi(sym, exp, final_strikes, use_yf=use_free_data)
 
                                          if not chain_data.empty:
                                              m_struct = scanner.analyze_market_structure(chain_data)
@@ -660,7 +661,6 @@ with tab1:
                                          ret_count = 0
                                          while len(filtered) < 5 and ret_count < 2:
                                              log(f"   🔄 Auto-Tune: Versoepelen filters (poging {ret_count+1})...")
-                                             current_filters['min_profit'] *= 0.5
                                              if 'min_delta' in current_filters:
                                                  current_filters['min_delta'] = max(0.05, current_filters['min_delta'] - 0.05)
                                              if 'max_pain_dist' in current_filters:
@@ -1031,7 +1031,7 @@ with tab3:
                                     strikes_to_check.append(float(v))
                             
                             if strikes_to_check:
-                                live_data = refresh_client.get_chain_greeks_and_oi(selected_row['symbol'], selected_row['expiry'], strikes_to_check)
+                                live_data = refresh_client.get_chain_greeks_and_oi(selected_row['symbol'], selected_row['expiry'], strikes_to_check, use_yf=use_free_data)
                                 
                                 if not live_data.empty:
                                     import numpy as np
@@ -1264,7 +1264,7 @@ with tab4:
                                 if price <= 0:
                                     continue
                                 
-                                chains = export_ib.get_option_chains_params(sym, sec_type='STK')
+                                chains = export_ib.get_option_chains_params(sym, sec_type='STK', use_yf=use_free_data)
                                 if not chains:
                                     continue
                                     
@@ -1308,7 +1308,7 @@ with tab4:
                                 chain_data = pd.DataFrame()
                                 # Probeer maximaal de eerste 4 expiraties tot we er één vinden met actieve Bied/Laat prijzen
                                 for attempt_exp in valid_exps[:4]:
-                                    temp_data = export_ib.get_chain_greeks_and_oi(sym, attempt_exp, target_strikes)
+                                    temp_data = export_ib.get_chain_greeks_and_oi(sym, attempt_exp, target_strikes, use_yf=use_free_data)
                                     if temp_data.empty:
                                         continue
                                     
