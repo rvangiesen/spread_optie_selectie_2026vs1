@@ -629,7 +629,7 @@ with tab1:
                                          contract = Stock(sym, 'SMART', 'USD')
 
                                      # 1. Get Real-time Price Snapshot
-                                     market_data = scan_ib.get_market_data_snapshot(contract, use_hist_fallback=False)
+                                     market_data = scan_ib.get_market_data_snapshot(contract, use_hist_fallback=False, use_yf=use_free_data)
                                      price = market_data.get('price', 0.0)
                                      underlying_iv = market_data.get('iv', 0.0)
                                      data_source = market_data.get('source', 'Unknown')
@@ -974,7 +974,6 @@ with tab1:
                                  st.warning("Geen optie contracten gevonden. Probeer parameters te verruimen.")
                      finally:
                          scan_ib.disconnect()
-
         with col2:
             if st.button("Stop"):
                 st.warning("Scan gestopt.")
@@ -1559,7 +1558,7 @@ with tab4:
                             
                             try:
                                 contract = Stock(sym, 'SMART', 'USD')
-                                price_data = export_ib.get_market_data_snapshot(contract, use_hist_fallback=False)
+                                price_data = export_ib.get_market_data_snapshot(contract, use_hist_fallback=False, use_yf=use_free_data)
                                 price = price_data.get('price', 0.0)
                                 
                                 if price <= 0:
@@ -1738,7 +1737,7 @@ with tab5:
                             days_to_ex = (ex_div - now).days
                             if 0 <= days_to_ex <= days_ahead:
                                 contract = Stock(sym, 'SMART', 'USD')
-                                mkt = div_ib.get_market_data_snapshot(contract, use_hist_fallback=True)
+                                mkt = div_ib.get_market_data_snapshot(contract, use_hist_fallback=True, use_yf=use_free_data)
                                 price = mkt.get('price', 0.0)
                                 if price <= 0:
                                     try:
@@ -1754,7 +1753,7 @@ with tab5:
                                     
                                     # Voeg greeks toe om de echte call premie te vinden
                                     sec_type_str = 'STK'
-                                    chains = div_ib.get_option_chains_params(sym, sec_type=sec_type_str)
+                                    chains = div_ib.get_option_chains_params(sym, sec_type=sec_type_str, use_yf=use_free_data)
                                     real_exp = None
                                     final_strike = target_strike
                                     call_ask = 0.0
@@ -1788,7 +1787,7 @@ with tab5:
                                                 final_strike = max(chain.strikes)
                                                 
                                             # Haal prijs op van de target Call
-                                            greeks = div_ib.get_chain_greeks_and_oi(sym, real_exp, [final_strike])
+                                            greeks = div_ib.get_chain_greeks_and_oi(sym, real_exp, [final_strike], use_yf=use_free_data)
                                             if not greeks.empty:
                                                 # C voor Call
                                                 calls = greeks[greeks['right'] == 'C']

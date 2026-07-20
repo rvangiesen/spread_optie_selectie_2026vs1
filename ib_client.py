@@ -131,16 +131,32 @@ class IBClient:
         
         return None
 
-    def get_market_data_snapshot(self, contract, use_hist_fallback=True):
+    def get_market_data_snapshot(self, contract, use_hist_fallback=True, use_yf=False):
         """
         Fetches a real-time (or delayed) snapshot of price and IV.
         Optional fallback to historical data if 'use_hist_fallback' is True.
         """
         import time
+        import yfinance as yf
         price = 0.0
         iv = 0.0
         source = 'N/A'
         ticker = None
+
+        if use_yf:
+            try:
+                symbol = contract.symbol
+                if symbol == 'SPX': symbol = '^SPX'
+                elif symbol == 'NDX': symbol = '^NDX'
+                elif symbol == 'VIX': symbol = '^VIX'
+                
+                tk = yf.Ticker(symbol)
+                df = tk.history(period="1d")
+                if not df.empty:
+                    price = float(df['Close'].iloc[-1])
+                    return {'price': price, 'iv': 0.0, 'source': 'yfinance'}
+            except Exception as e:
+                print(f"[IBClient] yfinance price fetch error for {contract.symbol}: {e}")
 
         if not self.is_connected():
             return {'price': 0.0, 'iv': 0.0, 'source': 'Disconnected'}
