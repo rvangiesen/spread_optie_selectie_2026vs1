@@ -60,7 +60,23 @@ import random
 if 'default_client_id' not in st.session_state:
     st.session_state.default_client_id = random.randint(1000, 9999)
 client_id = st.sidebar.number_input("Client ID", value=st.session_state.default_client_id, help="Wijzig dit als je 'client id already in use' errors krijgt")
-use_live_data = st.sidebar.checkbox("Gebruik Real-Time Data (Abonnement vereist)", value=True)
+data_type_mode = st.sidebar.radio(
+    "IBKR Marktdata Type",
+    options=["Real-Time (Live)", "Vertraagd (Delayed)", "Bevroren (Delayed Frozen)"],
+    index=0,
+    help="Real-Time is standaard. Kies Vertraagd indien u geen betaald IBKR optie-abonnement heeft."
+)
+
+if data_type_mode == "Real-Time (Live)":
+    selected_dtype = 1
+    use_live_data = True
+elif data_type_mode == "Vertraagd (Delayed)":
+    selected_dtype = 3
+    use_live_data = False
+else:
+    selected_dtype = 4
+    use_live_data = False
+
 use_free_data = st.sidebar.checkbox("Gebruik Gratis Yahoo Finance Data (Opties)", value=False, help="Haalt optieketens op via Yahoo Finance. Geen IBKR data abonnement nodig.")
 
 
@@ -485,7 +501,7 @@ with tab1:
                 else:
                      try:
                          # Set DataType
-                         dtype = 1 if use_live_data else 3
+                         dtype = selected_dtype
                          scan_ib.set_data_type(dtype)
 
                          # Init Scanner
@@ -1546,7 +1562,7 @@ with tab4:
                     st.error(f"Kan geen TWS verbinding maken: {msg}")
                 else:
                     try:
-                        dtype = 1 if use_live_data else 3
+                        dtype = selected_dtype
                         export_ib.set_data_type(dtype)
                         
                         status_text.text(f"Start ophalen {len(symbols)} symbolen via TWS...")
@@ -1720,7 +1736,7 @@ with tab5:
             
             dividend_results = []
             if success:
-                div_ib.set_data_type(1 if use_live_data else 3)
+                div_ib.set_data_type(selected_dtype)
                 progress_bar_div = st.progress(0)
                 status_text_div = st.empty()
                 

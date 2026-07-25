@@ -6,8 +6,22 @@ import nest_asyncio
 import yfinance as yf
 import time
 
+import logging
+
 # Apply nest_asyncio to allow nested event loops in this module too
 nest_asyncio.apply()
+
+# Suppress non-fatal IBKR warning logs (10091, 354, 200, Unknown contract, etc.)
+class IBErrorFilter(logging.Filter):
+    def filter(self, record):
+        msg = record.getMessage()
+        if any(f"{code}" in msg for code in ['10091', '354', '10167', '10089', ' 200,', '200: No security definition', 'Unknown contract']):
+            return False
+        return True
+
+for _logger_name in ['ib_insync.wrapper', 'ib_insync.ib', 'ib_insync.client']:
+    _log = logging.getLogger(_logger_name)
+    _log.addFilter(IBErrorFilter())
 
 class IBClient:
     def __init__(self):
@@ -17,7 +31,20 @@ class IBClient:
         self.client_id = 1
         self.connected = False
         self.market_data_type = 3 # Default to Delayed
+        self.ib.errorEvent += self._on_ib_error
         
+    def _on_ib_error(self, reqId, errorCode, errorString, contract):
+        """Handler for IB API error/warning events."""
+        if errorCode in [354, 10091, 10167, 10089]: # Market data subscription notices
+            if self.market_data_type == 1:
+                sym = getattr(contract, 'symbol', '') if contract else ''
+                print(f"[IBClient] Notice {errorCode} (Live data unsubscribed for '{sym}'): Auto-switching to Delayed Market Data (Type 3).")
+                self.market_data_type = 3
+                try:
+                    self.ib.reqMarketDataType(3)
+                except Exception:
+                    pass
+
     def log_debug(self, msg):
         """Helper for logging debug information."""
         print(f"DEBUG_LOG: {msg}")
@@ -76,21 +103,32 @@ class IBClient:
         if not self.is_connected():
             return None
         
-        self.ib.reqMarketDataType(self.market_data_type) 
-        ticker = self.ib.reqMktData(contract, '', False, False)
-        
-        # Reduced timeout: 10 iterations = 1 second max
-        for _ in range(10): 
-            self.ib.sleep(0.1)
-            if ticker.last == ticker.last and ticker.last > 0: 
-                self.ib.cancelMktData(contract)
-                return ticker.last
-            if ticker.close == ticker.close and ticker.close > 0:
-                self.ib.cancelMktData(contract)
-                return ticker.close
-        
-        self.ib.cancelMktData(contract)        
-        return ticker.close if ticker.close > 0 else ticker.last
+        data_types_to_try = [self.market_data_type]
+        if self.market_data_type == 1:
+            data_types_to_try = [1, 3, 4, 2]
+        elif self.market_data_type == 3:
+            data_types_to_try = [3, 4]
+            
+        for dtype in data_types_to_try:
+            self.ib.reqMarketDataType(dtype) 
+            ticker = self.ib.reqMktData(contract, '', False, False)
+            
+            for _ in range(10): 
+                self.ib.sleep(0.1)
+                if ticker.last == ticker.last and ticker.last > 0: 
+                    self.ib.cancelMktData(contract)
+                    return ticker.last
+                if ticker.bid > 0 and ticker.ask > 0:
+                    mid = (ticker.bid + ticker.ask) / 2
+                    self.ib.cancelMktData(contract)
+                    return mid
+                if ticker.close == ticker.close and ticker.close > 0:
+                    self.ib.cancelMktData(contract)
+                    return ticker.close
+            
+            self.ib.cancelMktData(contract)        
+            
+        return None
 
     def qualify_contract_safe(self, contract):
         """
@@ -186,16 +224,13 @@ class IBClient:
             except Exception as e:
                  log_debug(f"Qualify failed: {e}")
 
-            # 2. Strategy: Try Standard Data first, then Frozen if closed
+            # 2. Strategy: Try Standard Data first, then Delayed/Frozen if closed or unsubscribed
             # Types: 1=Live, 3=Delayed, 2=Frozen, 4=Delayed Frozen
             data_types_to_try = [self.market_data_type]
-            
-            # If default failed or is standard, try Frozen fallback
-            if self.market_data_type in [1, 3]:
-                # Add 4 (Delayed Frozen) as fallback because 2 (Frozen) requires market data subscription usually
-                # But we try 2 if live, 4 if delayed
-                fallback = 2 if self.market_data_type == 1 else 4
-                data_types_to_try.append(fallback)
+            if self.market_data_type == 1:
+                data_types_to_try = [1, 3, 4, 2]
+            elif self.market_data_type == 3:
+                data_types_to_try = [3, 4]
             
             found = False
             ticker = None
@@ -289,32 +324,44 @@ class IBClient:
         if not self.is_connected() or not contracts:
             return {}
             
-        self.ib.reqMarketDataType(self.market_data_type)
+        data_types_to_try = [self.market_data_type]
+        if self.market_data_type == 1:
+            data_types_to_try = [1, 3, 4, 2]
+        elif self.market_data_type == 3:
+            data_types_to_try = [3, 4]
+            
         results = {}
-        
         chunk_size = 50
         for i in range(0, len(contracts), chunk_size):
             chunk = contracts[i:i + chunk_size]
-            tickers = [self.ib.reqMktData(c, '', False, False) for c in chunk]
             
-            # Give it a moment to fill
-            for _ in range(20):
-                self.ib.sleep(0.1)
-                pending = [t for t in tickers if (t.last != t.last and t.close != t.close)]
-                if not pending:
-                    break
-                    
-            for t in tickers:
-                price = t.last if (t.last == t.last and t.last > 0) else t.close
-                if price != price or price <= 0:
-                    price = t.bid if t.bid > 0 else 0.0 # Fallback
+            for dtype in data_types_to_try:
+                self.ib.reqMarketDataType(dtype)
+                tickers = [self.ib.reqMktData(c, '', False, False) for c in chunk]
                 
-                if t.contract.symbol:
-                     results[t.contract.symbol] = price
-                     
-            # Cancel updates immediately to free up quota
-            for t in tickers:
-                self.ib.cancelMktData(t.contract)
+                for _ in range(15):
+                    self.ib.sleep(0.1)
+                    pending = [t for t in tickers if (t.last != t.last and t.close != t.close and not (t.bid > 0 and t.ask > 0))]
+                    if not pending:
+                        break
+                        
+                got_data = False
+                for t in tickers:
+                    price = t.last if (t.last == t.last and t.last > 0) else t.close
+                    if price != price or price <= 0:
+                        if t.bid > 0 and t.ask > 0:
+                            price = (t.bid + t.ask) / 2
+                        elif t.bid > 0:
+                            price = t.bid
+                    if price > 0 and t.contract.symbol:
+                        results[t.contract.symbol] = price
+                        got_data = True
+                        
+                for t in tickers:
+                    self.ib.cancelMktData(t.contract)
+                    
+                if got_data:
+                    break
             
         return results
 
@@ -650,8 +697,6 @@ class IBClient:
     def get_chain_greeks_and_oi(self, symbol, expiration, strikes, multiplier='100', use_yf=False):
         if use_yf:
             import yfinance as yf
-            import pandas as pd
-            import numpy as np
             from datetime import datetime
             import math
             try:
@@ -753,9 +798,10 @@ class IBClient:
         self.ib.reqMarketDataType(self.market_data_type)
         
         data_types_to_try = [self.market_data_type]
-        if self.market_data_type in [1, 3]:
-            fallback = 2 if self.market_data_type == 1 else 4
-            data_types_to_try.append(fallback)
+        if self.market_data_type == 1:
+            data_types_to_try = [1, 3, 4, 2]
+        elif self.market_data_type == 3:
+            data_types_to_try = [3, 4]
             
         print(f"DEBUG_LOG: Requesting market data for {len(contracts)} contracts in chunks of 50...")
         all_tickers = []
@@ -765,8 +811,9 @@ class IBClient:
         for i in range(0, len(contracts), chunk_size):
             chunk = contracts[i:i + chunk_size]
             tickers = []
+            self.ib.reqMarketDataType(data_types_to_try[0])
             for c in chunk:
-                t = self.ib.reqMktData(c, '100,101,106', False, False)
+                t = self.ib.reqMktData(c, '106', False, False)
                 tickers.append(t)
             
             for dtype in data_types_to_try:
@@ -776,8 +823,8 @@ class IBClient:
                 while time.time() - start_type < type_timeout:
                     if not self.ib.isConnected(): break
                     self.ib.sleep(0.2)
-                    if all((t.modelGreeks or (t.close and t.close > 0) or (t.last and t.last > 0)) for t in tickers): break
-                if any(t.modelGreeks for t in tickers): break
+                    if all((t.modelGreeks or (t.close and t.close > 0) or (t.last and t.last > 0) or (t.bid > 0 and t.ask > 0)) for t in tickers): break
+                if any(t.modelGreeks or (t.bid > 0 and t.ask > 0) or (t.last > 0) or (t.close > 0) for t in tickers): break
             
             all_tickers.extend(tickers)
             # Crucial step: cancel subscriptions immediately to avoid hitting the 100 limit!
