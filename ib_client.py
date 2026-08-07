@@ -6,8 +6,22 @@ import nest_asyncio
 import yfinance as yf
 import time
 
+import logging
+
 # Apply nest_asyncio to allow nested event loops in this module too
 nest_asyncio.apply()
+
+# Suppress non-fatal IBKR warning logs (10091, 354, 200, Unknown contract, etc.)
+class IBErrorFilter(logging.Filter):
+    def filter(self, record):
+        msg = record.getMessage()
+        if any(f"{code}" in msg for code in ['10091', '354', '10167', '10089', ' 200,', '200: No security definition', 'Unknown contract']):
+            return False
+        return True
+
+for _logger_name in ['ib_insync.wrapper', 'ib_insync.ib', 'ib_insync.client']:
+    _log = logging.getLogger(_logger_name)
+    _log.addFilter(IBErrorFilter())
 
 class IBClient:
     def __init__(self):
@@ -18,7 +32,20 @@ class IBClient:
         self.connected = False
         self.market_data_type = 3 # Default to Delayed
         self.last_error = ""
+        self.ib.errorEvent += self._on_ib_error
         
+    def _on_ib_error(self, reqId, errorCode, errorString, contract):
+        """Handler for IB API error/warning events."""
+        if errorCode in [354, 10091, 10167, 10089]: # Market data subscription notices
+            if self.market_data_type == 1:
+                sym = getattr(contract, 'symbol', '') if contract else ''
+                print(f"[IBClient] Notice {errorCode} (Live data unsubscribed for '{sym}'): Auto-switching to Delayed Market Data (Type 3).")
+                self.market_data_type = 3
+                try:
+                    self.ib.reqMarketDataType(3)
+                except Exception:
+                    pass
+
     def log_debug(self, msg):
         """Helper for logging debug information."""
         print(f"DEBUG_LOG: {msg}")
@@ -77,21 +104,32 @@ class IBClient:
         if not self.is_connected():
             return None
         
-        self.ib.reqMarketDataType(self.market_data_type) 
-        ticker = self.ib.reqMktData(contract, '', False, False)
-        
-        # Reduced timeout: 10 iterations = 1 second max
-        for _ in range(10): 
-            self.ib.sleep(0.1)
-            if ticker.last == ticker.last and ticker.last > 0: 
-                self.ib.cancelMktData(contract)
-                return ticker.last
-            if ticker.close == ticker.close and ticker.close > 0:
-                self.ib.cancelMktData(contract)
-                return ticker.close
-        
-        self.ib.cancelMktData(contract)        
-        return ticker.close if ticker.close > 0 else ticker.last
+        data_types_to_try = [self.market_data_type]
+        if self.market_data_type == 1:
+            data_types_to_try = [1, 3, 4, 2]
+        elif self.market_data_type == 3:
+            data_types_to_try = [3, 4]
+            
+        for dtype in data_types_to_try:
+            self.ib.reqMarketDataType(dtype) 
+            ticker = self.ib.reqMktData(contract, '', False, False)
+            
+            for _ in range(10): 
+                self.ib.sleep(0.1)
+                if ticker.last == ticker.last and ticker.last > 0: 
+                    self.ib.cancelMktData(contract)
+                    return ticker.last
+                if ticker.bid > 0 and ticker.ask > 0:
+                    mid = (ticker.bid + ticker.ask) / 2
+                    self.ib.cancelMktData(contract)
+                    return mid
+                if ticker.close == ticker.close and ticker.close > 0:
+                    self.ib.cancelMktData(contract)
+                    return ticker.close
+            
+            self.ib.cancelMktData(contract)        
+            
+        return None
 
     def qualify_contract_safe(self, contract):
         """
@@ -132,16 +170,32 @@ class IBClient:
         
         return None
 
-    def get_market_data_snapshot(self, contract, use_hist_fallback=True):
+    def get_market_data_snapshot(self, contract, use_hist_fallback=True, use_yf=False):
         """
         Fetches a real-time (or delayed) snapshot of price and IV.
         Optional fallback to historical data if 'use_hist_fallback' is True.
         """
         import time
+        import yfinance as yf
         price = 0.0
         iv = 0.0
         source = 'N/A'
         ticker = None
+
+        if use_yf:
+            try:
+                symbol = contract.symbol
+                if symbol == 'SPX': symbol = '^SPX'
+                elif symbol == 'NDX': symbol = '^NDX'
+                elif symbol == 'VIX': symbol = '^VIX'
+                
+                tk = yf.Ticker(symbol)
+                df = tk.history(period="1d")
+                if not df.empty:
+                    price = float(df['Close'].iloc[-1])
+                    return {'price': price, 'iv': 0.0, 'source': 'yfinance'}
+            except Exception as e:
+                print(f"[IBClient] yfinance price fetch error for {contract.symbol}: {e}")
 
         if not self.is_connected():
             return {'price': 0.0, 'iv': 0.0, 'source': 'Disconnected'}
@@ -171,16 +225,13 @@ class IBClient:
             except Exception as e:
                  log_debug(f"Qualify failed: {e}")
 
-            # 2. Strategy: Try Standard Data first, then Frozen if closed
+            # 2. Strategy: Try Standard Data first, then Delayed/Frozen if closed or unsubscribed
             # Types: 1=Live, 3=Delayed, 2=Frozen, 4=Delayed Frozen
             data_types_to_try = [self.market_data_type]
-            
-            # If default failed or is standard, try Frozen fallback
-            if self.market_data_type in [1, 3]:
-                # Add 4 (Delayed Frozen) as fallback because 2 (Frozen) requires market data subscription usually
-                # But we try 2 if live, 4 if delayed
-                fallback = 2 if self.market_data_type == 1 else 4
-                data_types_to_try.append(fallback)
+            if self.market_data_type == 1:
+                data_types_to_try = [1, 3, 4, 2]
+            elif self.market_data_type == 3:
+                data_types_to_try = [3, 4]
             
             found = False
             ticker = None
@@ -274,32 +325,44 @@ class IBClient:
         if not self.is_connected() or not contracts:
             return {}
             
-        self.ib.reqMarketDataType(self.market_data_type)
+        data_types_to_try = [self.market_data_type]
+        if self.market_data_type == 1:
+            data_types_to_try = [1, 3, 4, 2]
+        elif self.market_data_type == 3:
+            data_types_to_try = [3, 4]
+            
         results = {}
-        
         chunk_size = 50
         for i in range(0, len(contracts), chunk_size):
             chunk = contracts[i:i + chunk_size]
-            tickers = [self.ib.reqMktData(c, '', False, False) for c in chunk]
             
-            # Give it a moment to fill
-            for _ in range(20):
-                self.ib.sleep(0.1)
-                pending = [t for t in tickers if (t.last != t.last and t.close != t.close)]
-                if not pending:
-                    break
-                    
-            for t in tickers:
-                price = t.last if (t.last == t.last and t.last > 0) else t.close
-                if price != price or price <= 0:
-                    price = t.bid if t.bid > 0 else 0.0 # Fallback
+            for dtype in data_types_to_try:
+                self.ib.reqMarketDataType(dtype)
+                tickers = [self.ib.reqMktData(c, '', False, False) for c in chunk]
                 
-                if t.contract.symbol:
-                     results[t.contract.symbol] = price
-                     
-            # Cancel updates immediately to free up quota
-            for t in tickers:
-                self.ib.cancelMktData(t.contract)
+                for _ in range(15):
+                    self.ib.sleep(0.1)
+                    pending = [t for t in tickers if (t.last != t.last and t.close != t.close and not (t.bid > 0 and t.ask > 0))]
+                    if not pending:
+                        break
+                        
+                got_data = False
+                for t in tickers:
+                    price = t.last if (t.last == t.last and t.last > 0) else t.close
+                    if price != price or price <= 0:
+                        if t.bid > 0 and t.ask > 0:
+                            price = (t.bid + t.ask) / 2
+                        elif t.bid > 0:
+                            price = t.bid
+                    if price > 0 and t.contract.symbol:
+                        results[t.contract.symbol] = price
+                        got_data = True
+                        
+                for t in tickers:
+                    self.ib.cancelMktData(t.contract)
+                    
+                if got_data:
+                    break
             
         return results
 
@@ -575,11 +638,37 @@ class IBClient:
             # print(f"DEBUG_LOG: ATR calculation error for {symbol}: {e}")
             return 0.0
 
-    def get_option_chains_params(self, symbol, sec_type='STK', exchange='SMART', currency='USD'):
+    def get_option_chains_params(self, symbol, sec_type='STK', exchange='SMART', currency='USD', use_yf=False):
         """
         Fetches option chain parameters (strikes, expirations) for a given underlying.
         Returns a list of SecDefOptParams objects.
         """
+        if use_yf:
+            import yfinance as yf
+            class YFOptParams:
+                def __init__(self, expirations, strikes):
+                    self.expirations = expirations
+                    self.strikes = strikes
+            try:
+                yf_sym = symbol
+                if yf_sym == 'SPX': yf_sym = '^SPX'
+                elif yf_sym == 'NDX': yf_sym = '^NDX'
+                elif yf_sym == 'VIX': yf_sym = '^VIX'
+                
+                tk = yf.Ticker(yf_sym)
+                expirations = tk.options
+                if not expirations:
+                    return []
+                ib_expirations = [e.replace('-', '') for e in expirations]
+                
+                # Fetch strikes from the first expiration
+                chain = tk.option_chain(expirations[0])
+                strikes = sorted(list(set(chain.calls['strike'].tolist() + chain.puts['strike'].tolist())))
+                return [YFOptParams(ib_expirations, strikes)]
+            except Exception as e:
+                print(f"[IBClient] YF Error fetching option chains: {e}")
+                return []
+
         if not self.is_connected():
             return []
         
@@ -636,7 +725,84 @@ class IBClient:
                 
         return chains if chains else []
 
-    def get_chain_greeks_and_oi(self, symbol, expiration, strikes, multiplier='100'):
+    def get_chain_greeks_and_oi(self, symbol, expiration, strikes, multiplier='100', use_yf=False):
+        if use_yf:
+            import yfinance as yf
+            from datetime import datetime
+            import math
+            try:
+                yf_sym = symbol
+                if yf_sym == 'SPX': yf_sym = '^SPX'
+                elif yf_sym == 'NDX': yf_sym = '^NDX'
+                elif yf_sym == 'VIX': yf_sym = '^VIX'
+                
+                tk = yf.Ticker(yf_sym)
+                yf_exp = f"{expiration[:4]}-{expiration[4:6]}-{expiration[6:8]}"
+                chain = tk.option_chain(yf_exp)
+                
+                # Fetch underlying price for greeks
+                und_price = tk.history(period="1d")['Close'].iloc[-1] if not tk.history(period="1d").empty else 0.0
+                
+                data_list = []
+                
+                # DTE calculation for Greeks
+                exp_date = datetime.strptime(yf_exp, '%Y-%m-%d')
+                dte = (exp_date - datetime.now()).days
+                t_years = max(0.001, dte / 365.0)
+                risk_free = 0.04 # 4% approximate risk free rate
+                
+                def add_to_list(df, right):
+                    # Filter by strikes
+                    df = df[df['strike'].isin(strikes)]
+                    for _, row in df.iterrows():
+                        strike = row['strike']
+                        bid = row.get('bid', 0.0)
+                        ask = row.get('ask', 0.0)
+                        last = row.get('lastPrice', 0.0)
+                        vol = row.get('volume', 0)
+                        oi = row.get('openInterest', 0)
+                        iv = row.get('impliedVolatility', 0.0)
+                        
+                        mid_p = (bid + ask) / 2 if (bid > 0 and ask > 0) else last
+                        if mid_p <= 0: continue
+                        
+                        delta, gamma, vega, theta = 0.0, 0.0, 0.0, 0.0
+                        if und_price > 0 and iv > 0:
+                            try:
+                                import py_vollib.black_scholes.greeks.analytical as greeks
+                                flag = 'c' if right == 'C' else 'p'
+                                delta = greeks.delta(flag, und_price, strike, t_years, risk_free, iv)
+                                gamma = greeks.gamma(flag, und_price, strike, t_years, risk_free, iv)
+                                vega = greeks.vega(flag, und_price, strike, t_years, risk_free, iv) / 100.0
+                                theta = greeks.theta(flag, und_price, strike, t_years, risk_free, iv) / 365.0
+                            except Exception:
+                                pass # ignore calculation errors
+                                
+                        data_list.append({
+                            'strike': strike,
+                            'right': right,
+                            'bid': bid,
+                            'ask': ask,
+                            'mid': mid_p,
+                            'volume': vol or 0,
+                            'openInterest': oi or 0,
+                            'delta': delta,
+                            'gamma': gamma,
+                            'vega': vega,
+                            'theta': theta,
+                            'iv': iv,
+                            'opt_price': mid_p,
+                            'und_price': und_price
+                        })
+                        
+                add_to_list(chain.calls, 'C')
+                add_to_list(chain.puts, 'P')
+                
+                return pd.DataFrame(data_list)
+            except Exception as e:
+                print(f"[IBClient] YF Error fetching option chains: {e}")
+                return pd.DataFrame()
+
         try:
             # 1. Create specific C/P contracts for requested strikes
             target_contracts = []
@@ -681,9 +847,10 @@ class IBClient:
         self.ib.reqMarketDataType(self.market_data_type)
         
         data_types_to_try = [self.market_data_type]
-        if self.market_data_type in [1, 3]:
-            fallback = 2 if self.market_data_type == 1 else 4
-            data_types_to_try.append(fallback)
+        if self.market_data_type == 1:
+            data_types_to_try = [1, 3, 4, 2]
+        elif self.market_data_type == 3:
+            data_types_to_try = [3, 4]
             
         print(f"DEBUG_LOG: Requesting market data for {len(contracts)} contracts in chunks of 50...")
         all_tickers = []
@@ -693,8 +860,9 @@ class IBClient:
         for i in range(0, len(contracts), chunk_size):
             chunk = contracts[i:i + chunk_size]
             tickers = []
+            self.ib.reqMarketDataType(data_types_to_try[0])
             for c in chunk:
-                t = self.ib.reqMktData(c, '100,101,106', False, False)
+                t = self.ib.reqMktData(c, '106', False, False)
                 tickers.append(t)
             
             for dtype in data_types_to_try:
@@ -704,8 +872,8 @@ class IBClient:
                 while time.time() - start_type < type_timeout:
                     if not self.ib.isConnected(): break
                     self.ib.sleep(0.2)
-                    if all((t.modelGreeks or (t.close and t.close > 0) or (t.last and t.last > 0)) for t in tickers): break
-                if any(t.modelGreeks for t in tickers): break
+                    if all((t.modelGreeks or (t.close and t.close > 0) or (t.last and t.last > 0) or (t.bid > 0 and t.ask > 0)) for t in tickers): break
+                if any(t.modelGreeks or (t.bid > 0 and t.ask > 0) or (t.last > 0) or (t.close > 0) for t in tickers): break
             
             all_tickers.extend(tickers)
             # Crucial step: cancel subscriptions immediately to avoid hitting the 100 limit!

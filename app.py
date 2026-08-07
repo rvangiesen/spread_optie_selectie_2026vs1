@@ -60,7 +60,25 @@ import random
 if 'default_client_id' not in st.session_state:
     st.session_state.default_client_id = random.randint(1000, 9999)
 client_id = st.sidebar.number_input("Client ID", value=st.session_state.default_client_id, help="Wijzig dit als je 'client id already in use' errors krijgt")
-use_live_data = st.sidebar.checkbox("Gebruik Real-Time Data (Abonnement vereist)", value=True)
+data_type_mode = st.sidebar.radio(
+    "IBKR Marktdata Type",
+    options=["Real-Time (Live)", "Vertraagd (Delayed)", "Bevroren (Delayed Frozen)"],
+    index=0,
+    help="Real-Time is standaard. Kies Vertraagd indien u geen betaald IBKR optie-abonnement heeft."
+)
+
+if data_type_mode == "Real-Time (Live)":
+    selected_dtype = 1
+    use_live_data = True
+elif data_type_mode == "Vertraagd (Delayed)":
+    selected_dtype = 3
+    use_live_data = False
+else:
+    selected_dtype = 4
+    use_live_data = False
+
+use_free_data = st.sidebar.checkbox("Gebruik Gratis Yahoo Finance Data (Opties)", value=False, help="Haalt optieketens op via Yahoo Finance. Geen IBKR data abonnement nodig.")
+
 
 if st.sidebar.button("Test Verbinding & Opslaan"):
     # Test connection ephemerally
@@ -495,7 +513,7 @@ with tab1:
                 else:
                      try:
                          # Set DataType
-                         dtype = 1 if use_live_data else 3
+                         dtype = selected_dtype
                          scan_ib.set_data_type(dtype)
 
                          # Init Scanner
@@ -670,7 +688,6 @@ with tab1:
                                          ret_count = 0
                                          while len(filtered) < 5 and ret_count < 2:
                                              log(f"   🔄 Auto-Tune: Versoepelen filters (poging {ret_count+1})...")
-                                             current_filters['min_profit'] *= 0.5
                                              if 'min_delta' in current_filters: current_filters['min_delta'] = max(0.05, current_filters['min_delta'] - 0.05)
                                              if 'max_pain_dist' in current_filters: current_filters['max_pain_dist'] += 10.0
                                              filtered = scanner.filter_spreads(processed_spreads, current_filters, log_func=log)
@@ -700,7 +717,7 @@ with tab1:
                                          contract = Stock(sym, 'SMART', 'USD')
 
                                      # 1. Get Real-time Price Snapshot
-                                     market_data = scan_ib.get_market_data_snapshot(contract, use_hist_fallback=False)
+                                     market_data = scan_ib.get_market_data_snapshot(contract, use_hist_fallback=False, use_yf=use_free_data)
                                      price = market_data.get('price', 0.0)
                                      underlying_iv = market_data.get('iv', 0.0)
                                      data_source = market_data.get('source', 'Unknown')
@@ -814,7 +831,7 @@ with tab1:
 
                                      log(f"   Optieketens opvragen...")
                                      sec_type_str = 'IND' if contract.secType == 'IND' else 'STK'
-                                     chains = scan_ib.get_option_chains_params(sym, sec_type=sec_type_str)
+                                     chains = scan_ib.get_option_chains_params(sym, sec_type=sec_type_str, use_yf=use_free_data)
 
                                      if not chains:
                                          log(f"   ⚠️ Geen optie chains gevonden voor {sym}")
@@ -907,7 +924,7 @@ with tab1:
                                          spread_strikes = found_strikes
                                          final_strikes = sorted(list(set(wide_strikes) | spread_strikes))
 
-                                         chain_data = scan_ib.get_chain_greeks_and_oi(sym, exp, final_strikes)
+                                         chain_data = scan_ib.get_chain_greeks_and_oi(sym, exp, final_strikes, use_yf=use_free_data)
 
                                          if not chain_data.empty:
                                              m_struct = scanner.analyze_market_structure(chain_data)
@@ -989,7 +1006,6 @@ with tab1:
                                          ret_count = 0
                                          while len(filtered) < 5 and ret_count < 2:
                                              log(f"   🔄 Auto-Tune: Versoepelen filters (poging {ret_count+1})...")
-                                             current_filters['min_profit'] *= 0.5
                                              if 'min_delta' in current_filters:
                                                  current_filters['min_delta'] = max(0.05, current_filters['min_delta'] - 0.05)
                                              if 'max_pain_dist' in current_filters:
@@ -1049,7 +1065,6 @@ with tab1:
                                  st.warning("Geen optie contracten gevonden. Probeer parameters te verruimen.")
                      finally:
                          scan_ib.disconnect()
-
         with col2:
             if st.button("Stop"):
                 st.warning("Scan gestopt.")
@@ -1424,7 +1439,7 @@ with tab3:
                                     strikes_to_check.append(float(v))
                             
                             if strikes_to_check:
-                                live_data = refresh_client.get_chain_greeks_and_oi(selected_row['symbol'], selected_row['expiry'], strikes_to_check)
+                                live_data = refresh_client.get_chain_greeks_and_oi(selected_row['symbol'], selected_row['expiry'], strikes_to_check, use_yf=use_free_data)
                                 
                                 if not live_data.empty:
                                     import numpy as np
@@ -1641,7 +1656,7 @@ with tab4:
                     st.error(f"Kan geen TWS verbinding maken: {msg}")
                 else:
                     try:
-                        dtype = 1 if use_live_data else 3
+                        dtype = selected_dtype
                         export_ib.set_data_type(dtype)
                         
                         status_text.text(f"Start ophalen {len(symbols)} symbolen via TWS...")
@@ -1653,13 +1668,13 @@ with tab4:
                             
                             try:
                                 contract = Stock(sym, 'SMART', 'USD')
-                                price_data = export_ib.get_market_data_snapshot(contract, use_hist_fallback=False)
+                                price_data = export_ib.get_market_data_snapshot(contract, use_hist_fallback=False, use_yf=use_free_data)
                                 price = price_data.get('price', 0.0)
                                 
                                 if price <= 0:
                                     continue
                                 
-                                chains = export_ib.get_option_chains_params(sym, sec_type='STK')
+                                chains = export_ib.get_option_chains_params(sym, sec_type='STK', use_yf=use_free_data)
                                 if not chains:
                                     continue
                                     
@@ -1703,7 +1718,7 @@ with tab4:
                                 chain_data = pd.DataFrame()
                                 # Probeer maximaal de eerste 4 expiraties tot we er één vinden met actieve Bied/Laat prijzen
                                 for attempt_exp in valid_exps[:4]:
-                                    temp_data = export_ib.get_chain_greeks_and_oi(sym, attempt_exp, target_strikes)
+                                    temp_data = export_ib.get_chain_greeks_and_oi(sym, attempt_exp, target_strikes, use_yf=use_free_data)
                                     if temp_data.empty:
                                         continue
                                     
@@ -1815,7 +1830,7 @@ with tab5:
             
             dividend_results = []
             if success:
-                div_ib.set_data_type(1 if use_live_data else 3)
+                div_ib.set_data_type(selected_dtype)
                 progress_bar_div = st.progress(0)
                 status_text_div = st.empty()
                 
@@ -1832,7 +1847,7 @@ with tab5:
                             days_to_ex = (ex_div - now).days
                             if 0 <= days_to_ex <= days_ahead:
                                 contract = Stock(sym, 'SMART', 'USD')
-                                mkt = div_ib.get_market_data_snapshot(contract, use_hist_fallback=True)
+                                mkt = div_ib.get_market_data_snapshot(contract, use_hist_fallback=True, use_yf=use_free_data)
                                 price = mkt.get('price', 0.0)
                                 if price <= 0:
                                     try:
@@ -1848,7 +1863,7 @@ with tab5:
                                     
                                     # Voeg greeks toe om de echte call premie te vinden
                                     sec_type_str = 'STK'
-                                    chains = div_ib.get_option_chains_params(sym, sec_type=sec_type_str)
+                                    chains = div_ib.get_option_chains_params(sym, sec_type=sec_type_str, use_yf=use_free_data)
                                     real_exp = None
                                     final_strike = target_strike
                                     call_ask = 0.0
@@ -1882,7 +1897,7 @@ with tab5:
                                                 final_strike = max(chain.strikes)
                                                 
                                             # Haal prijs op van de target Call
-                                            greeks = div_ib.get_chain_greeks_and_oi(sym, real_exp, [final_strike])
+                                            greeks = div_ib.get_chain_greeks_and_oi(sym, real_exp, [final_strike], use_yf=use_free_data)
                                             if not greeks.empty:
                                                 # C voor Call
                                                 calls = greeks[greeks['right'] == 'C']
