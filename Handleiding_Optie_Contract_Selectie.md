@@ -233,4 +233,18 @@ Het gegenereerde Word-rapport is professioneel opgemaakt in een *Navy Blue* en *
 
 ---
 
+## 8. Automatische Optieprijs- & Intrinsieke Waarde Borging
+
+Om te voorkomen dat de tool verkeerde of verouderde optieprijzen toont (bijvoorbeeld als TWS buiten beurstijden geen actuele bied/laat-prijzen levert of als Yahoo Finance verouderde transacties uit het verleden bevat), beschikt de software over een ingebouwd **Intrinsieke Waarde Borgingssysteem**.
+
+### Hoe werkt deze beveiliging?
+1. **Intrinsieke Waarde Check**: Elke optie wordt direct getoetst aan de wiskundige ondergrens:
+   * Voor **Calls**: Intrinsieke waarde = $\max(0, \text{Aandelenkoers} - \text{Uitoefenprijs})$
+   * Voor **Puts**: Intrinsieke waarde = $\max(0, \text{Uitoefenprijs} - \text{Aandelenkoers})$
+2. **Filteren van Verouderde (Stale) Data**: Als een koersbron (zoals Yahoo Finance of TWS vertraagde data) een prijs teruggeeft die *lager* ligt dan de intrinsieke waarde min $0,50 (bijv. $15,80 voor een Call 175 bij aandeel $227,27 met intrinsieke waarde van $52,27), wordt deze transactieprijs direct als **verouderd/ongeldig** aangemerkt en verworpen.
+3. **Automatische Bjerksund-Stensland Fallback**: Zodra live bied/laat-prijzen ontbreken én de verouderde slotkoersen verworpen zijn, berekent de tool automatisch de exacte theoretische optieprijs via het **Bjerksund-Stensland 2002 model** op basis van de actuele aandelenkoers en Impliciete Volatiliteit (IV). 
+4. **Correctie van Break-Even & Winstberekeningen**: Hierdoor worden het **Break-Even Punt (BEP)**, de **BEP Afstand (%)**, de **Sluitingswinst (EM)** en het **Koopadvies** altijd berekend op basis van de werkelijke, betrouwbare optiewaarde.
+
+---
+
 *Succes met het scannen en selecteren! Mocht je vragen hebben over een specifieke term, raadpleeg dan dit document of bekijk de live statistieken in de tabbladen.*

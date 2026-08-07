@@ -96,7 +96,7 @@ elif "Neutraal" in marktvisie:
 st.sidebar.markdown(f"**Actieve Strategieën:** {', '.join(active_strategies)}")
 
 # Batch Scanner Input
-scan_mode = st.sidebar.selectbox("Scan Modus", ["Enkel Symbool", "Batch Scan (Lijst)", "Batch Scan (Bestand)", "Live TWS Scanner", "BarChart Optie Flow (CSV)", "Auto-Pilot (Downloads map)"])
+scan_mode = st.sidebar.selectbox("Scan Modus", ["Enkel Symbool", "Batch Scan (Lijst)", "Batch Scan (Bestand)", "Live TWS Scanner", "BarChart Optie Flow (CSV)", "Auto-Pilot (Downloads map)", "Super-Fast ATM Long Scan (1% Koop)"])
 
 symbols_to_scan = []
 scan_code = "MOST_ACTIVE" 
@@ -185,11 +185,23 @@ elif scan_mode == "Auto-Pilot (Downloads map)":
     default_t = datetime.time(15, 40)
     auto_pilot_time = st.sidebar.time_input("Start Tijd (Uur/Min)", value=default_t, help="Kies bijv. 15:40 voor zomertijd of 16:40 / 14:40 voor wintertijd (10 min na beursopening).")
     
+    auto_pilot_type = st.sidebar.selectbox(
+        "Auto-Pilot Regel",
+        ["Standaard Vertical Spreads", "Super-Fast ATM Long Scan (1% Koop)"],
+        key="auto_pilot_type",
+        help="Kies welke regels/modus de automatische scan moet uitvoeren."
+    )
+    
     # We delay loading symbols_to_scan until the actual execute phase so the user can replace the file while waiting
+    sec_type = "Aandeel"
+
+elif scan_mode == "Super-Fast ATM Long Scan (1% Koop)":
+    st.sidebar.info("Super-snel scannen van S&P 500 aandelen en ETF's voor Long Call/Put opties via het 1% koop proces.")
     sec_type = "Aandeel"
 
 # Filters
 st.sidebar.subheader("Filters & Criteria")
+use_cache_toggle = st.sidebar.checkbox("Gebruik Cache (Indien parameters gelijk blijven)", value=True)
 min_dte = st.sidebar.number_input("Min Dagen tot Expiratie", value=5)
 max_dte = st.sidebar.number_input("Max Dagen tot Expiratie", value=32)
 width = st.sidebar.number_input("Spread Breedte", value=10)
@@ -503,6 +515,9 @@ with tab1:
                                  st.error("Scanner heeft geen resultaten teruggegeven.")
                                  current_symbols = []
 
+                         if scan_mode == "Super-Fast ATM Long Scan (1% Koop)":
+                             current_symbols = ["DUMMY"]
+
                          if not current_symbols:
                              st.warning("Geen symbolen om te scannen.")
                          else:
@@ -523,7 +538,7 @@ with tab1:
                              }
                              core_hash = hashlib.md5(json.dumps(core_config, sort_keys=True).encode()).hexdigest()
                              
-                             use_cache = st.session_state.get('last_core_hash') == core_hash and 'all_unfiltered_global' in st.session_state
+                             use_cache = use_cache_toggle and st.session_state.get('last_core_hash') == core_hash and 'all_unfiltered_global' in st.session_state
                              if use_cache:
                                  all_unfiltered_global = st.session_state['all_unfiltered_global']
                              else:
@@ -567,10 +582,67 @@ with tab1:
                                  log(f"📈 EMA Filter actief: {ema_spans}")
                                  status_text.text("Bezig met ophalen historische data voor EMA filter...")
 
+                             is_fast_atm = (scan_mode == "Super-Fast ATM Long Scan (1% Koop)") or (scan_mode == "Auto-Pilot (Downloads map)" and st.session_state.get('auto_pilot_type') == "Super-Fast ATM Long Scan (1% Koop)")
+
                              # 2. Main Loop
                              approved_symbols = []
 
                              for i, sym in enumerate(current_symbols):
+                                 if is_fast_atm:
+                                     if scan_mode == "Super-Fast ATM Long Scan (1% Koop)":
+                                         status_text.text("S&P 500 symbolen ophalen via Wikipedia...")
+                                         import urllib.request
+                                         try:
+                                             req = urllib.request.Request('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies', headers={'User-Agent': 'Mozilla/5.0'})
+                                             html = urllib.request.urlopen(req).read()
+                                             df_sp500 = pd.read_html(html)[0]
+                                             sp500_symbols = df_sp500['Symbol'].tolist()
+                                             sp500_symbols = [s for s in sp500_symbols if '.' not in s and ' ' not in s]
+                                         except Exception as e:
+                                             log(f"⚠️ Kon S&P 500 niet van Wikipedia ophalen ({e}). Gebruik fallback lijst.")
+                                             sp500_symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "UNH", "JNJ", "XOM", "JPM", "V", "PG", "MA", "AVGO", "HD", "CVX", "MRK", "ABBV"]
+                                             
+                                         OPTIONABLE_ETFS = ["SPY", "QQQ", "IWM", "DIA", "XLF", "XLK", "XLE", "XLV", "XLI", "XLY", "XLP", "XLB", "XLU", "XLRE", "GDX", "GLD", "TLT", "SLV", "USO", "UNG", "KRE", "SMH", "IBB", "XOP", "ARKK", "EEM", "FXI", "EWZ"]
+                                         fast_symbols = sorted(list(set(sp500_symbols + OPTIONABLE_ETFS)))
+                                     else:
+                                         fast_symbols = current_symbols
+                                         
+                                     fast_strategies = [s for s in active_strategies if s in ['LongCall', 'LongPut']]
+                                     if not fast_strategies:
+                                         log("❌ Geen actieve 'LongCall' of 'LongPut' geselecteerd links in het menu. De Super-Fast scan ondersteunt alleen deze twee strategieën. Vink ten minste 'LongCall' of 'LongPut' aan.")
+                                         progress_bar.progress(100)
+                                         status_text.text("Scan geannuleerd.")
+                                         break
+                                         
+                                     progress_bar.progress(5)
+                                     status_text.text("Starten van de supersnelle TWS scan...")
+                                     
+                                     def progress_cb(pct, msg, est_rem):
+                                         progress_bar.progress(pct)
+                                         if est_rem is not None:
+                                             status_text.text(f"⏳ {msg} ({pct}%) - Nog ca. {est_rem} seconden")
+                                         else:
+                                             status_text.text(f"⏳ {msg} ({pct}%)")
+                                     
+                                     all_results = scanner.run_fast_atm_scan(
+                                         symbols=fast_symbols,
+                                         strategies=fast_strategies,
+                                         min_dte=min_dte,
+                                         max_dte=max_dte,
+                                         koopadvies_p=koopadvies_p,
+                                         log_func=log,
+                                         progress_callback=progress_cb
+                                     )
+                                     
+                                     if only_koopadvies and not all_results.empty:
+                                         all_results = all_results[all_results['koopadvies'] == "✅"]
+                                         
+                                     all_unfiltered_global = all_results
+                                     
+                                     progress_bar.progress(100)
+                                     status_text.text("Supersnelle scan voltooid!")
+                                     break
+
                                  price = 0.0
                                  underlying_iv = 0.0
                                  progress = (i / len(current_symbols))
@@ -779,6 +851,9 @@ with tab1:
                                                      'width': w, 'iv': underlying_iv, 'strike_range_pct': strike_range_pct, 'min_strike_pct': min_strike_pct,
                                                      'itm_support_level': itm_support_level}
                                                  for strat in active_strategies:
+                                                     # Single-leg strategies do not use width. Only generate them for the first width.
+                                                     if strat in ['LongCall', 'LongPut'] and w != widths_to_check[0]:
+                                                         continue
                                                      fs = scanner.generate_spreads(chains, strat, price, p, log_func=log)
                                                      if fs is not None and not fs.empty:
                                                          res = pd.concat([res, fs], ignore_index=True)
@@ -996,7 +1071,11 @@ with tab1:
 
              # Group by Strategy for separate tables
              df_res = st.session_state['results']
-             preview_cols = ['symbol', 'strategy', 'expiry', 'strike_buy', 'strike_sell', 'max_profit', 'pop', 'expected_move', 'call_wall', 'put_wall', 'TTP (D)', 'TEI Score']
+             is_fast_atm = (scan_mode == "Super-Fast ATM Long Scan (1% Koop)") or (scan_mode == "Auto-Pilot (Downloads map)" and st.session_state.get('auto_pilot_type') == "Super-Fast ATM Long Scan (1% Koop)")
+             if is_fast_atm:
+                 preview_cols = ['symbol', 'strategy', 'expiry', 'strike_buy', 'spread_ask_abs', 'winst_laat', 'winst_midden', 'winst_laatste', 'dte']
+             else:
+                 preview_cols = ['symbol', 'strategy', 'expiry', 'strike_buy', 'strike_sell', 'max_profit', 'pop', 'expected_move', 'call_wall', 'put_wall', 'TTP (D)', 'TEI Score']
              preview_cols = [c for c in preview_cols if c in df_res.columns]
 
              strategies_found = df_res['strategy'].unique()
@@ -1046,18 +1125,25 @@ with tab2:
                 
             results['koopadvies'] = results.apply(format_koopadvies_strikes, axis=1)
 
-        # Weergave kolommen
-        display_cols = [
-            'koopadvies', 'symbol', 'underlying_price', 'AG_Score', 'strategy', 'expiry', 'strike_buy', 'strike_sell', 'width', 
-            'strike_p_buy', 'strike_p_sell', 'strike_c_sell', 'strike_c_buy',
-            'spread_mid_abs', 'spread_ask_abs', 'b_l_verschil', 'max_profit', 'sluitingswinst', 'pop',
-            'TTP (D)', 'TEI Score', 'Efficient',
-            'BEP', 'bep_afstand_pct', 'supports', 'resistances',
-            'Sentiment', 'price_buy', 'price_sell', 'net_extrinsic', 'expected_move',
-            'delta_buy', 'delta_sell', 'delta', 'delta_koers', 'gamma', 'theta', 'dte', 
-            'EMA_Cross', 'Stoch_RSI', 'iv_percentile', 'iv_rank', 'underlying_iv', 
-            'gamma_flip', 'call_wall', 'put_wall', 'gex_wall'
-        ]
+        is_fast_atm = (scan_mode == "Super-Fast ATM Long Scan (1% Koop)") or (scan_mode == "Auto-Pilot (Downloads map)" and st.session_state.get('auto_pilot_type') == "Super-Fast ATM Long Scan (1% Koop)")
+        if is_fast_atm:
+            display_cols = [
+                'koopadvies', 'symbol', 'underlying_price', 'strategy', 'expiry', 'strike_buy',
+                'spread_ask_abs', 'spread_mid_abs', 'spread_last_abs',
+                'winst_laat', 'winst_midden', 'winst_laatste', 'dte'
+            ]
+        else:
+            display_cols = [
+                'koopadvies', 'symbol', 'underlying_price', 'AG_Score', 'strategy', 'expiry', 'strike_buy', 'strike_sell', 'width', 
+                'strike_p_buy', 'strike_p_sell', 'strike_c_sell', 'strike_c_buy',
+                'spread_mid_abs', 'spread_ask_abs', 'b_l_verschil', 'max_profit', 'sluitingswinst', 'pop',
+                'TTP (D)', 'TEI Score', 'Efficient',
+                'BEP', 'bep_afstand_pct', 'supports', 'resistances',
+                'Sentiment', 'price_buy', 'price_sell', 'net_extrinsic', 'expected_move',
+                'delta_buy', 'delta_sell', 'delta', 'delta_koers', 'gamma', 'theta', 'dte', 
+                'EMA_Cross', 'Stoch_RSI', 'iv_percentile', 'iv_rank', 'underlying_iv', 
+                'gamma_flip', 'call_wall', 'put_wall', 'gex_wall'
+            ]
 
         # [DEBUG] Show column presence if requested
         if st.checkbox("Debug Columns", False):
@@ -1076,6 +1162,10 @@ with tab2:
         col_cfg = {
             "symbol": st.column_config.TextColumn("Symbool"),
             "underlying_price": st.column_config.NumberColumn("Koers", format="$%.2f"),
+            "spread_last_abs": st.column_config.NumberColumn("Laatste Prijs", format="$%.2f"),
+            "winst_laat": st.column_config.NumberColumn("Winst (Laat)", format="$%.2f"),
+            "winst_midden": st.column_config.NumberColumn("Winst (Midden)", format="$%.2f"),
+            "winst_laatste": st.column_config.NumberColumn("Winst (Laatste)", format="$%.2f"),
             "AG_Score": st.column_config.NumberColumn("AG Score", format="⭐ %.1f"),
             "strategy": st.column_config.TextColumn("Strategie"),
             "expiry": st.column_config.TextColumn("Expiratie"),
@@ -1306,13 +1396,15 @@ with tab3:
                 )
 
                 # Dynamic Profit Projection
-                n_price = selected_row.get('net_price', 0.0)
+                worst_entry = selected_row.get('worst_entry_signed', 0.0)
                 base_winst = selected_row.get('winst_laat', 0.0)
                 
                 # Difference in price * 100 * contract qty
-                # Both n_price and limit_price_signed are negative for credit spreads.
-                # If n_price is -9.70 and user sets limit to -10.00 (more credit), -9.70 - (-10.00) = +0.30.
-                winst_verschuiving = (n_price - limit_price_signed) * 100
+                # If we pay less than worst entry (for debit) or receive more credit than worst entry (for credit),
+                # our profit increases.
+                # Both worst_entry and limit_price_signed are negative for credit spreads.
+                # If worst_entry is -9.70 and user sets limit to -10.00 (more credit), -9.70 - (-10.00) = +0.30.
+                winst_verschuiving = (worst_entry - limit_price_signed) * 100
                 verwachte_winst_1pct = (base_winst + winst_verschuiving) * order_qty
                 
                 st.info(f"💡 **Verwachte winst (bij 1% move):** ${verwachte_winst_1pct:.0f} (Totaal voor {order_qty}x)")
@@ -1471,7 +1563,9 @@ with tab3:
                                         st.warning("⚠️ **Opmerking:** De order is geannuleerd. Dit gebeurt vaak door TWS 'Order Precautions' (zoals prijslimieten te ver van de koers).")
                                     st.info("Tip: Controleer in TWS 'Global Configuration -> API -> Precautions' of 'Bypass Order Precautions' aanstaat.")
                             else:
-                                st.error("❌ Order plaatsen mislukt (geen antwoord van TWS).")
+                                last_err = getattr(order_ib, 'last_error', '')
+                                err_suffix = f": {last_err}" if last_err else " (geen antwoord van TWS)"
+                                st.error(f"❌ Order plaatsen mislukt{err_suffix}.")
 
                         except Exception as e:
                             st.error(f"Fout bij order uitvoer: {e}")

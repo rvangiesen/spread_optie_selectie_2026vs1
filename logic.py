@@ -460,11 +460,11 @@ class SpreadScanner:
                         continue
                         
                     if strategy == 'LongCall':
-                        if s < component_price * (1 + min_strike_raw):
+                        if s > component_price * (1 + min_strike_raw):
                             skips['strategy'] += 1
                             continue
                     elif strategy == 'LongPut':
-                        if s > component_price * (1 - min_strike_raw):
+                        if s < component_price * (1 - min_strike_raw):
                             skips['strategy'] += 1
                             continue
                         
@@ -813,34 +813,49 @@ class SpreadScanner:
                 close = row.get('close', 0.0)
                 last = row.get('last', 0.0)
                 model_p = row.get('opt_price', 0.0)
+                strike = float(row.get('strike', 0.0))
+                right = str(row.get('right', 'C')).upper()[0]
                 
-                mid = (bid + ask) / 2 if (bid > 0 and ask > 0) else 0.0
-                last_p = last if last > 0 else 0.0
+                # Calculate Intrinsic Value Threshold
+                if underlying_price > 0 and strike > 0:
+                    intr = max(0.0, underlying_price - strike) if right == 'C' else max(0.0, strike - underlying_price)
+                else:
+                    intr = 0.0
+                min_valid = max(0.0, intr - 0.50)
                 
-                # Default to model price if available (great for weekends)
-                price = model_p
+                mid = (bid + ask) / 2 if (bid > 0 and ask > 0 and ((bid + ask) / 2) >= min_valid) else 0.0
+                last_p = last if (last > 0 and last >= min_valid) else 0.0
                 
-                # Robust price selection: prioritize Midpoint (Bid+Ask)/2 if both exist
-                if bid > 0 and ask > 0:
+                # Default price selection
+                price = 0.0
+                if bid > 0 and ask > 0 and ((bid + ask) / 2) >= min_valid:
                     price = (bid + ask) / 2
-                elif last > 0:
+                elif last > 0 and last >= min_valid:
                     price = last
-                elif close > 0:
+                elif close > 0 and close >= min_valid:
                     price = close
-                # Final check: if still zero, use local Bjerksund-Stensland fallback
-                if float(price) == 0 and float(underlying_price) > 0:
+                elif model_p > 0 and model_p >= min_valid:
+                    price = model_p
+                    
+                # Final check: if zero or below intrinsic threshold, use local Bjerksund-Stensland fallback
+                if price < min_valid and float(underlying_price) > 0 and strike > 0:
                     try:
                         iv = row.get('iv', 0.2)
-                        if iv == 0: iv = 0.2
+                        if iv == 0: iv = underlying_iv if underlying_iv > 0 else 0.2
                         
                         # Use accurate DTE from the spread data
                         dte_val = spreads_df['dte'].iloc[0] if not spreads_df.empty else 30
                         t_years = max(0.001, float(dte_val)) / 365.0 
                         q = 0.015 # Estimate div yield
-                        price = BjerksundStensland2002.price_american_option(row['right'], underlying_price, float(row['strike']), t_years, 0.04, q, iv)
-                        price = max(0.01, float(price))
+                        calc_p = BjerksundStensland2002.price_american_option(right, underlying_price, strike, t_years, 0.04, q, iv)
+                        price = max(min_valid, float(calc_p))
                     except:
-                        price = 0.0
+                        price = max(0.01, intr)
+                        
+                if mid <= 0: mid = price
+                if last_p <= 0: last_p = price
+                if bid <= 0: bid = price
+                if ask <= 0: ask = price
 
                 greeks = row[['delta', 'gamma', 'vega', 'theta']]
                 
@@ -870,6 +885,11 @@ class SpreadScanner:
             res = lookup.get((round(float(strike), 4), r_norm))
             if res: return res, True # Gevonden in echte TWS data
             
+            # Als we in live mode zijn (echte chain_data beschikbaar) en het contract is niet gevonden,
+            # dan bestaat het contract niet in TWS. We mogen hier GEEN fallback gebruiken.
+            if chain_data is not None and not chain_data.empty:
+                return None, False
+                
             # Theoretische fallback als data niet in TWS staat (bijv. in het weekend)
             if underlying_price > 0:
                 try:
@@ -1083,6 +1103,31 @@ class SpreadScanner:
         if removed > 0 and self.log_func:
             self.log_func(f"      🚫 {removed} fantoom-strikes verwijderd (geen Bid/Ask in TWS).")
             
+        # --- FILTER STALE/INVALID OPTIONS PREMIUMS ---
+        # Geen enkele verticale spread (of Iron Condor) premie kan groter zijn dan de breedte van de strikes.
+        # Als dat wel zo is, komt dit door stale/ontbrekende marktdata (bijv. long poot gewaardeerd op 0).
+        is_invalid_premium = (spreads_df['width'] > 0) & (spreads_df['strategy'] != 'Strangle') & (spreads_df['spread_mid_abs'] > spreads_df['width'] + 0.05)
+        
+        # Voor single-leg opties (LongCall / LongPut): check of de gekochte optieprijs niet onder de intrinsieke waarde ligt
+        if underlying_price > 0:
+            is_call = spreads_df['right'] == 'C'
+            intr_val = np.where(is_call, np.maximum(0.0, underlying_price - spreads_df['strike_buy'].values), np.maximum(0.0, spreads_df['strike_buy'].values - underlying_price))
+            is_below_intrinsic = (spreads_df['width'] == 0) & (spreads_df['price_buy'].values < (intr_val - 0.50))
+            is_invalid_premium = is_invalid_premium | is_below_intrinsic
+        
+        # Ook debit spreads die als credit worden weergegeven (of vice versa) zijn stale/foutief.
+        is_debit_strat = spreads_df['strategy'].isin(['BullCall', 'BearPut'])
+        is_credit_strat = spreads_df['strategy'].isin(['BearCall', 'BullPut', 'IronCondor'])
+        is_stale_direction = (is_debit_strat & (spreads_df['net_price'] < -0.10)) | (is_credit_strat & (spreads_df['net_price'] > 0.10))
+        
+        invalid_mask = is_invalid_premium | is_stale_direction
+        
+        removed_invalid = invalid_mask.sum()
+        if removed_invalid > 0 and self.log_func:
+            self.log_func(f"      🚫 {removed_invalid} trades met ongeldige/stale premies (bijv. Middenprijs > Breedte) verwijderd.")
+            
+        spreads_df = spreads_df[~invalid_mask].copy()
+
         # --- NEW ARBITRAGE/RISK-FREE FILTER ---
         # A credit spread is risk free if the credit received (-debit) is >= the spread width
         debits_temp = spreads_df['net_price'].values
@@ -1360,10 +1405,21 @@ class SpreadScanner:
                     bep[idx] = 0.0 # IC/Strangle have two BEPs or are too complex to display in 1 num
             spreads_df['BEP'] = bep
             
-            # Calculate distance to BEP in percentage
-            valid_bep = (bep > 0) & (u_price > 0)
-            dist_pct = np.where(valid_bep, (np.abs(bep - u_price) / u_price) * 100, 0.0)
-            spreads_df['bep_afstand_pct'] = dist_pct
+            # Calculate distance to BEP in percentage (positive = safe buffer, negative = deficit)
+            st_vals = strat.values
+            cushion_pct = np.zeros_like(bep)
+            for idx, st_val in enumerate(st_vals):
+                b = bep[idx]
+                if b <= 0 or u_price <= 0:
+                    cushion_pct[idx] = 0.0
+                    continue
+                if st_val in ['BullCall', 'BullPut', 'LongCall']:
+                    cushion_pct[idx] = ((u_price - b) / u_price) * 100.0
+                elif st_val in ['BearCall', 'BearPut', 'LongPut']:
+                    cushion_pct[idx] = ((b - u_price) / u_price) * 100.0
+                else:
+                    cushion_pct[idx] = 0.0
+            spreads_df['bep_afstand_pct'] = cushion_pct
 
         # --- Part 6: Risk Metrics (Bjerksund-Stensland 2002) ---
         n = len(spreads_df)
@@ -1679,3 +1735,424 @@ class SpreadScanner:
         except KeyError:
             # Fallback if specific columns missing
             return spreads_df.head(top_n)
+
+    def get_target_expirations(self, min_dte, max_dte):
+        import datetime
+        import pandas as pd
+        today = datetime.date.today()
+        
+        # Helper to get the third Friday of a month
+        def get_third_friday(year, month):
+            first_day = datetime.date(year, month, 1)
+            first_weekday = first_day.weekday()
+            days_to_first_friday = (4 - first_weekday) % 7
+            return first_day + datetime.timedelta(days=days_to_first_friday + 14)
+            
+        # 1. Find monthly expirations in range
+        monthly_expirations = []
+        current_date = today
+        for _ in range(4): # Check 4 months ahead
+            tf = get_third_friday(current_date.year, current_date.month)
+            dte = (tf - today).days
+            if min_dte <= dte <= max_dte:
+                monthly_expirations.append(tf.strftime('%Y%m%d'))
+            # Move to next month
+            year, month = current_date.year, current_date.month
+            if month == 12:
+                current_date = datetime.date(year + 1, 1, 1)
+            else:
+                current_date = datetime.date(year, month + 1, 1)
+                
+        if monthly_expirations:
+            return monthly_expirations
+            
+        # 2. Fallback: all Fridays in range
+        fridays = []
+        for dte in range(int(min_dte), int(max_dte) + 1):
+            target_date = today + datetime.timedelta(days=dte)
+            if target_date.weekday() == 4: # Friday
+                fridays.append(target_date.strftime('%Y%m%d'))
+                
+        return fridays
+
+    def get_candidate_strikes(self, symbol, price):
+        if price <= 0:
+            return []
+        candidates = set()
+        
+        # Determine likely intervals based on price and symbol
+        is_etf = symbol.upper() in ["SPY", "QQQ", "IWM", "DIA", "XLF", "XLK", "XLE", "XLV", "XLI", "XLY", "XLP", "XLB", "XLU", "XLRE", "GDX", "GLD", "TLT", "SLV", "USO", "UNG", "KRE", "SMH", "IBB", "XOP", "ARKK", "EEM", "FXI", "EWZ"]
+        
+        if price > 250:
+            intervals = [2.5, 5.0, 10.0]
+            if is_etf:
+                intervals.extend([1.0])
+        elif price > 50:
+            intervals = [1.0, 2.5, 5.0]
+            if is_etf:
+                intervals.extend([0.5])
+        else:
+            intervals = [0.5, 1.0, 2.5, 5.0]
+            
+        for inv in intervals:
+            lower = math.floor(price / inv) * inv
+            upper = math.ceil(price / inv) * inv
+            candidates.add(float(lower))
+            candidates.add(float(upper))
+            
+        valid_candidates = sorted([c for c in candidates if c > 0])
+        # Keep only the closest 3 strikes to minimize options to qualify
+        close_candidates = sorted(valid_candidates, key=lambda c: abs(c - price))[:3]
+        return close_candidates
+
+    def run_fast_atm_scan(self, symbols, strategies, min_dte, max_dte, koopadvies_p, log_func=None, progress_callback=None):
+        """
+        Executes a super-fast, stripped-down ATM Long Call/Put scan.
+        """
+        import yfinance as yf
+        import pandas as pd
+        import numpy as np
+        import time
+        from ib_insync import Option, Stock
+        
+        def log(msg):
+            if log_func: log_func(msg)
+            else: print(msg)
+            
+        start_time = time.time()
+        if progress_callback:
+            progress_callback(5, "Koersen ophalen via yfinance (bulk)...", None)
+            
+        log(f"🚀 Start Supersnelle Scan op {len(symbols)} symbolen...")
+        
+        # 1. Fetch stock prices via yfinance bulk download
+        log("📊 Koersen ophalen via yfinance (bulk)...")
+        symbol_prices = {}
+        try:
+            tickers_str = " ".join(symbols)
+            prices_df = yf.download(tickers_str, period="1d", group_by="ticker", progress=False, threads=True, timeout=20)
+            
+            for sym in symbols:
+                try:
+                    if len(symbols) == 1:
+                        close_series = prices_df['Close'].dropna()
+                    else:
+                        if sym in prices_df.columns.levels[0]:
+                            close_series = prices_df[sym]['Close'].dropna()
+                        else:
+                            continue
+                            
+                    if not close_series.empty:
+                        symbol_prices[sym] = float(close_series.iloc[-1])
+                except Exception:
+                    pass
+        except Exception as e:
+            log(f"⚠️ yfinance bulk download mislukt: {e}. Terugvallen op TWS...")
+            
+        # TWS Fallback for missing prices (only if 10 or fewer are missing to prevent hangs)
+        missing_symbols = [s for s in symbols if s not in symbol_prices]
+        if missing_symbols and len(missing_symbols) <= 10 and self.ib_client.is_connected():
+            if progress_callback:
+                progress_callback(8, f"Ontbrekende koersen ophalen via TWS ({len(missing_symbols)} stuks)...", None)
+            log(f"📡 {len(missing_symbols)} koersen ontbreken. Ophalen via TWS...")
+            contracts = [Stock(s, 'SMART', 'USD') for s in missing_symbols]
+            tws_prices = self.ib_client.get_market_data_batch(contracts)
+            for sym, price in tws_prices.items():
+                if price > 0:
+                    symbol_prices[sym] = price
+        elif missing_symbols:
+            log(f"⚠️ {len(missing_symbols)} koersen ontbreken en worden overgeslagen om TWS-vertraging te voorkomen.")
+                    
+        log(f"✅ Koersen opgehaald voor {len(symbol_prices)}/{len(symbols)} symbolen.")
+        
+        # 2. Get target expirations
+        expirations = self.get_target_expirations(min_dte, max_dte)
+        if not expirations:
+            log("❌ Geen geschikte expiratie-vrijdagen gevonden binnen de DTE range.")
+            if progress_callback:
+                progress_callback(100, "Geen geschikte expiraties gevonden.", 0)
+            return pd.DataFrame()
+        log(f"📅 Doel-expiratie(s): {', '.join(expirations)}")
+        
+        # 3. Generate candidate option contracts
+        log("🔧 Option candidates genereren...")
+        candidate_options = []
+        for sym, price in symbol_prices.items():
+            strikes = self.get_candidate_strikes(sym, price)
+            for exp in expirations:
+                for strike in strikes:
+                    if 'LongCall' in strategies:
+                        candidate_options.append(Option(symbol=sym, lastTradeDateOrContractMonth=exp, strike=float(strike), right='C', multiplier='100', exchange='SMART', currency='USD'))
+                    if 'LongPut' in strategies:
+                        candidate_options.append(Option(symbol=sym, lastTradeDateOrContractMonth=exp, strike=float(strike), right='P', multiplier='100', exchange='SMART', currency='USD'))
+                        
+        if not candidate_options:
+            log("⚠️ Geen optiekandidaten gegenereerd.")
+            if progress_callback:
+                progress_callback(100, "Geen optiekandidaten gegenereerd.", 0)
+            return pd.DataFrame()
+            
+        # 3. Skip option qualification and request market data directly
+        log(f"📡 Overslaan kwalificatie: direct live prijzen ophalen voor {len(candidate_options)} opties...")
+        qualified_options = candidate_options
+        
+        # 4. Fetch option market prices
+        option_data = []
+        
+        if self.ib_client.is_connected():
+            chunk_size = 50
+            total_mkt_chunks = math.ceil(len(qualified_options) / chunk_size)
+            
+            try:
+                for idx, i in enumerate(range(0, len(qualified_options), chunk_size)):
+                    chunk = qualified_options[i:i+chunk_size]
+                    tickers = []
+                    for c in chunk:
+                        tickers.append(self.ib_client.ib.reqMktData(c, '', False, False))
+                        
+                    self.ib_client.ib.sleep(1.0)
+                    
+                    for t in tickers:
+                        bid = t.bid if t.bid > 0 else 0.0
+                        ask = t.ask if t.ask > 0 else 0.0
+                        last = t.last if t.last > 0 else 0.0
+                        close = t.close if t.close > 0 else 0.0
+                        
+                        mid = (bid + ask) / 2 if (bid > 0 and ask > 0) else (last if last > 0 else close)
+                        
+                        if mid > 0:
+                            option_data.append({
+                                'conId': t.contract.conId,
+                                'symbol': t.contract.symbol,
+                                'strike': t.contract.strike,
+                                'right': t.contract.right,
+                                'expiry': t.contract.lastTradeDateOrContractMonth,
+                                'bid': bid,
+                                'ask': ask if ask > 0 else mid,
+                                'mid': mid,
+                                'last': last if last > 0 else mid
+                            })
+                            
+                    for t in tickers:
+                        self.ib_client.ib.cancelMktData(t.contract)
+                        
+                    # Progress & Time estimation
+                    elapsed = time.time() - start_time
+                    chunks_processed = idx + 1
+                    avg_time_per_chunk = elapsed / chunks_processed
+                    remaining_chunks = total_mkt_chunks - chunks_processed
+                    est_remaining = max(1, int(remaining_chunks * avg_time_per_chunk))
+                    
+                    pct = 10 + int(85 * (idx + 1) / total_mkt_chunks)
+                    if progress_callback:
+                        msg = f"Live marktprijzen ophalen: chunk {idx + 1}/{total_mkt_chunks}..."
+                        progress_callback(pct, msg, est_remaining)
+            except Exception as e:
+                log(f"⚠️ Fout bij ophalen TWS marktdata: {e}. Terugvallen op yfinance...")
+        else:
+            log("⚠️ TWS niet verbonden. Terugvallen op yfinance optiedata fallback...")
+                
+        # Check if we got very little or no market data from TWS, and trigger yfinance fallback
+        if len(option_data) < len(qualified_options) * 0.1:
+            log("⚠️ Weinig of geen marktdata van TWS. Starten yfinance optiedata fallback...")
+            if progress_callback:
+                progress_callback(90, "Optie-koersen ophalen via yfinance...", None)
+            
+            import concurrent.futures
+            import yfinance as yf
+            
+            # Helper to fetch options for a single symbol
+            def fetch_yf_option_data(sym):
+                rows = []
+                s_price = symbol_prices.get(sym, 0.0)
+                if s_price <= 0:
+                    return rows
+                try:
+                    ticker = yf.Ticker(sym)
+                    for exp in expirations:
+                        yf_exp = f"{exp[:4]}-{exp[4:6]}-{exp[6:8]}"
+                        try:
+                            chain = ticker.option_chain(yf_exp)
+                            strikes_to_find = self.get_candidate_strikes(sym, s_price)
+                            
+                            for strike in strikes_to_find:
+                                strike_round = round(float(strike), 4)
+                                
+                                # Find call
+                                if 'LongCall' in strategies:
+                                    c_row = chain.calls[abs(chain.calls['strike'] - strike_round) < 0.01]
+                                    if not c_row.empty:
+                                        row = c_row.iloc[0]
+                                        bid = float(row.get('bid', 0.0))
+                                        ask = float(row.get('ask', 0.0))
+                                        last = float(row.get('lastPrice', 0.0))
+                                        intr = max(0.0, s_price - strike_round)
+                                        min_valid = max(0.0, intr - 0.50)
+                                        
+                                        if bid > 0 and ask > 0 and ((bid + ask) / 2) >= min_valid:
+                                            mid = (bid + ask) / 2
+                                        elif last >= min_valid and last > 0:
+                                            mid = last
+                                        else:
+                                            mid = max(min_valid, BjerksundStensland2002.price_american_option('C', s_price, strike_round, 30/365.0, 0.04, 0.015, 0.2))
+                                            
+                                        if mid > 0:
+                                            rows.append({
+                                                'conId': 0,
+                                                'symbol': sym,
+                                                'strike': strike_round,
+                                                'right': 'C',
+                                                'expiry': exp,
+                                                'bid': bid if bid >= min_valid else mid,
+                                                'ask': ask if ask >= min_valid else mid,
+                                                'mid': mid,
+                                                'last': mid
+                                            })
+                                            
+                                # Find put
+                                if 'LongPut' in strategies:
+                                    p_row = chain.puts[abs(chain.puts['strike'] - strike_round) < 0.01]
+                                    if not p_row.empty:
+                                        row = p_row.iloc[0]
+                                        bid = float(row.get('bid', 0.0))
+                                        ask = float(row.get('ask', 0.0))
+                                        last = float(row.get('lastPrice', 0.0))
+                                        intr = max(0.0, strike_round - s_price)
+                                        min_valid = max(0.0, intr - 0.50)
+                                        
+                                        if bid > 0 and ask > 0 and ((bid + ask) / 2) >= min_valid:
+                                            mid = (bid + ask) / 2
+                                        elif last >= min_valid and last > 0:
+                                            mid = last
+                                        else:
+                                            mid = max(min_valid, BjerksundStensland2002.price_american_option('P', s_price, strike_round, 30/365.0, 0.04, 0.015, 0.2))
+                                            
+                                        if mid > 0:
+                                            rows.append({
+                                                'conId': 0,
+                                                'symbol': sym,
+                                                'strike': strike_round,
+                                                'right': 'P',
+                                                'expiry': exp,
+                                                'bid': bid if bid >= min_valid else mid,
+                                                'ask': ask if ask >= min_valid else mid,
+                                                'mid': mid,
+                                                'last': mid
+                                            })
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                return rows
+
+            # Fetch in parallel
+            symbols_to_fetch = list(symbol_prices.keys())
+            yf_results = []
+            max_workers = min(30, len(symbols_to_fetch))
+            if max_workers > 0:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = {executor.submit(fetch_yf_option_data, s): s for s in symbols_to_fetch}
+                    for fut in concurrent.futures.as_completed(futures):
+                        yf_results.extend(fut.result())
+            
+            # Merge results
+            existing_keys = set((opt['symbol'], opt['right'], opt['expiry'], round(opt['strike'], 4)) for opt in option_data)
+            for opt in yf_results:
+                key = (opt['symbol'], opt['right'], opt['expiry'], round(opt['strike'], 4))
+                if key not in existing_keys:
+                    option_data.append(opt)
+                    existing_keys.add(key)
+            
+            log(f"✅ yfinance optiedata fallback voltooid. Totaal {len(option_data)} opties na fallback.")
+
+        if not option_data:
+            log("❌ Geen marktdata kunnen ophalen voor opties.")
+            if progress_callback:
+                progress_callback(100, "Geen marktdata opgehaald.", 0)
+            return pd.DataFrame()
+            
+        log(f"✅ Marktdata opgehaald voor {len(option_data)} opties.")
+        
+        # 5. Group by (symbol, right, expiry) and keep only the ATM option (closest to stock price)
+        grouped = {}
+        for opt in option_data:
+            sym = opt['symbol']
+            r = opt['right']
+            exp = opt['expiry']
+            key = (sym, r, exp)
+            
+            s_price = symbol_prices.get(sym, 0.0)
+            if s_price <= 0: continue
+            
+            dist = abs(opt['strike'] - s_price)
+            if key not in grouped or dist < grouped[key]['dist']:
+                grouped[key] = {
+                    'opt': opt,
+                    'dist': dist
+                }
+                
+        # 6. Build the final results DataFrame
+        final_rows = []
+        for key, val in grouped.items():
+            opt = val['opt']
+            sym = opt['symbol']
+            s_price = symbol_prices[sym]
+            strike = opt['strike']
+            r = opt['right']
+            exp = opt['expiry']
+            mid = opt['mid']
+            ask = opt['ask']
+            last = opt['last']
+            
+            target_date = pd.to_datetime(exp)
+            now_date = pd.Timestamp.now().normalize()
+            dte = (target_date - now_date).days
+            
+            p = koopadvies_p
+            if r == 'C':
+                target_price = s_price * (1 + p)
+                payout = max(0.0, target_price - strike)
+                strat = "LongCall"
+            else:
+                target_price = s_price * (1 - p)
+                payout = max(0.0, strike - target_price)
+                strat = "LongPut"
+                
+            winst_laat = (payout - ask) * 100
+            winst_midden = (payout - mid) * 100
+            winst_laatste = (payout - last) * 100
+            koopadvies = "✅" if winst_laat > 0 else "❌"
+            
+            final_rows.append({
+                'koopadvies': koopadvies,
+                'koopadvies_status': koopadvies,
+                'symbol': sym,
+                'underlying_price': s_price,
+                'strategy': strat,
+                'expiry': exp,
+                'strike_buy': strike,
+                'strike_sell': 0.0,
+                'right': r,
+                'width': 0.0,
+                'spread_ask_abs': ask,
+                'spread_mid_abs': mid,
+                'spread_last_abs': last,
+                'price_buy': ask,
+                'price_sell': 0.0,
+                'net_price': mid,
+                'winst_laat': winst_laat,
+                'winst_midden': winst_midden,
+                'winst_laatste': winst_laatste,
+                'dte': dte,
+                'pop': 50.0,
+                'max_profit': winst_laat,
+                'TTP (D)': 99.0,
+                'TEI Score': 1.0,
+                'AG_Score': round(winst_laat, 1)
+            })
+            
+        df_results = pd.DataFrame(final_rows)
+        log(f"✨ Supersnelle scan voltooid. {len(df_results)} ATM opties geëvalueerd.")
+        if progress_callback:
+            progress_callback(100, "Supersnelle scan voltooid!", 0)
+        return df_results

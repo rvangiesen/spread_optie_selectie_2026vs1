@@ -17,6 +17,7 @@ class IBClient:
         self.client_id = 1
         self.connected = False
         self.market_data_type = 3 # Default to Delayed
+        self.last_error = ""
         
     def log_debug(self, msg):
         """Helper for logging debug information."""
@@ -113,7 +114,7 @@ class IBClient:
             start_time = time.time()
             while not task.done():
                 self.ib.sleep(0.1) # KEY: Process events so task can complete!
-                if time.time() - start_time > 3.0: # Increased to 3s
+                if time.time() - start_time > 20.0: # Increased to 20s to allow slow weekend fetches
                     print(f"DEBUG_LOG: Qualification TIMEOUT for {contract.symbol} {getattr(contract, 'strike', '')}")
                     task.cancel()
                     return None
@@ -582,6 +583,7 @@ class IBClient:
         if not self.is_connected():
             return []
         
+        chains = []
         try:
             # 1. First QUALIFY the underlying to get conId (Crucial for reliable lookup)
             contract = Contract(symbol=symbol, secType=sec_type, exchange=exchange, currency=currency)
@@ -599,32 +601,79 @@ class IBClient:
                 sec_type,
                 underlying_conId
             )
-            
-            return chains if chains else []
         except Exception as e:
-            # print(f"[IBClient] Error fetching option chains: {e}")
-            return []
+            pass
+            
+        if not chains:
+            # Fallback to yfinance during weekends or if TWS database is offline
+            try:
+                import yfinance as yf
+                ticker = yf.Ticker(symbol)
+                exps = ticker.options
+                if exps:
+                    ib_exps = [d.replace('-', '') for d in exps]
+                    all_strikes = set()
+                    # Query first 4 expirations to collect a good set of strikes
+                    for exp in exps[:4]:
+                        try:
+                            opt_chain = ticker.option_chain(exp)
+                            strikes = opt_chain.calls['strike'].tolist() + opt_chain.puts['strike'].tolist()
+                            all_strikes.update(strikes)
+                        except Exception:
+                            continue
+                    if all_strikes:
+                        class MockSecDefOptParams:
+                            def __init__(self, expirations, strikes):
+                                self.expirations = list(expirations)
+                                self.strikes = [float(s) for s in strikes]
+                                self.multiplier = '100'
+                                self.exchange = 'SMART'
+                                self.tradingClass = ''
+                        chains = [MockSecDefOptParams(ib_exps, sorted(list(all_strikes)))]
+                        print(f"DEBUG_LOG: Option chains fallback to yfinance. Found {len(ib_exps)} expirations, {len(all_strikes)} strikes.")
+            except Exception as e:
+                print(f"DEBUG_LOG: yfinance fallback failed: {e}")
+                
+        return chains if chains else []
 
     def get_chain_greeks_and_oi(self, symbol, expiration, strikes, multiplier='100'):
         try:
             # 1. Create specific C/P contracts for requested strikes
             target_contracts = []
+            is_index = any(idx in symbol.upper() for idx in ['SPX', 'NDX', 'RUT', 'VIX', 'DAX'])
+            opt_exchange = 'CBOE' if is_index else 'SMART'
+            
             for s in strikes:
-                target_contracts.append(Option(symbol=symbol, lastTradeDateOrContractMonth=expiration, strike=float(s), right='C', multiplier=multiplier, exchange='SMART', currency='USD'))
-                target_contracts.append(Option(symbol=symbol, lastTradeDateOrContractMonth=expiration, strike=float(s), right='P', multiplier=multiplier, exchange='SMART', currency='USD'))
+                target_contracts.append(Option(symbol=symbol, lastTradeDateOrContractMonth=expiration, strike=float(s), right='C', multiplier=multiplier, exchange=opt_exchange, currency='USD'))
+                target_contracts.append(Option(symbol=symbol, lastTradeDateOrContractMonth=expiration, strike=float(s), right='P', multiplier=multiplier, exchange=opt_exchange, currency='USD'))
             
             print(f"DEBUG_LOG: Qualifying {len(target_contracts)} specific contracts for {symbol} {expiration}...")
             # Qualify in bulk (this fills conId and ensures they exist)
-            qualified = self.ib.qualifyContracts(*target_contracts)
-            
-            final_valid = [c for c in qualified if c.conId > 0]
+            import asyncio
+            try:
+                task = asyncio.ensure_future(self.ib.qualifyContractsAsync(*target_contracts))
+                start_wait = time.time()
+                while not task.done():
+                    self.ib.sleep(0.1)
+                    if time.time() - start_wait > 3.0:
+                        task.cancel()
+                        break
+                if task.done() and not task.cancelled() and not task.exception():
+                    qualified = task.result()
+                    final_valid = [c for c in qualified if c.conId > 0]
+                else:
+                    final_valid = []
+            except Exception as e:
+                print(f"DEBUG_LOG: Qualification failed: {e}")
+                final_valid = []
+                
             print(f"DEBUG_LOG: Successfully qualified {len(final_valid)}/{len(target_contracts)} contracts.")
             
             if not final_valid:
-                print(f"DEBUG_LOG: No valid contracts found for {symbol} {expiration} after qualification.")
-                return pd.DataFrame()
-
-            contracts = final_valid
+                print(f"DEBUG_LOG: Fallback to unqualified contracts for {symbol} {expiration}...")
+                contracts = target_contracts
+            else:
+                contracts = final_valid
         except Exception as e:
             print(f"DEBUG_LOG: Contract discovery error: {e}")
             return pd.DataFrame()
@@ -667,12 +716,44 @@ class IBClient:
         found_prices = len([t for t in all_tickers if any([t.bid>0, t.ask>0, t.last>0, t.close>0])])
         print(f"DEBUG_LOG: Polling finished. Found Greeks: {found_greeks}/{len(all_tickers)}, Found Prices: {found_prices}/{len(all_tickers)}")
         
+        # Build yfinance option price fallback dictionary if TWS data is missing or it's the weekend
+        yf_lookup = {}
+        try:
+            import yfinance as yf
+            yf_exp = f"{expiration[:4]}-{expiration[4:6]}-{expiration[6:8]}"
+            ticker = yf.Ticker(symbol)
+            chain = ticker.option_chain(yf_exp)
+            
+            for _, row in chain.calls.iterrows():
+                strike_val = round(float(row['strike']), 4)
+                yf_lookup[(strike_val, 'C')] = {
+                    'bid': float(row.get('bid', 0.0)),
+                    'ask': float(row.get('ask', 0.0)),
+                    'last': float(row.get('lastPrice', 0.0)),
+                    'close': float(row.get('lastPrice', 0.0))
+                }
+            for _, row in chain.puts.iterrows():
+                strike_val = round(float(row['strike']), 4)
+                yf_lookup[(strike_val, 'P')] = {
+                    'bid': float(row.get('bid', 0.0)),
+                    'ask': float(row.get('ask', 0.0)),
+                    'last': float(row.get('lastPrice', 0.0)),
+                    'close': float(row.get('lastPrice', 0.0))
+                }
+            print(f"DEBUG_LOG: yfinance option price fallback loaded with {len(yf_lookup)} strikes for {symbol} {expiration}.")
+        except Exception as e:
+            print(f"DEBUG_LOG: failed to load yfinance option price fallback: {e}")
+
         data_list = []
         for t in all_tickers:
              strike = t.contract.strike
              right = t.contract.right
-             oi = t.callOpenInterest if right == 'C' else t.putOpenInterest
-             if not oi and t.futuresOpenInterest: oi = t.futuresOpenInterest
+             strike_key = (round(float(strike), 4), right)
+             
+             bid = t.bid if (t.bid and t.bid > 0) else 0.0
+             ask = t.ask if (t.ask and t.ask > 0) else 0.0
+             last = t.last if (t.last and t.last > 0) else 0.0
+             close = t.close if (t.close and t.close > 0) else 0.0
              
              greeks = {'delta': 0, 'gamma': 0, 'vega': 0, 'theta': 0, 'optPrice': 0.0, 'iv': 0.0, 'und_price': 0.0}
              if t.modelGreeks:
@@ -684,24 +765,39 @@ class IBClient:
                  greeks['iv'] = t.modelGreeks.impliedVol or t.impliedVolatility or 0.0
                  greeks['und_price'] = t.modelGreeks.undPrice or 0.0
              
-             bid = t.bid if (t.bid and t.bid > 0) else 0.0
-             ask = t.ask if (t.ask and t.ask > 0) else 0.0
-             last = t.last if (t.last and t.last > 0) else 0.0
-             close = t.close if (t.close and t.close > 0) else 0.0
              model_p = greeks.get('optPrice', 0.0)
+             und_p = greeks.get('und_price', 0.0)
              
-             # [FIX] Robust Mid calculation: prefer (bid+ask)/2, then last, then model
-             if bid > 0 and ask > 0:
+             # Calculate intrinsic value threshold for stale price filtering
+             if und_p > 0 and float(strike) > 0:
+                 intr = max(0.0, und_p - float(strike)) if right == 'C' else max(0.0, float(strike) - und_p)
+             else:
+                 intr = 0.0
+             min_valid = max(0.0, intr - 0.50)
+
+             # Fallback to yfinance if TWS price data is missing or stale
+             yf_data = yf_lookup.get(strike_key)
+             if yf_data:
+                 if bid <= 0 and yf_data['bid'] >= min_valid: bid = yf_data['bid']
+                 if ask <= 0 and yf_data['ask'] >= min_valid: ask = yf_data['ask']
+                 if last <= 0 and yf_data['last'] >= min_valid: last = yf_data['last']
+                 if close <= 0 and yf_data['close'] >= min_valid: close = yf_data['close']
+             
+             oi = t.callOpenInterest if right == 'C' else t.putOpenInterest
+             if not oi and t.futuresOpenInterest: oi = t.futuresOpenInterest
+
+             # Filter out stale last/close values if they violate intrinsic value
+             if last > 0 and last < min_valid: last = 0.0
+             if close > 0 and close < min_valid: close = 0.0
+
+             # [FIX] Robust Mid calculation: prefer (bid+ask)/2 if valid, then last, then model, then close
+             if bid > 0 and ask > 0 and ((bid + ask) / 2) >= min_valid:
                  mid_p = (bid + ask) / 2
-             elif bid > 0:
-                 mid_p = bid
-             elif ask > 0:
-                 mid_p = ask
-             elif last > 0:
+             elif last >= min_valid and last > 0:
                  mid_p = last
-             elif model_p > 0:
+             elif model_p >= min_valid and model_p > 0:
                  mid_p = model_p
-             elif close > 0:
+             elif close >= min_valid and close > 0:
                  mid_p = close
              else:
                  mid_p = 0.0
@@ -780,7 +876,9 @@ class IBClient:
         strikes_dict: {'strike_buy': 600, 'strike_sell': 610, ...}
         action: 'BUY' or 'SELL' for the OVERALL strategy.
         """
+        self.last_error = ""
         if not self.is_connected():
+            self.last_error = "Niet verbonden met TWS"
             return None
         
         from ib_insync import Option, Contract, Order, ComboLeg, TagValue
@@ -789,19 +887,32 @@ class IBClient:
             if not strike or strike <= 0: return None
             # Use right from params if provided, else from the outer scope
             r_val = r if r else right
+            
+            # Intelligently routing to CBOE for index options, SMART for others
+            is_index = any(idx in symbol.upper() for idx in ['SPX', 'NDX', 'RUT', 'VIX', 'DAX'])
+            primary_exchange = 'CBOE' if is_index else 'SMART'
+            fallback_exchange = 'SMART' if is_index else 'CBOE'
+            
             # HARDENED: Use keyword args and float casting
             c = Option(
                 symbol=str(symbol), 
                 lastTradeDateOrContractMonth=str(expiry), 
                 strike=float(strike), 
                 right=str(r_val), 
-                exchange='SMART', 
+                exchange=primary_exchange, 
                 multiplier='100', 
                 currency='USD'
             )
             qualified = self.qualify_contract_safe(c)
             if not qualified:
-                print(f"DEBUG_LOG: Qualification failed for {symbol} {expiry} {r_val} {strike}")
+                print(f"DEBUG_LOG: Qualification failed for {symbol} {expiry} {r_val} {strike} on {primary_exchange}. Retrying with fallback {fallback_exchange}...")
+                c.exchange = fallback_exchange
+                qualified = self.qualify_contract_safe(c)
+                
+            if not qualified:
+                err_msg = f"Optiepoot met strike {strike} ({r_val}) voor {symbol} (expiratie {expiry}) bestaat niet of kon niet worden gekwalificeerd in TWS"
+                print(f"DEBUG_LOG: {err_msg}")
+                self.last_error = err_msg
             return qualified
 
         # 1. Build Legs based on Strategy
