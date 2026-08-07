@@ -1448,11 +1448,14 @@ with tab3:
                                     def get_leg_prices(strike, right):
                                         leg_row = live_data[(live_data['strike'] == float(strike)) & (live_data['right'] == right)]
                                         if not leg_row.empty:
-                                            b = leg_row.iloc[0].get('bid', 0.0)
-                                            a = leg_row.iloc[0].get('ask', 0.0)
+                                            r = leg_row.iloc[0]
+                                            b = r.get('bid', 0.0)
+                                            a = r.get('ask', 0.0)
+                                            m = r.get('mid', 0.0)
+                                            opt_p = r.get('opt_price', 0.0)
                                             if np.isnan(b) or b < 0: b = 0.0
                                             if np.isnan(a) or a < 0: a = 0.0
-                                            mid = b + (a - b) / 2 if (b > 0 and a > 0) else max(b, a)
+                                            mid = (b + a) / 2 if (b > 0 and a > 0) else (m if m > 0 else opt_p)
                                             return b, a, mid
                                         return 0.0, 0.0, 0.0
 
