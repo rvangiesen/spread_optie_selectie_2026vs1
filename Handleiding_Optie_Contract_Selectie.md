@@ -247,4 +247,29 @@ Om te voorkomen dat de tool verkeerde of verouderde optieprijzen toont (bijvoorb
 
 ---
 
+## 9. Opstarten, Omgevingsbeheer & Python 3.14 Netwerk Adapter
+
+De applicatie is volledig geoptimaliseerd voor zowel standaard virtuele Python-omgevingen (`.venv`) als moderne ultra-snelle pakketbeheerders (`uv`) en nieuwere Python-versies (zoals Python 3.14).
+
+### 🚀 Hoe de applicatie op te starten
+De app kan op twee manieren worden gestart vanuit de projectmap:
+
+* **Optie A (Standaard via virtuele omgeving)**:
+  ```powershell
+  .venv\Scripts\Activate.ps1
+  streamlit run app.py
+  ```
+* **Optie B (Via `uv` pakketbeheerder)**:
+  ```powershell
+  uv run streamlit run app.py
+  ```
+
+### ⚡ Ingebouwde Python 3.14 / Asyncio Thread Adapter
+Nieuwere Python-versies (Python 3.14+) hanteren strikte regels voor netwerk-timeouts binnen multi-threaded omgevingen (zoals Streamlit). De software bevat een ingebouwde **Asyncio Thread Adapter** (`ib_client.py`) die:
+1. Event-loop en thread-timeouts automatisch synchroniseert met het TWS API-netwerk.
+2. Voorkomt dat de melding `Timeout should be used inside a task` kan optreden bij het testen van de verbinding of tijdens het live verversen van optieprijzen.
+3. Garandeert dat sowieso altijd een stabiele en betrouwbare TWS/Gateway-verbinding wordt opgebouwd.
+
+---
+
 *Succes met het scannen en selecteren! Mocht je vragen hebben over een specifieke term, raadpleeg dan dit document of bekijk de live statistieken in de tabbladen.*
