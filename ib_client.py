@@ -60,8 +60,15 @@ class IBClient:
         """Connects to the TWS/Gateway API."""
         try:
             if not self.ib.isConnected():
-                # Increase timeout to 10 seconds to prevent timeouts during initial account sync
-                self.ib.connect(host, port, clientId=client_id, timeout=10.0)
+                import asyncio
+                loop = util.getLoop()
+                if loop.is_running():
+                    async def _do_connect():
+                        await self.ib.connectAsync(host, port, clientId=client_id, timeout=10.0)
+                    task = loop.create_task(_do_connect())
+                    util.run(task)
+                else:
+                    self.ib.connect(host, port, clientId=client_id, timeout=10.0)
                 self.connected = True
                 self.host = host
                 self.port = port
