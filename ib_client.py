@@ -177,7 +177,7 @@ class IBClient:
         
         return None
 
-    def get_market_data_snapshot(self, contract, use_hist_fallback=True, use_yf=False):
+    def get_market_data_snapshot(self, contract, use_hist_fallback=True, use_yf=False, **kwargs):
         """
         Fetches a real-time (or delayed) snapshot of price and IV.
         Optional fallback to historical data if 'use_hist_fallback' is True.
