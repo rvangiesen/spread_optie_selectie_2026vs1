@@ -1,15 +1,52 @@
-from ib_insync import IB, Stock, Option, Index, util
-from ib_insync.contract import Contract
-import pandas as pd
-import numpy as np
+import asyncio
 import nest_asyncio
+import logging
 import yfinance as yf
 import time
+import pandas as pd
+import numpy as np
 
-import logging
+# Python 3.14+ / Streamlit compatibility patch for asyncio.timeouts.Timeout inside nest_asyncio
+try:
+    from asyncio import timeouts
+    _orig_aenter = timeouts.Timeout.__aenter__
+    async def _patched_aenter(self):
+        try:
+            return await _orig_aenter(self)
+        except RuntimeError as e:
+            if 'Timeout should be used inside a task' in str(e):
+                self._state = timeouts._State.ENTERED
+                loop = asyncio.get_running_loop()
+                async def _dummy(): pass
+                self._task = loop.create_task(_dummy())
+                self._cancelling = 0
+                self.reschedule(self._when)
+                return self
+            raise
+    timeouts.Timeout.__aenter__ = _patched_aenter
+except Exception:
+    pass
+
+# Safe event loop policy for Python 3.14+
+try:
+    _pol = asyncio.get_event_loop_policy()
+    _orig_get_loop = _pol.get_event_loop
+    def _safe_get_loop():
+        try:
+            return _orig_get_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            return loop
+    _pol.get_event_loop = _safe_get_loop
+except Exception:
+    pass
 
 # Apply nest_asyncio to allow nested event loops in this module too
 nest_asyncio.apply()
+
+from ib_insync import IB, Stock, Option, Index, util
+from ib_insync.contract import Contract
 
 # Suppress non-fatal IBKR warning logs (10091, 354, 200, Unknown contract, etc.)
 class IBErrorFilter(logging.Filter):
