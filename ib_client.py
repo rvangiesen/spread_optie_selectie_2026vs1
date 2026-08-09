@@ -64,11 +64,11 @@ class IBClient:
                 loop = util.getLoop()
                 if loop.is_running():
                     async def _do_connect():
-                        await self.ib.connectAsync(host, port, clientId=client_id, timeout=10.0)
+                        await asyncio.wait_for(self.ib.connectAsync(host, port, clientId=client_id, timeout=0), timeout=10.0)
                     task = loop.create_task(_do_connect())
                     util.run(task)
                 else:
-                    self.ib.connect(host, port, clientId=client_id, timeout=10.0)
+                    self.ib.connect(host, port, clientId=client_id, timeout=0)
                 self.connected = True
                 self.host = host
                 self.port = port
