@@ -1366,7 +1366,10 @@ with tab2:
                                 action='BUY',
                                 quantity=bulk_qty,
                                 price=limit_price_signed,
-                                order_type=bulk_order_type
+                                order_type=bulk_order_type,
+                                enable_bracket=True,
+                                tp_pct=0.10,
+                                sl_pct=0.10
                             )
                             
                             if trade:
@@ -1522,6 +1525,8 @@ with tab3:
                     help="Kies Adaptive Algo om TWS de beste prijs binnen de spread te laten onderhandelen zonder de max limiet te overschrijden."
                 )
 
+                single_bracket = st.checkbox("🎯 Voeg Take Profit (+10%) & Stop Loss (-10%) Bracket Orders toe", value=True, key="single_bracket")
+
                 # Dynamic Profit Projection
                 worst_entry = selected_row.get('worst_entry_signed', 0.0)
                 base_winst = selected_row.get('winst_laat', 0.0)
@@ -1661,7 +1666,10 @@ with tab3:
                                 action=action,
                                 quantity=order_qty,
                                 price=limit_price_signed,
-                                order_type=order_type_ui
+                                order_type=order_type_ui,
+                                enable_bracket=single_bracket,
+                                tp_pct=0.10,
+                                sl_pct=0.10
                             )
 
                             if trade:

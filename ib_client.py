@@ -1083,11 +1083,10 @@ class IBClient:
             # print(f"[IBClient] Scanner Error: {e}")
             return []
             
-    def place_strategy_order(self, symbol, expiry, right, strategy, strikes_dict, action, quantity, price=None, order_type='LMT'):
+    def place_strategy_order(self, symbol, expiry, right, strategy, strikes_dict, action, quantity, price=None, order_type='LMT', enable_bracket=True, tp_pct=0.10, sl_pct=0.10):
         """
         Intelligently places orders for any supported strategy (single or multi-leg).
-        strikes_dict: {'strike_buy': 600, 'strike_sell': 610, ...}
-        action: 'BUY' or 'SELL' for the OVERALL strategy.
+        Supports Take Profit (+10%) and Stop Loss (-10%) attached bracket orders.
         """
         self.last_error = ""
         if not self.is_connected():
@@ -1172,7 +1171,6 @@ class IBClient:
             priority = order_type.split('-')[1].strip()
             algo_strategy = 'Adaptive'
             algo_params = [TagValue('adaptivePriority', priority)]
-            # Underlying order is still Limit, it just uses the algo engine. Max cap is the lmtPrice
             is_lmt = True
             order_type_str = 'LMT'
         elif order_type.startswith('LMT'):
@@ -1181,10 +1179,14 @@ class IBClient:
         else:
             order_type_str = order_type
             is_lmt = (order_type_str == 'LMT')
-            
+
+        can_bracket = enable_bracket and price is not None and float(price) != 0.0
+        parent_transmit = not can_bracket
+
         if len(legs_data) == 1:
             # Single Leg
             contract, leg_action = legs_data[0]
+            target_contract = contract
             order = Order(
                 action=action, 
                 totalQuantity=quantity,
@@ -1192,7 +1194,7 @@ class IBClient:
                 lmtPrice=price if is_lmt else None,
                 tif='DAY',
                 outsideRth=True,
-                transmit=True
+                transmit=parent_transmit
             )
             if algo_strategy:
                 order.algoStrategy = algo_strategy
@@ -1206,12 +1208,13 @@ class IBClient:
                 combo_legs.append(ComboLeg(conId=c.conId, ratio=1, action=leg_act, exchange='SMART'))
             
             bag = Contract(symbol=symbol, secType='BAG', currency='USD', exchange='SMART', comboLegs=combo_legs)
+            target_contract = bag
             order = Order(
                 action=action,
                 totalQuantity=quantity,
                 orderType=order_type_str,
                 lmtPrice=price if is_lmt else None,
-                transmit=True,
+                transmit=parent_transmit,
                 tif='DAY',
                 outsideRth=True
             )
@@ -1220,6 +1223,50 @@ class IBClient:
                 order.algoParams = algo_params
             print(f"DEBUG_LOG: Placing BAG order ({len(legs_data)} legs): {action} {quantity} combo...")
             trade = self.ib.placeOrder(bag, order)
+
+        # Attach Take Profit & Stop Loss Bracket Orders (10% default)
+        if can_bracket and trade and trade.order.orderId:
+            parent_id = trade.order.orderId
+            p_val = float(price)
+            
+            if p_val > 0: # Debit / Long
+                tp_price = round(p_val * (1.0 + tp_pct), 2)
+                sl_price = round(p_val * (1.0 - sl_pct), 2)
+                exit_action = 'SELL' if action == 'BUY' else 'BUY'
+            else: # Credit (signed negative)
+                abs_p = abs(p_val)
+                tp_price = -round(abs_p * (1.0 - tp_pct), 2)
+                sl_price = -round(abs_p * (1.0 + sl_pct), 2)
+                exit_action = 'BUY' if action == 'BUY' else 'SELL'
+
+            # 1. Take Profit Order (+10%)
+            tp_order = Order(
+                action=exit_action,
+                totalQuantity=quantity,
+                orderType='LMT',
+                lmtPrice=tp_price,
+                parentId=parent_id,
+                tif='DAY',
+                outsideRth=True,
+                transmit=False
+            )
+            print(f"DEBUG_LOG: Attaching Take Profit order (+{tp_pct*100:.0f}%): {exit_action} @ {tp_price} (parentId: {parent_id})")
+            self.ib.placeOrder(target_contract, tp_order)
+
+            # 2. Stop Loss Order (-10%) - Transmits full bracket
+            sl_order = Order(
+                action=exit_action,
+                totalQuantity=quantity,
+                orderType='STP' if len(legs_data) == 1 else 'LMT',
+                auxPrice=sl_price if len(legs_data) == 1 else None,
+                lmtPrice=sl_price if len(legs_data) > 1 else None,
+                parentId=parent_id,
+                tif='DAY',
+                outsideRth=True,
+                transmit=True
+            )
+            print(f"DEBUG_LOG: Attaching Stop Loss order (-{sl_pct*100:.0f}%): {exit_action} @ {sl_price} (parentId: {parent_id})")
+            self.ib.placeOrder(target_contract, sl_order)
 
         # 3. Wait for Submit
         import time
