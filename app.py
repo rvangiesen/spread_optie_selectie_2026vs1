@@ -1370,8 +1370,18 @@ with tab2:
                             )
                             
                             if trade:
-                                st.success(f"✅ **Order #{idx_num+1} ({symbol} {strat} {expiry}) ingediend bij TWS!** Order ID: `{trade.order.orderId}`, Status: `{trade.orderStatus.status}`")
-                                placed_count += 1
+                                if trade.orderStatus.status in ('Cancelled', 'Inactive'):
+                                    reason = ""
+                                    if trade.log:
+                                        for entry in trade.log:
+                                            if entry.message:
+                                                reason = entry.message
+                                                break
+                                    err_msg = f"\n> {reason}" if reason else ""
+                                    st.error(f"❌ **Order #{idx_num+1} ({symbol} {strat} {expiry}) geweigerd door TWS!** Status: `{trade.orderStatus.status}`{err_msg}")
+                                else:
+                                    st.success(f"✅ **Order #{idx_num+1} ({symbol} {strat} {expiry}) ingediend bij TWS!** Order ID: `{trade.order.orderId}`, Status: `{trade.orderStatus.status}`")
+                                    placed_count += 1
                             else:
                                 st.error(f"❌ **Order #{idx_num+1} ({symbol} {strat}) mislukt:** {getattr(bulk_ib, 'last_error', 'geen antwoord van TWS')}")
                                 

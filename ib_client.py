@@ -861,18 +861,20 @@ class IBClient:
             # Qualify in bulk (this fills conId and ensures they exist)
             import asyncio
             try:
-                task = asyncio.ensure_future(self.ib.qualifyContractsAsync(*target_contracts))
-                start_wait = time.time()
-                while not task.done():
-                    self.ib.sleep(0.1)
-                    if time.time() - start_wait > 3.0:
-                        task.cancel()
-                        break
-                if task.done() and not task.cancelled() and not task.exception():
-                    qualified = task.result()
-                    final_valid = [c for c in qualified if c.conId > 0]
-                else:
-                    final_valid = []
+                final_valid = []
+                chunk_size = 100
+                for i in range(0, len(target_contracts), chunk_size):
+                    sub_chunk = target_contracts[i:i + chunk_size]
+                    task = asyncio.ensure_future(self.ib.qualifyContractsAsync(*sub_chunk))
+                    start_wait = time.time()
+                    while not task.done():
+                        self.ib.sleep(0.1)
+                        if time.time() - start_wait > 10.0:
+                            task.cancel()
+                            break
+                    if task.done() and not task.cancelled() and not task.exception():
+                        res = task.result()
+                        final_valid.extend([c for c in res if getattr(c, 'conId', 0) > 0])
             except Exception as e:
                 print(f"DEBUG_LOG: Qualification failed: {e}")
                 final_valid = []
