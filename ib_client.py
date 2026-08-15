@@ -48,11 +48,11 @@ nest_asyncio.apply()
 from ib_insync import IB, Stock, Option, Index, util
 from ib_insync.contract import Contract
 
-# Suppress non-fatal IBKR warning logs (10091, 354, 200, Unknown contract, etc.)
+# Suppress non-fatal IBKR warning logs (10091, 354, 200, 300, Unknown contract, etc.)
 class IBErrorFilter(logging.Filter):
     def filter(self, record):
         msg = record.getMessage()
-        if any(f"{code}" in msg for code in ['10091', '354', '10167', '10089', ' 200,', '200: No security definition', 'Unknown contract']):
+        if any(f"{code}" in msg for code in ['10091', '354', '10167', '10089', ' 200,', '200: No security definition', 'Unknown contract', ' 300,', 'Can\'t find EId']):
             return False
         return True
 
@@ -898,7 +898,6 @@ class IBClient:
             
         print(f"DEBUG_LOG: Requesting market data for {len(contracts)} contracts in chunks of 50...")
         all_tickers = []
-        import time
         
         chunk_size = 50
         for i in range(0, len(contracts), chunk_size):
@@ -954,90 +953,90 @@ class IBClient:
                 }
             print(f"DEBUG_LOG: yfinance option price fallback loaded with {len(yf_lookup)} strikes for {symbol} {expiration}.")
         except Exception as e:
-            print(f"DEBUG_LOG: failed to load yfinance option price fallback: {e}")
+            print(f"DEBUG_LOG: yfinance option price fallback unavailable for {symbol} {expiration}: {e}")
 
         data_list = []
         for t in all_tickers:
-             strike = t.contract.strike
-             right = t.contract.right
-             strike_key = (round(float(strike), 4), right)
+            strike = t.contract.strike
+            right = t.contract.right
+            strike_key = (round(float(strike), 4), right)
+            
+            bid = t.bid if (t.bid and t.bid > 0) else 0.0
+            ask = t.ask if (t.ask and t.ask > 0) else 0.0
+            last = t.last if (t.last and t.last > 0) else 0.0
+            close = t.close if (t.close and t.close > 0) else 0.0
+            
+            greeks = {'delta': 0, 'gamma': 0, 'vega': 0, 'theta': 0, 'optPrice': 0.0, 'iv': 0.0, 'und_price': 0.0}
+            if t.modelGreeks:
+                greeks['delta'] = t.modelGreeks.delta or 0
+                greeks['gamma'] = t.modelGreeks.gamma or 0
+                greeks['vega'] = t.modelGreeks.vega or 0
+                greeks['theta'] = t.modelGreeks.theta or 0
+                greeks['optPrice'] = t.modelGreeks.optPrice or 0.0
+                greeks['iv'] = t.modelGreeks.impliedVol or t.impliedVolatility or 0.0
+                greeks['und_price'] = t.modelGreeks.undPrice or 0.0
+            
+            model_p = greeks.get('optPrice', 0.0)
+            und_p = greeks.get('und_price', 0.0)
              
-             bid = t.bid if (t.bid and t.bid > 0) else 0.0
-             ask = t.ask if (t.ask and t.ask > 0) else 0.0
-             last = t.last if (t.last and t.last > 0) else 0.0
-             close = t.close if (t.close and t.close > 0) else 0.0
-             
-             greeks = {'delta': 0, 'gamma': 0, 'vega': 0, 'theta': 0, 'optPrice': 0.0, 'iv': 0.0, 'und_price': 0.0}
-             if t.modelGreeks:
-                 greeks['delta'] = t.modelGreeks.delta or 0
-                 greeks['gamma'] = t.modelGreeks.gamma or 0
-                 greeks['vega'] = t.modelGreeks.vega or 0
-                 greeks['theta'] = t.modelGreeks.theta or 0
-                 greeks['optPrice'] = t.modelGreeks.optPrice or 0.0
-                 greeks['iv'] = t.modelGreeks.impliedVol or t.impliedVolatility or 0.0
-                 greeks['und_price'] = t.modelGreeks.undPrice or 0.0
-             
-             model_p = greeks.get('optPrice', 0.0)
-             und_p = greeks.get('und_price', 0.0)
-             
-             # Calculate intrinsic value threshold for stale price filtering
-             if und_p > 0 and float(strike) > 0:
-                 intr = max(0.0, und_p - float(strike)) if right == 'C' else max(0.0, float(strike) - und_p)
-             else:
-                 intr = 0.0
-             min_valid = max(0.0, intr - 0.50)
+            # Calculate intrinsic value threshold for stale price filtering
+            if und_p > 0 and float(strike) > 0:
+                intr = max(0.0, und_p - float(strike)) if right == 'C' else max(0.0, float(strike) - und_p)
+            else:
+                intr = 0.0
+            min_valid = max(0.0, intr - 0.50)
 
-             # Fallback to yfinance if TWS price data is missing or stale
-             yf_data = yf_lookup.get(strike_key)
-             if yf_data:
-                 if bid <= 0 and yf_data['bid'] >= min_valid: bid = yf_data['bid']
-                 if ask <= 0 and yf_data['ask'] >= min_valid: ask = yf_data['ask']
-                 if last <= 0 and yf_data['last'] >= min_valid: last = yf_data['last']
-                 if close <= 0 and yf_data['close'] >= min_valid: close = yf_data['close']
-             
-             oi = t.callOpenInterest if right == 'C' else t.putOpenInterest
-             if not oi and t.futuresOpenInterest: oi = t.futuresOpenInterest
+            # Fallback to yfinance if TWS price data is missing or stale
+            yf_data = yf_lookup.get(strike_key)
+            if yf_data:
+                if bid <= 0 and yf_data['bid'] >= min_valid: bid = yf_data['bid']
+                if ask <= 0 and yf_data['ask'] >= min_valid: ask = yf_data['ask']
+                if last <= 0 and yf_data['last'] >= min_valid: last = yf_data['last']
+                if close <= 0 and yf_data['close'] >= min_valid: close = yf_data['close']
+            
+            oi = t.callOpenInterest if right == 'C' else t.putOpenInterest
+            if not oi and t.futuresOpenInterest: oi = t.futuresOpenInterest
 
-             # Filter out stale last/close values if they violate intrinsic value
-             if last > 0 and last < min_valid: last = 0.0
-             if close > 0 and close < min_valid: close = 0.0
+            # Filter out stale last/close values if they violate intrinsic value
+            if last > 0 and last < min_valid: last = 0.0
+            if close > 0 and close < min_valid: close = 0.0
 
-             # [FIX] Robust Mid calculation: prefer (bid+ask)/2 if valid, then last, then model, then close
-             if bid > 0 and ask > 0 and ((bid + ask) / 2) >= min_valid:
-                 mid_p = (bid + ask) / 2
-             elif last >= min_valid and last > 0:
-                 mid_p = last
-             elif model_p >= min_valid and model_p > 0:
-                 mid_p = model_p
-             elif close >= min_valid and close > 0:
-                 mid_p = close
-             else:
-                 mid_p = 0.0
+            # [FIX] Robust Mid calculation: prefer (bid+ask)/2 if valid, then last, then model, then close
+            if bid > 0 and ask > 0 and ((bid + ask) / 2) >= min_valid:
+                mid_p = (bid + ask) / 2
+            elif last >= min_valid and last > 0:
+                mid_p = last
+            elif model_p >= min_valid and model_p > 0:
+                mid_p = model_p
+            elif close >= min_valid and close > 0:
+                mid_p = close
+            else:
+                mid_p = 0.0
 
-             price_for_validation = mid_p
-             if price_for_validation <= 0: continue
+            price_for_validation = mid_p
+            if price_for_validation <= 0: continue
 
-             # Fallback voor bid/ask: als TWS helemaal geen bid/ask of model_p ('delayed data') levert, gebruik mid_p (die bv. 'close' bevat)
-             if bid <= 0 and mid_p > 0: bid = mid_p
-             if ask <= 0 and mid_p > 0: ask = mid_p
+            # Fallback voor bid/ask: als TWS helemaal geen bid/ask of model_p ('delayed data') levert, gebruik mid_p (die bv. 'close' bevat)
+            if bid <= 0 and mid_p > 0: bid = mid_p
+            if ask <= 0 and mid_p > 0: ask = mid_p
 
-             data_list.append({
-                 'strike': strike,
-                 'right': right,
-                 'bid': bid,
-                 'ask': ask,
-                 'mid': mid_p,
-                 'volume': t.volume or 0,
-                 'openInterest': oi or 0,
-                 'delta': greeks['delta'],
-                 'gamma': greeks['gamma'],
-                 'vega': greeks['vega'],
-                 'theta': greeks['theta'],
-                 'iv': greeks['iv'],
-                 'opt_price': price_for_validation,
-                 'und_price': greeks['und_price']
-             })
-             
+            data_list.append({
+                'strike': strike,
+                'right': right,
+                'bid': bid,
+                'ask': ask,
+                'mid': mid_p,
+                'volume': t.volume or 0,
+                'openInterest': oi or 0,
+                'delta': greeks['delta'],
+                'gamma': greeks['gamma'],
+                'vega': greeks['vega'],
+                'theta': greeks['theta'],
+                'iv': greeks['iv'],
+                'opt_price': price_for_validation,
+                'und_price': greeks['und_price']
+            })
+            
         return pd.DataFrame(data_list)
     def get_scanner_data(self, scan_code='MOST_ACTIVE', instrument='STK', location='STK.US.MAJOR', rows=50):
         """
