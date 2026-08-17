@@ -6,3 +6,4 @@ ib_insync
 py_vollib
 nest_asyncio
 yfinance
+openpyxl
