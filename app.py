@@ -1063,8 +1063,13 @@ with tab1:
                              else:
                                  log(f"⚠️ Geen optie contracten gevonden")
                                  st.warning("Geen optie contracten gevonden. Probeer parameters te verruimen.")
+                             
+                             # Update GUI: scan klaar
+                             scan_status.success("✅ Scan voltooid!")
+                             progress_bar.progress(100)
                      finally:
                          scan_ib.disconnect()
+                     st.rerun()
         with col2:
             if st.button("Stop"):
                 st.warning("Scan gestopt.")
@@ -1159,9 +1164,12 @@ with tab2:
                 
             results['koopadvies'] = results.apply(format_koopadvies_strikes, axis=1)
 
-        # Eerste kolom Selecteer initialiseren indien nog niet aanwezig
+        # Eerste kolom Selecteer initialiseren: auto-selecteer rijen met koopadvies boven drempel
         if 'Selecteer' not in results.columns:
-            results.insert(0, 'Selecteer', False)
+            if 'koopadvies_status' in results.columns:
+                results.insert(0, 'Selecteer', results['koopadvies_status'] == "✅")
+            else:
+                results.insert(0, 'Selecteer', False)
 
         is_fast_atm = (scan_mode == "Super-Fast ATM Long Scan (1% Koop)") or (scan_mode == "Auto-Pilot (Downloads map)" and st.session_state.get('auto_pilot_type') == "Super-Fast ATM Long Scan (1% Koop)")
         if is_fast_atm:
@@ -1368,8 +1376,8 @@ with tab2:
                                 price=limit_price_signed,
                                 order_type=bulk_order_type,
                                 enable_bracket=True,
-                                tp_pct=0.10,
-                                sl_pct=0.10
+                                tp_pct=0.20,
+                                sl_pct=0.20
                             )
                             
                             if trade:
@@ -1525,7 +1533,7 @@ with tab3:
                     help="Kies Adaptive Algo om TWS de beste prijs binnen de spread te laten onderhandelen zonder de max limiet te overschrijden."
                 )
 
-                single_bracket = st.checkbox("🎯 Voeg Take Profit (+10%) & Stop Loss (-10%) Bracket Orders toe", value=True, key="single_bracket")
+                single_bracket = st.checkbox("🎯 Voeg Take Profit (+20%) & Stop Loss (-20%) Bracket Orders toe", value=True, key="single_bracket")
 
                 # Dynamic Profit Projection
                 worst_entry = selected_row.get('worst_entry_signed', 0.0)
@@ -1668,8 +1676,8 @@ with tab3:
                                 price=limit_price_signed,
                                 order_type=order_type_ui,
                                 enable_bracket=single_bracket,
-                                tp_pct=0.10,
-                                sl_pct=0.10
+                                tp_pct=0.20,
+                                sl_pct=0.20
                             )
 
                             if trade:

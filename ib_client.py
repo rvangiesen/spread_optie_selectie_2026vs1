@@ -1083,10 +1083,10 @@ class IBClient:
             # print(f"[IBClient] Scanner Error: {e}")
             return []
             
-    def place_strategy_order(self, symbol, expiry, right, strategy, strikes_dict, action, quantity, price=None, order_type='LMT', enable_bracket=True, tp_pct=0.10, sl_pct=0.10):
+    def place_strategy_order(self, symbol, expiry, right, strategy, strikes_dict, action, quantity, price=None, order_type='LMT', enable_bracket=True, tp_pct=0.20, sl_pct=0.20):
         """
         Intelligently places orders for any supported strategy (single or multi-leg).
-        Supports Take Profit (+10%) and Stop Loss (-10%) attached bracket orders.
+        Supports Take Profit (+20%) and Stop Loss (-20%) attached bracket orders.
         """
         self.last_error = ""
         if not self.is_connected():
@@ -1224,7 +1224,7 @@ class IBClient:
             print(f"DEBUG_LOG: Placing BAG order ({len(legs_data)} legs): {action} {quantity} combo...")
             trade = self.ib.placeOrder(bag, order)
 
-        # Attach Take Profit & Stop Loss Bracket Orders (10% default)
+        # Attach Take Profit & Stop Loss Bracket Orders (20% default)
         if can_bracket and trade and trade.order.orderId:
             parent_id = trade.order.orderId
             p_val = float(price)
@@ -1239,7 +1239,7 @@ class IBClient:
                 sl_price = -round(abs_p * (1.0 + sl_pct), 2)
                 exit_action = 'BUY' if action == 'BUY' else 'SELL'
 
-            # 1. Take Profit Order (+10%)
+            # 1. Take Profit Order (+20%)
             tp_order = Order(
                 action=exit_action,
                 totalQuantity=quantity,
@@ -1253,7 +1253,7 @@ class IBClient:
             print(f"DEBUG_LOG: Attaching Take Profit order (+{tp_pct*100:.0f}%): {exit_action} @ {tp_price} (parentId: {parent_id})")
             self.ib.placeOrder(target_contract, tp_order)
 
-            # 2. Stop Loss Order (-10%) - Transmits full bracket
+            # 2. Stop Loss Order (-20%) - Transmits full bracket
             sl_order = Order(
                 action=exit_action,
                 totalQuantity=quantity,
