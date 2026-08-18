@@ -2076,3 +2076,94 @@ with tab6:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             type="primary"
         )
+
+    st.markdown("---")
+    st.subheader("🔍 Sequentiële EM Multiplier Optimalisatie Engine")
+    st.markdown("""
+    Test de prestaties van **verschillende EM veiligheidsmultipliers** ($0.80\\times$ tot $2.00\\times \\text{EM68}$) om exact de **meest winstgevende sweet spot** te bepalen op basis van de volatiliteit.
+    - **EM68** ($1.00\\times \\text{EM68}$): $68.3\\%$ wiskundig bereik
+    - **EM85** ($1.44\\times \\text{EM68}$): $85.0\\%$ wiskundig bereik (Standaard AntiGravity instelling)
+    - **Diepe Spreads** ($1.65\\times - 2.00\\times \\text{EM68}$): Extreem hoge veiligheidsmarge
+    """)
+
+    opt_btn = st.button("🔍 Start Sequentiële EM Optimalisatie Sweep", type="secondary")
+
+    if opt_btn:
+        from hitrate_backtester import SpreadHitRateTester
+        tester = SpreadHitRateTester()
+
+        prog_opt = st.progress(0.0)
+        status_opt = st.empty()
+
+        def opt_progress(pct, msg):
+            prog_opt.progress(pct)
+            status_opt.text(msg)
+
+        with st.spinner("Sequentiële optimalisatie sweep uitvoeren over 7 EM-niveaus..."):
+            opt_res = tester.optimize_em_multipliers(
+                symbols=test_symbols if test_symbols else ['SPY', 'AAPL', 'MSFT', 'NVDA', 'QQQ'],
+                trades_per_symbol=trades_per_sym,
+                multipliers=[0.8, 1.0, 1.2, 1.44, 1.65, 1.8, 2.0],
+                progress_callback=opt_progress
+            )
+
+        st.session_state['opt_results'] = opt_res
+        st.success("✅ Sequentiële optimalisatie sweep voltooid!")
+
+    if 'opt_results' in st.session_state and st.session_state['opt_results']:
+        opt_res = st.session_state['opt_results']
+        df_sweep = opt_res['sweep_df']
+
+        st.success(f"🎯 **Optimum Gevonden**: Multiplier **{opt_res['best_multiplier']:.2f}x EM68** (EM85 zone) levert de hoogste winst op van **${opt_res['best_pnl']:.2f} per trade** met een Hit Rate van **{opt_res['best_hit_rate']}%**!")
+
+        # Interactive Plotly Chart
+        import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
+
+        fig = make_subplots(specs=[[{"secondary_y": True}]])
+        fig.add_trace(
+            go.Scatter(
+                x=df_sweep['multiplier_name'], 
+                y=df_sweep['avg_pnl'], 
+                name="Gem. Winst / Trade ($)",
+                line=dict(color='#00CC96', width=3),
+                mode='lines+markers'
+            ),
+            secondary_y=False
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=df_sweep['multiplier_name'], 
+                y=df_sweep['hit_rate'], 
+                name="Hit Rate (%)",
+                line=dict(color='#636EFA', width=3, dash='dash'),
+                mode='lines+markers'
+            ),
+            secondary_y=True
+        )
+
+        fig.update_layout(
+            title_text="📈 EM Multiplier vs. Gemiddelde Winst & Hit Rate",
+            hovermode="x unified",
+            template="plotly_dark"
+        )
+        fig.update_xaxes(title_text="EM Veiligheids-Multiplier")
+        fig.update_yaxes(title_text="<b>Gemiddelde Winst ($)</b>", secondary_y=False)
+        fig.update_yaxes(title_text="<b>Hit Rate (%)</b>", secondary_y=True)
+
+        st.plotly_chart(fig, use_container_width=True)
+
+        st.markdown("#### 📊 Overzichtstabel per Multipliersweep")
+        st.dataframe(
+            df_sweep[['multiplier_name', 'hit_rate', 'avg_pop', 'avg_credit', 'avg_pnl', 'total_pnl', 'em85_safe_rate']],
+            use_container_width=True,
+            column_config={
+                "multiplier_name": "EM Multiplier",
+                "hit_rate": st.column_config.NumberColumn("Hit Rate", format="%.1f%%"),
+                "avg_pop": st.column_config.NumberColumn("Gem. PoP", format="%.1f%%"),
+                "avg_credit": st.column_config.NumberColumn("Gem. Credit", format="$%.2f"),
+                "avg_pnl": st.column_config.NumberColumn("Gem. Winst / Trade", format="$%.2f"),
+                "total_pnl": st.column_config.NumberColumn("Totale Winst (25 Spreads)", format="$%.2f"),
+                "em85_safe_rate": st.column_config.NumberColumn("Geen Touch Rate", format="%.1f%%")
+            }
+        )
