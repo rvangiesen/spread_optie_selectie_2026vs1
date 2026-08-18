@@ -4,9 +4,21 @@ Welkom bij de **AntiGravity Optie Contract Selectie Tool** (Project 2). Dit proj
 
 ---
 
+## 💻 1-Klik Laptop Installatie & Github Cloning
+Wilt u dit project clonen naar een laptop of andere computer? 
+Zie de volledige stap-voor-stap handleiding: **[Handleiding_Project2_Laptop_Installatie.md](Handleiding_Project2_Laptop_Installatie.md)**.
+
+**Snelstart op Laptop:**
+1. Kloon het project van GitHub: `git clone https://github.com/rvangiesen/infrasound_lfg_toolkit.git`
+2. Dubbelklik op **`setup_laptop.bat`** (bouwt automatisch een schone `.venv` op en installeert alle vereiste pakketten).
+3. Dubbelklik op **`run_laptop.bat`** om de app direct te starten!
+
+---
+
 ## 📖 Gebruikershandleidingen
-* **Gebruik van de App**: [Handleiding_Optie_Contract_Selectie.md](Handleiding_Optie_Contract_Selectie.md) (uitleg van knoppen, filters, sentimentmodel, ranking en orderplaatsing).
-* **Project Opstarten & GitHub**: [Handleiding_Project2_Opstarten_en_Git.md](Handleiding_Project2_Opstarten_en_Git.md) (zie hieronder voor een samenvatting).
+* **Laptop Installatie**: [Handleiding_Project2_Laptop_Installatie.md](Handleiding_Project2_Laptop_Installatie.md) (1-klik setup, `.venv` herstel & agent instructies).
+* **Gebruik van de App**: [Handleiding_Optie_Contract_Selectie.md](Handleiding_Optie_Contract_Selectie.md) (uitleg van knoppen, EM85, filters, sentimentmodel, ranking en orderplaatsing).
+* **Project Opstarten & GitHub**: [Handleiding_Project2_Opstarten_en_Git.md](Handleiding_Project2_Opstarten_en_Git.md).
 
 ---
 
