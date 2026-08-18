@@ -1090,7 +1090,7 @@ with tab1:
              if is_fast_atm:
                  preview_cols = ['symbol', 'strategy', 'expiry', 'strike_buy', 'spread_ask_abs', 'winst_laat', 'winst_midden', 'winst_laatste', 'dte']
              else:
-                 preview_cols = ['symbol', 'strategy', 'expiry', 'strike_buy', 'strike_sell', 'max_profit', 'pop', 'expected_move', 'call_wall', 'put_wall', 'TTP (D)', 'TEI Score']
+                 preview_cols = ['symbol', 'strategy', 'expiry', 'strike_buy', 'strike_sell', 'max_profit', 'pop', 'EM68', 'EM85', 'call_wall', 'put_wall', 'TTP (D)', 'TEI Score']
              preview_cols = [c for c in preview_cols if c in df_res.columns]
 
              strategies_found = df_res['strategy'].unique()
@@ -1154,7 +1154,7 @@ with tab2:
                 'spread_mid_abs', 'spread_ask_abs', 'b_l_verschil', 'max_profit', 'sluitingswinst', 'pop',
                 'TTP (D)', 'TEI Score', 'Efficient',
                 'BEP', 'bep_afstand_pct', 'supports', 'resistances',
-                'Sentiment', 'price_buy', 'price_sell', 'net_extrinsic', 'expected_move',
+                'Sentiment', 'price_buy', 'price_sell', 'net_extrinsic', 'EM68', 'EM85',
                 'delta_buy', 'delta_sell', 'delta', 'delta_koers', 'gamma', 'theta', 'dte', 
                 'EMA_Cross', 'Stoch_RSI', 'iv_percentile', 'iv_rank', 'underlying_iv', 
                 'gamma_flip', 'call_wall', 'put_wall', 'gex_wall'
@@ -1196,7 +1196,9 @@ with tab2:
             "iv_percentile": st.column_config.NumberColumn("IV Percentiel", format="%.1f%%"),
             "iv_rank": st.column_config.NumberColumn("IV Rank", format="%.1f%%"),
             "underlying_iv": st.column_config.NumberColumn("IV", format="%.1f%%"),
-            "expected_move": st.column_config.NumberColumn("Exp. Move (1SD)", format="$%.2f"),
+            "EM68": st.column_config.NumberColumn("EM68", format="$%.2f", help="Expected Move 68% kans (1 Standard Deviation): verwachte koersuitslag"),
+            "EM85": st.column_config.NumberColumn("EM85", format="$%.2f", help="Expected Move 85% kans (1.44 Standard Deviation): ruimere verwachte koersuitslag"),
+            "expected_move": st.column_config.NumberColumn("EM68", format="$%.2f", help="Expected Move 68% kans"),
             "gamma_flip": st.column_config.NumberColumn("Gamma Flip", format="$%.2f"),
             "call_wall": st.column_config.NumberColumn("Call Wall", format="$%.2f"),
             "put_wall": st.column_config.NumberColumn("Put Wall", format="$%.2f"),
@@ -1224,7 +1226,7 @@ with tab2:
             "max_pain_buffer_ok": st.column_config.CheckboxColumn("MP Buffer OK", help="Spread is > 5 punten van Max Pain"),
             "dist_max_pain": st.column_config.NumberColumn("MP Afstand", format="$%.2f"),
             "max_profit": st.column_config.NumberColumn("Max Winst", format="$%.2f", help="Maximale winst in dollars"),
-            "sluitingswinst": st.column_config.NumberColumn("Sluitingswinst (EM)", format="$%.2f", help="Geschatte winst/verlies bij vervroegde sluiting (na 5 dagen of halverwege) bij 1 Expected Move koersstijging/-daling in gunstige richting"),
+            "sluitingswinst": st.column_config.NumberColumn("Sluitingswinst (EM68)", format="$%.2f", help="Geschatte winst/verlies bij vervroegde sluiting (na 5 dagen of halverwege) bij 1 EM68 koersstijging/-daling in gunstige richting"),
             "pop": st.column_config.NumberColumn("Kans op Winst (PoP)", format="%.1f%%", help="Probability of Profit"),
             "koopadvies": st.column_config.TextColumn("Koopadvies", help="Groen = Koopadvies (winstgevend bij p% beweging), Rood = Geen koopadvies", pinned=True),
             "TTP (D)": st.column_config.NumberColumn("TTP (Dagen)", format="%.1f", help="Days to Profit ($5 doel)"),

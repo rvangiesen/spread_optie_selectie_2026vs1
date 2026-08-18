@@ -1228,12 +1228,17 @@ class SpreadScanner:
             
         spreads_df['max_pain_buffer_ok'] = spreads_df.apply(check_buffer, axis=1)
 
-        # 5. Advanced Metrics (IV Rank, Expected Move)
+        # 5. Advanced Metrics (IV Rank, Expected Move EM68 & EM85)
         if underlying_iv > 0:
             dte_val = spreads_df['dte'].iloc[0] if not spreads_df.empty else 30
-            # Expected Move (1SD) = Spot * IV * sqrt(DTE/365)
-            em = underlying_price * underlying_iv * np.sqrt(dte_val / 365.0)
-            spreads_df['expected_move'] = np.round(em, 2)
+            # Expected Move 68% (1SD) = Spot * IV * sqrt(DTE/365)
+            em68 = underlying_price * underlying_iv * np.sqrt(dte_val / 365.0)
+            # Expected Move 85% (1.44SD) = em68 * 1.439535
+            em85 = em68 * 1.439535
+            
+            spreads_df['expected_move'] = np.round(em68, 2)
+            spreads_df['EM68'] = np.round(em68, 2)
+            spreads_df['EM85'] = np.round(em85, 2)
             spreads_df['underlying_iv'] = underlying_iv * 100 # Display as percentage
             
             # IV Rank & Percentile (only if hist_iv_df provided and not empty)
@@ -1246,6 +1251,8 @@ class SpreadScanner:
                 spreads_df['iv_percentile'] = 0.0
         else:
             spreads_df['expected_move'] = 0.0
+            spreads_df['EM68'] = 0.0
+            spreads_df['EM85'] = 0.0
             spreads_df['underlying_iv'] = 0.0
             spreads_df['iv_rank'] = 0.0
             spreads_df['iv_percentile'] = 0.0
@@ -1265,7 +1272,7 @@ class SpreadScanner:
                 is_bullish = ('bull' in strat) or ('longcall' in strat)
                 is_bearish = ('bear' in strat) or ('longput' in strat)
                 
-                em_val = float(row.get('expected_move', 0.0))
+                em_val = float(row.get('EM68', row.get('expected_move', 0.0)))
                 if em_val == 0.0 and underlying_price > 0:
                     em_val = underlying_price * iv_val * np.sqrt(float(row['dte']) / 365.0)
                 
