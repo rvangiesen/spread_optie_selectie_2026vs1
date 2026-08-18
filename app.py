@@ -438,7 +438,7 @@ today = datetime.datetime.now().weekday()
 if today >= 5: # 5 = Saturday, 6 = Sunday
     st.warning("⚠️ **Weekend Modus Actief**: TWS levert momenteel beperkte live data. De scanner gebruikt de prijzen van afgelopen vrijdag (sluiting) als fallback voor berekeningen.")
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["🚀 Scanner", "📊 Resultaten", "🛒 Orders", "📈 S&P 500 Spreads", "💰 Dividend CC"])
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["🚀 Scanner", "📊 Resultaten", "🛒 Orders", "📈 S&P 500 Spreads", "💰 Dividend CC", "🧪 Hit-Rate Test"])
 
 # --- TAB 1: SCANNER ---
 with tab1:
@@ -1967,6 +1967,112 @@ with tab5:
             label="Exporteer Dividend Lijst (Excel)",
             data=buffer.getvalue(),
             file_name=f"Dividend_Covered_Calls_{datetime.date.today().strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary"
+        )
+
+
+# --- TAB 6: HIT-RATE TEST & MAANDELIJKSE VALIDATIE ---
+with tab6:
+    st.header("🧪 Spread Hit-Rate Validatietest & Maandelijkse Check")
+    st.markdown("""
+    Valideer de prestaties van de huidige **Spread Selector instellingen** op een dataset van **25 historische gelopen spreads** (5 per aandeel over 5 bekende benchmark indices/aandelen).
+    Dit geeft u hard wiskundig en statistisch bewijs van de **werkelijke winstratio (Hit Rate %)**, de **EM85 veiligheidsscore** en de **totale winstgevendheid**.
+    """)
+    
+    col_hr1, col_hr2 = st.columns([2, 1])
+    with col_hr1:
+        test_symbols = st.multiselect(
+            "Geselecteerde Test-Aandelen / Indices",
+            options=['SPY', 'AAPL', 'MSFT', 'NVDA', 'QQQ', 'IWM', 'AMZN', 'GOOGL', 'META', 'TSLA'],
+            default=['SPY', 'AAPL', 'MSFT', 'NVDA', 'QQQ'],
+            help="Selecteer de 5 aandelen of indices waarop u de 25 spreads wilt testen."
+        )
+    with col_hr2:
+        trades_per_sym = st.number_input("Aantal spreads per aandeel", min_value=1, max_value=10, value=5)
+        
+    start_hitrate_btn = st.button("🧪 Start Maandelijkse Hit-Rate Test (25 Spreads / 5 Aandelen)", type="primary")
+    
+    if start_hitrate_btn:
+        if not test_symbols:
+            st.error("Selecteer a.u.b. ten minste 1 aandeel voor de test.")
+        else:
+            from hitrate_backtester import SpreadHitRateTester
+            tester = SpreadHitRateTester()
+            
+            progress_bar = st.progress(0.0)
+            status_text = st.empty()
+            log_box = st.expander("Bekijk gedetailleerde test-logboeken", expanded=True)
+            log_messages = []
+            
+            def hr_progress(pct, msg):
+                progress_bar.progress(pct)
+                status_text.text(msg)
+                
+            def hr_log(msg):
+                log_messages.append(msg)
+                with log_box:
+                    st.text(msg)
+                    
+            with st.spinner("Hit-Rate test wordt uitgevoerd op historische marktdata..."):
+                res_dict = tester.run_backtest(
+                    symbols=test_symbols,
+                    trades_per_symbol=trades_per_sym,
+                    progress_callback=hr_progress,
+                    log_callback=hr_log
+                )
+                
+            st.session_state['hitrate_results'] = res_dict
+            st.success("✅ Maandelijkse Hit-Rate test succesvol voltooid!")
+            
+    if 'hitrate_results' in st.session_state and st.session_state['hitrate_results'].get('summary'):
+        res = st.session_state['hitrate_results']
+        summary = res['summary']
+        df_details = res['details_df']
+        
+        st.subheader("📊 Testresultaten Samenvatting")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Werkelijke Hit Rate", f"{summary['hit_rate']}%", f"{summary['wins']}/{summary['total_trades']} Gewonnen")
+        m2.metric("Verwachte Kans (PoP)", f"{summary['avg_pop']}%", f"Verschil: {round(summary['hit_rate'] - summary['avg_pop'], 1)}%")
+        m3.metric("EM85 Safe Rate", f"{summary['em85_safe_rate']}%", "Geen BEP Touch")
+        m4.metric("Totale Realiseerde Winst", f"${summary['total_pnl']:,.2f}", f"Gem. ${summary['avg_pnl']:.2f} / trade")
+        
+        st.markdown("### 📋 Overzicht van de Gelopen Spreads")
+        
+        # Configure columns for display
+        st.dataframe(
+            df_details,
+            use_container_width=True,
+            column_config={
+                "symbol": "Aandeel",
+                "entry_date": "Entry Datum",
+                "exp_date": "Expiratie",
+                "strategy": "Strategie",
+                "underlying_entry": st.column_config.NumberColumn("Koers In", format="$%.2f"),
+                "underlying_exp": st.column_config.NumberColumn("Koers Uit", format="$%.2f"),
+                "short_strike": st.column_config.NumberColumn("Short Strike", format="$%.2f"),
+                "long_strike": st.column_config.NumberColumn("Long Strike", format="$%.2f"),
+                "bep": st.column_config.NumberColumn("BEP", format="$%.2f"),
+                "credit": st.column_config.NumberColumn("Credit", format="$%.2f"),
+                "EM68": st.column_config.NumberColumn("EM68", format="$%.2f"),
+                "EM85": st.column_config.NumberColumn("EM85", format="$%.2f"),
+                "em85_dekking_pct": st.column_config.NumberColumn("EM85 Dekking", format="%.1f%%"),
+                "pop": st.column_config.NumberColumn("PoP", format="%.1f%%"),
+                "status": "Resultaat",
+                "realized_pnl": st.column_config.NumberColumn("Winst ($)", format="$%.2f")
+            }
+        )
+        
+        # Export button for hitrate report
+        import io
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+            df_details.to_excel(writer, index=False, sheet_name='HitRate_Backtest')
+            
+        st.download_button(
+            label="💾 Download Maandelijks Hit-Rate Rapport (Excel)",
+            data=buffer.getvalue(),
+            file_name=f"Maandelijkse_HitRate_Test_{datetime.date.today().strftime('%Y%m%d')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             type="primary"
         )
