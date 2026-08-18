@@ -1064,8 +1064,13 @@ with tab1:
                              else:
                                  log(f"⚠️ Geen optie contracten gevonden")
                                  st.warning("Geen optie contracten gevonden. Probeer parameters te verruimen.")
+                             
+                             # Update GUI: scan klaar
+                             scan_status.success("✅ Scan voltooid!")
+                             progress_bar.progress(100)
                      finally:
                          scan_ib.disconnect()
+                     st.rerun()
         with col2:
             if st.button("Stop"):
                 st.warning("Scan gestopt.")
@@ -1106,8 +1111,27 @@ with tab1:
 # --- TAB 2: RESULTATEN ---
 with tab2:
     if 'results' in st.session_state and not st.session_state['results'].empty:
-        results = st.session_state['results']
+        results = st.session_state['results'].copy()
+
+        # Checkboxes in dezelfde rij
+        col_ag, col_dbg = st.columns([2.5, 1])
+        with col_ag:
+            only_top_ag = st.checkbox("⭐ Toon alleen hoogste AG Score per symbool", value=False, key="chk_only_top_ag")
+        with col_dbg:
+            show_debug = st.checkbox("Debug Columns", False, key="chk_debug_cols")
+
+        # Pas filtering toe op basis van checkbox waarde
+        if only_top_ag and 'symbol' in results.columns:
+            score_col = 'AG_Score' if 'AG_Score' in results.columns else ('ag_score' if 'ag_score' in results.columns else None)
+            if score_col:
+                results['_ag_num'] = pd.to_numeric(results[score_col], errors='coerce').fillna(-999999.0)
+                top_idx = results.sort_values(by='_ag_num', ascending=False).drop_duplicates(subset=['symbol'], keep='first').index
+                results = results.loc[top_idx].drop(columns=['_ag_num'])
+
         st.subheader(f"Gevonden Resultaten ({len(results)})")
+
+        if show_debug:
+            st.write(f"Columns in results: {results.columns.tolist()}")
 
         # Transformeer koopadvies om de strike-waarden en status te tonen
         if 'koopadvies' in results.columns and 'koopadvies_status' not in results.columns:
@@ -1141,16 +1165,23 @@ with tab2:
                 
             results['koopadvies'] = results.apply(format_koopadvies_strikes, axis=1)
 
+        # Eerste kolom Selecteer initialiseren: auto-selecteer rijen met koopadvies boven drempel
+        if 'Selecteer' not in results.columns:
+            if 'koopadvies_status' in results.columns:
+                results.insert(0, 'Selecteer', results['koopadvies_status'] == "✅")
+            else:
+                results.insert(0, 'Selecteer', False)
+
         is_fast_atm = (scan_mode == "Super-Fast ATM Long Scan (1% Koop)") or (scan_mode == "Auto-Pilot (Downloads map)" and st.session_state.get('auto_pilot_type') == "Super-Fast ATM Long Scan (1% Koop)")
         if is_fast_atm:
             display_cols = [
-                'koopadvies', 'symbol', 'underlying_price', 'strategy', 'expiry', 'strike_buy',
+                'Selecteer', 'koopadvies', 'symbol', 'underlying_price', 'strategy', 'expiry', 'strike_buy',
                 'spread_ask_abs', 'spread_mid_abs', 'spread_last_abs',
                 'winst_laat', 'winst_midden', 'winst_laatste', 'dte'
             ]
         else:
             display_cols = [
-                'koopadvies', 'symbol', 'underlying_price', 'AG_Score', 'strategy', 'expiry', 'strike_buy', 'strike_sell', 'width', 
+                'Selecteer', 'koopadvies', 'symbol', 'underlying_price', 'AG_Score', 'strategy', 'expiry', 'strike_buy', 'strike_sell', 'width', 
                 'strike_p_buy', 'strike_p_sell', 'strike_c_sell', 'strike_c_buy',
                 'spread_mid_abs', 'spread_ask_abs', 'b_l_verschil', 'max_profit', 'sluitingswinst', 'sluitingswinst_em85', 'pop',
                 'TTP (D)', 'TEI Score', 'Efficient',
@@ -1160,10 +1191,6 @@ with tab2:
                 'EMA_Cross', 'Stoch_RSI', 'iv_percentile', 'iv_rank', 'underlying_iv', 
                 'gamma_flip', 'call_wall', 'put_wall', 'gex_wall'
             ]
-
-        # [DEBUG] Show column presence if requested
-        if st.checkbox("Debug Columns", False):
-            st.write(f"Columns in results: {results.columns.tolist()}")
 
         # Ensure columns exist before displaying
         final_cols = [c for c in display_cols if c in results.columns]
@@ -1176,6 +1203,7 @@ with tab2:
         # Column Configuration for Streamlit (Autosizing & Formatting)
         # Note: Removing most 'width' params to allow Streamlit's internal autosizing.
         col_cfg = {
+            "Selecteer": st.column_config.CheckboxColumn("Selecteer", default=False, help="Vink aan om op te nemen in 'Plaats orders'", pinned=True),
             "symbol": st.column_config.TextColumn("Symbool"),
             "underlying_price": st.column_config.NumberColumn("Koers", format="$%.2f"),
             "spread_last_abs": st.column_config.NumberColumn("Laatste Prijs", format="$%.2f"),
@@ -1278,13 +1306,108 @@ with tab2:
         if 'selected_trade_label' not in st.session_state:
             st.session_state['selected_trade_label'] = labels[0] if len(labels) > 0 else None
 
-        st.dataframe(
+        edited_results = st.data_editor(
             styled_df, 
             column_config=final_cfg,
             width='content',
             hide_index=False,
-            height=600
+            height=550,
+            disabled=[c for c in final_cols if c != 'Selecteer'],
+            key=f"results_matrix_editor_{only_top_ag}_{len(results)}"
         )
+
+        # --- BULK ORDER UTILITIES & BUTTON ---
+        col_b1, col_b2, col_b3 = st.columns([1, 1.5, 2])
+        with col_b1:
+            bulk_qty = st.number_input("Aantal stuks per order", min_value=1, value=1, key="bulk_order_qty")
+        with col_b2:
+            bulk_order_type = st.selectbox("Order Type (Executie)", 
+                ["Adaptive - Normal", "LMT (Standaard Limiet)", "Adaptive - Urgent", "Adaptive - Patient"],
+                index=0,
+                key="bulk_order_type"
+            )
+        with col_b3:
+            st.write("")
+            st.write("")
+            btn_place_bulk = st.button("🚀 PLAATS ORDERS (Geselecteerde regels)", type="primary", use_container_width=True)
+
+        if btn_place_bulk:
+            # Selected rows from data editor
+            selected_rows = edited_results[edited_results['Selecteer'] == True]
+            if selected_rows.empty:
+                st.warning("⚠️ **Geen regels geselecteerd.** Vink in de eerste kolom ('Selecteer') minstens één order aan.")
+            else:
+                st.info(f"⏳ **Plaatsen van {len(selected_rows)} order(s) bij TWS gestart...**")
+                import random
+                client_id_bulk = random.randint(20000, 29999)
+                bulk_ib = IBClient()
+                success, msg = bulk_ib.connect(tws_host, tws_port, client_id_bulk)
+                if not success:
+                    st.error(f"❌ Kan geen verbinding maken voor order: {msg}")
+                else:
+                    try:
+                        placed_count = 0
+                        for idx_num, (orig_idx, row) in enumerate(selected_rows.iterrows()):
+                            symbol = str(row['symbol']) if pd.notna(row.get('symbol')) else ''
+                            strat = str(row['strategy']) if pd.notna(row.get('strategy')) else ''
+                            expiry = str(row['expiry']) if pd.notna(row.get('expiry')) else ''
+                            right = str(row.get('right')) if pd.notna(row.get('right')) else 'C'
+                            
+                            strikes_dict = {
+                                'strike_buy': float(row.get('strike_buy')) if pd.notna(row.get('strike_buy')) else 0.0,
+                                'strike_sell': float(row.get('strike_sell')) if pd.notna(row.get('strike_sell')) else 0.0,
+                                'strike_p_buy': float(row.get('strike_p_buy')) if pd.notna(row.get('strike_p_buy')) else 0.0,
+                                'strike_p_sell': float(row.get('strike_p_sell')) if pd.notna(row.get('strike_p_sell')) else 0.0,
+                                'strike_c_sell': float(row.get('strike_c_sell')) if pd.notna(row.get('strike_c_sell')) else 0.0,
+                                'strike_c_buy': float(row.get('strike_c_buy')) if pd.notna(row.get('strike_c_buy')) else 0.0
+                            }
+                            
+                            is_credit = strat not in ['LongCall', 'LongPut', 'BullCall', 'BearPut', 'Strangle']
+                            raw_price = row.get('spread_ask_abs', 0)
+                            if not raw_price or pd.isna(raw_price) or float(raw_price) <= 0:
+                                raw_price = row.get('spread_mid_abs', 0)
+                            if not raw_price or pd.isna(raw_price) or float(raw_price) <= 0:
+                                raw_price = 0.10
+                            limit_price_signed = -float(raw_price) if is_credit else float(raw_price)
+                            
+                            trade = bulk_ib.place_strategy_order(
+                                symbol=symbol,
+                                expiry=expiry,
+                                right=right,
+                                strategy=strat,
+                                strikes_dict=strikes_dict,
+                                action='BUY',
+                                quantity=bulk_qty,
+                                price=limit_price_signed,
+                                order_type=bulk_order_type,
+                                enable_bracket=True,
+                                tp_pct=0.20,
+                                sl_pct=0.20
+                            )
+                            
+                            if trade:
+                                if trade.orderStatus.status in ('Cancelled', 'Inactive'):
+                                    reason = ""
+                                    if trade.log:
+                                        for entry in trade.log:
+                                            if entry.message:
+                                                reason = entry.message
+                                                break
+                                    err_msg = f"\n> {reason}" if reason else ""
+                                    st.error(f"❌ **Order #{idx_num+1} ({symbol} {strat} {expiry}) geweigerd door TWS!** Status: `{trade.orderStatus.status}`{err_msg}")
+                                else:
+                                    st.success(f"✅ **Order #{idx_num+1} ({symbol} {strat} {expiry}) ingediend bij TWS!** Order ID: `{trade.order.orderId}`, Status: `{trade.orderStatus.status}`")
+                                    placed_count += 1
+                            else:
+                                st.error(f"❌ **Order #{idx_num+1} ({symbol} {strat}) mislukt:** {getattr(bulk_ib, 'last_error', 'geen antwoord van TWS')}")
+                                
+                        if placed_count > 0:
+                            st.balloons()
+                            st.success(f"🎉 In totaal **{placed_count}/{len(selected_rows)}** order(s) succesvol ingediend bij TWS!")
+                    except Exception as e:
+                        st.error(f"Fout bij order uitvoering: {e}")
+                    finally:
+                        bulk_ib.disconnect()
 
         # --- NEW: Direct Selection for Orders ---
         st.divider()
@@ -1414,6 +1537,8 @@ with tab3:
                     index=1,
                     help="Kies Adaptive Algo om TWS de beste prijs binnen de spread te laten onderhandelen zonder de max limiet te overschrijden."
                 )
+
+                single_bracket = st.checkbox("🎯 Voeg Take Profit (+20%) & Stop Loss (-20%) Bracket Orders toe", value=True, key="single_bracket")
 
                 # Dynamic Profit Projection
                 worst_entry = selected_row.get('worst_entry_signed', 0.0)
@@ -1554,7 +1679,10 @@ with tab3:
                                 action=action,
                                 quantity=order_qty,
                                 price=limit_price_signed,
-                                order_type=order_type_ui
+                                order_type=order_type_ui,
+                                enable_bracket=single_bracket,
+                                tp_pct=0.20,
+                                sl_pct=0.20
                             )
 
                             if trade:

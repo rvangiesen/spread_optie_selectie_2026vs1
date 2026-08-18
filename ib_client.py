@@ -48,11 +48,11 @@ nest_asyncio.apply()
 from ib_insync import IB, Stock, Option, Index, util
 from ib_insync.contract import Contract
 
-# Suppress non-fatal IBKR warning logs (10091, 354, 200, Unknown contract, etc.)
+# Suppress non-fatal IBKR warning logs (10091, 354, 200, 300, Unknown contract, etc.)
 class IBErrorFilter(logging.Filter):
     def filter(self, record):
         msg = record.getMessage()
-        if any(f"{code}" in msg for code in ['10091', '354', '10167', '10089', ' 200,', '200: No security definition', 'Unknown contract']):
+        if any(f"{code}" in msg for code in ['10091', '354', '10167', '10089', ' 200,', '200: No security definition', 'Unknown contract', ' 300,', 'Can\'t find EId']):
             return False
         return True
 
@@ -861,18 +861,20 @@ class IBClient:
             # Qualify in bulk (this fills conId and ensures they exist)
             import asyncio
             try:
-                task = asyncio.ensure_future(self.ib.qualifyContractsAsync(*target_contracts))
-                start_wait = time.time()
-                while not task.done():
-                    self.ib.sleep(0.1)
-                    if time.time() - start_wait > 3.0:
-                        task.cancel()
-                        break
-                if task.done() and not task.cancelled() and not task.exception():
-                    qualified = task.result()
-                    final_valid = [c for c in qualified if c.conId > 0]
-                else:
-                    final_valid = []
+                final_valid = []
+                chunk_size = 100
+                for i in range(0, len(target_contracts), chunk_size):
+                    sub_chunk = target_contracts[i:i + chunk_size]
+                    task = asyncio.ensure_future(self.ib.qualifyContractsAsync(*sub_chunk))
+                    start_wait = time.time()
+                    while not task.done():
+                        self.ib.sleep(0.1)
+                        if time.time() - start_wait > 10.0:
+                            task.cancel()
+                            break
+                    if task.done() and not task.cancelled() and not task.exception():
+                        res = task.result()
+                        final_valid.extend([c for c in res if getattr(c, 'conId', 0) > 0])
             except Exception as e:
                 print(f"DEBUG_LOG: Qualification failed: {e}")
                 final_valid = []
@@ -898,7 +900,6 @@ class IBClient:
             
         print(f"DEBUG_LOG: Requesting market data for {len(contracts)} contracts in chunks of 50...")
         all_tickers = []
-        import time
         
         chunk_size = 50
         for i in range(0, len(contracts), chunk_size):
@@ -954,90 +955,90 @@ class IBClient:
                 }
             print(f"DEBUG_LOG: yfinance option price fallback loaded with {len(yf_lookup)} strikes for {symbol} {expiration}.")
         except Exception as e:
-            print(f"DEBUG_LOG: failed to load yfinance option price fallback: {e}")
+            print(f"DEBUG_LOG: yfinance option price fallback unavailable for {symbol} {expiration}: {e}")
 
         data_list = []
         for t in all_tickers:
-             strike = t.contract.strike
-             right = t.contract.right
-             strike_key = (round(float(strike), 4), right)
+            strike = t.contract.strike
+            right = t.contract.right
+            strike_key = (round(float(strike), 4), right)
+            
+            bid = t.bid if (t.bid and t.bid > 0) else 0.0
+            ask = t.ask if (t.ask and t.ask > 0) else 0.0
+            last = t.last if (t.last and t.last > 0) else 0.0
+            close = t.close if (t.close and t.close > 0) else 0.0
+            
+            greeks = {'delta': 0, 'gamma': 0, 'vega': 0, 'theta': 0, 'optPrice': 0.0, 'iv': 0.0, 'und_price': 0.0}
+            if t.modelGreeks:
+                greeks['delta'] = t.modelGreeks.delta or 0
+                greeks['gamma'] = t.modelGreeks.gamma or 0
+                greeks['vega'] = t.modelGreeks.vega or 0
+                greeks['theta'] = t.modelGreeks.theta or 0
+                greeks['optPrice'] = t.modelGreeks.optPrice or 0.0
+                greeks['iv'] = t.modelGreeks.impliedVol or t.impliedVolatility or 0.0
+                greeks['und_price'] = t.modelGreeks.undPrice or 0.0
+            
+            model_p = greeks.get('optPrice', 0.0)
+            und_p = greeks.get('und_price', 0.0)
              
-             bid = t.bid if (t.bid and t.bid > 0) else 0.0
-             ask = t.ask if (t.ask and t.ask > 0) else 0.0
-             last = t.last if (t.last and t.last > 0) else 0.0
-             close = t.close if (t.close and t.close > 0) else 0.0
-             
-             greeks = {'delta': 0, 'gamma': 0, 'vega': 0, 'theta': 0, 'optPrice': 0.0, 'iv': 0.0, 'und_price': 0.0}
-             if t.modelGreeks:
-                 greeks['delta'] = t.modelGreeks.delta or 0
-                 greeks['gamma'] = t.modelGreeks.gamma or 0
-                 greeks['vega'] = t.modelGreeks.vega or 0
-                 greeks['theta'] = t.modelGreeks.theta or 0
-                 greeks['optPrice'] = t.modelGreeks.optPrice or 0.0
-                 greeks['iv'] = t.modelGreeks.impliedVol or t.impliedVolatility or 0.0
-                 greeks['und_price'] = t.modelGreeks.undPrice or 0.0
-             
-             model_p = greeks.get('optPrice', 0.0)
-             und_p = greeks.get('und_price', 0.0)
-             
-             # Calculate intrinsic value threshold for stale price filtering
-             if und_p > 0 and float(strike) > 0:
-                 intr = max(0.0, und_p - float(strike)) if right == 'C' else max(0.0, float(strike) - und_p)
-             else:
-                 intr = 0.0
-             min_valid = max(0.0, intr - 0.50)
+            # Calculate intrinsic value threshold for stale price filtering
+            if und_p > 0 and float(strike) > 0:
+                intr = max(0.0, und_p - float(strike)) if right == 'C' else max(0.0, float(strike) - und_p)
+            else:
+                intr = 0.0
+            min_valid = max(0.0, intr - 0.50)
 
-             # Fallback to yfinance if TWS price data is missing or stale
-             yf_data = yf_lookup.get(strike_key)
-             if yf_data:
-                 if bid <= 0 and yf_data['bid'] >= min_valid: bid = yf_data['bid']
-                 if ask <= 0 and yf_data['ask'] >= min_valid: ask = yf_data['ask']
-                 if last <= 0 and yf_data['last'] >= min_valid: last = yf_data['last']
-                 if close <= 0 and yf_data['close'] >= min_valid: close = yf_data['close']
-             
-             oi = t.callOpenInterest if right == 'C' else t.putOpenInterest
-             if not oi and t.futuresOpenInterest: oi = t.futuresOpenInterest
+            # Fallback to yfinance if TWS price data is missing or stale
+            yf_data = yf_lookup.get(strike_key)
+            if yf_data:
+                if bid <= 0 and yf_data['bid'] >= min_valid: bid = yf_data['bid']
+                if ask <= 0 and yf_data['ask'] >= min_valid: ask = yf_data['ask']
+                if last <= 0 and yf_data['last'] >= min_valid: last = yf_data['last']
+                if close <= 0 and yf_data['close'] >= min_valid: close = yf_data['close']
+            
+            oi = t.callOpenInterest if right == 'C' else t.putOpenInterest
+            if not oi and t.futuresOpenInterest: oi = t.futuresOpenInterest
 
-             # Filter out stale last/close values if they violate intrinsic value
-             if last > 0 and last < min_valid: last = 0.0
-             if close > 0 and close < min_valid: close = 0.0
+            # Filter out stale last/close values if they violate intrinsic value
+            if last > 0 and last < min_valid: last = 0.0
+            if close > 0 and close < min_valid: close = 0.0
 
-             # [FIX] Robust Mid calculation: prefer (bid+ask)/2 if valid, then last, then model, then close
-             if bid > 0 and ask > 0 and ((bid + ask) / 2) >= min_valid:
-                 mid_p = (bid + ask) / 2
-             elif last >= min_valid and last > 0:
-                 mid_p = last
-             elif model_p >= min_valid and model_p > 0:
-                 mid_p = model_p
-             elif close >= min_valid and close > 0:
-                 mid_p = close
-             else:
-                 mid_p = 0.0
+            # [FIX] Robust Mid calculation: prefer (bid+ask)/2 if valid, then last, then model, then close
+            if bid > 0 and ask > 0 and ((bid + ask) / 2) >= min_valid:
+                mid_p = (bid + ask) / 2
+            elif last >= min_valid and last > 0:
+                mid_p = last
+            elif model_p >= min_valid and model_p > 0:
+                mid_p = model_p
+            elif close >= min_valid and close > 0:
+                mid_p = close
+            else:
+                mid_p = 0.0
 
-             price_for_validation = mid_p
-             if price_for_validation <= 0: continue
+            price_for_validation = mid_p
+            if price_for_validation <= 0: continue
 
-             # Fallback voor bid/ask: als TWS helemaal geen bid/ask of model_p ('delayed data') levert, gebruik mid_p (die bv. 'close' bevat)
-             if bid <= 0 and mid_p > 0: bid = mid_p
-             if ask <= 0 and mid_p > 0: ask = mid_p
+            # Fallback voor bid/ask: als TWS helemaal geen bid/ask of model_p ('delayed data') levert, gebruik mid_p (die bv. 'close' bevat)
+            if bid <= 0 and mid_p > 0: bid = mid_p
+            if ask <= 0 and mid_p > 0: ask = mid_p
 
-             data_list.append({
-                 'strike': strike,
-                 'right': right,
-                 'bid': bid,
-                 'ask': ask,
-                 'mid': mid_p,
-                 'volume': t.volume or 0,
-                 'openInterest': oi or 0,
-                 'delta': greeks['delta'],
-                 'gamma': greeks['gamma'],
-                 'vega': greeks['vega'],
-                 'theta': greeks['theta'],
-                 'iv': greeks['iv'],
-                 'opt_price': price_for_validation,
-                 'und_price': greeks['und_price']
-             })
-             
+            data_list.append({
+                'strike': strike,
+                'right': right,
+                'bid': bid,
+                'ask': ask,
+                'mid': mid_p,
+                'volume': t.volume or 0,
+                'openInterest': oi or 0,
+                'delta': greeks['delta'],
+                'gamma': greeks['gamma'],
+                'vega': greeks['vega'],
+                'theta': greeks['theta'],
+                'iv': greeks['iv'],
+                'opt_price': price_for_validation,
+                'und_price': greeks['und_price']
+            })
+            
         return pd.DataFrame(data_list)
     def get_scanner_data(self, scan_code='MOST_ACTIVE', instrument='STK', location='STK.US.MAJOR', rows=50):
         """
@@ -1082,11 +1083,10 @@ class IBClient:
             # print(f"[IBClient] Scanner Error: {e}")
             return []
             
-    def place_strategy_order(self, symbol, expiry, right, strategy, strikes_dict, action, quantity, price=None, order_type='LMT'):
+    def place_strategy_order(self, symbol, expiry, right, strategy, strikes_dict, action, quantity, price=None, order_type='LMT', enable_bracket=True, tp_pct=0.20, sl_pct=0.20):
         """
         Intelligently places orders for any supported strategy (single or multi-leg).
-        strikes_dict: {'strike_buy': 600, 'strike_sell': 610, ...}
-        action: 'BUY' or 'SELL' for the OVERALL strategy.
+        Supports Take Profit (+20%) and Stop Loss (-20%) attached bracket orders.
         """
         self.last_error = ""
         if not self.is_connected():
@@ -1171,7 +1171,6 @@ class IBClient:
             priority = order_type.split('-')[1].strip()
             algo_strategy = 'Adaptive'
             algo_params = [TagValue('adaptivePriority', priority)]
-            # Underlying order is still Limit, it just uses the algo engine. Max cap is the lmtPrice
             is_lmt = True
             order_type_str = 'LMT'
         elif order_type.startswith('LMT'):
@@ -1180,10 +1179,14 @@ class IBClient:
         else:
             order_type_str = order_type
             is_lmt = (order_type_str == 'LMT')
-            
+
+        can_bracket = enable_bracket and price is not None and float(price) != 0.0
+        parent_transmit = not can_bracket
+
         if len(legs_data) == 1:
             # Single Leg
             contract, leg_action = legs_data[0]
+            target_contract = contract
             order = Order(
                 action=action, 
                 totalQuantity=quantity,
@@ -1191,7 +1194,7 @@ class IBClient:
                 lmtPrice=price if is_lmt else None,
                 tif='DAY',
                 outsideRth=True,
-                transmit=True
+                transmit=parent_transmit
             )
             if algo_strategy:
                 order.algoStrategy = algo_strategy
@@ -1205,12 +1208,13 @@ class IBClient:
                 combo_legs.append(ComboLeg(conId=c.conId, ratio=1, action=leg_act, exchange='SMART'))
             
             bag = Contract(symbol=symbol, secType='BAG', currency='USD', exchange='SMART', comboLegs=combo_legs)
+            target_contract = bag
             order = Order(
                 action=action,
                 totalQuantity=quantity,
                 orderType=order_type_str,
                 lmtPrice=price if is_lmt else None,
-                transmit=True,
+                transmit=parent_transmit,
                 tif='DAY',
                 outsideRth=True
             )
@@ -1219,6 +1223,50 @@ class IBClient:
                 order.algoParams = algo_params
             print(f"DEBUG_LOG: Placing BAG order ({len(legs_data)} legs): {action} {quantity} combo...")
             trade = self.ib.placeOrder(bag, order)
+
+        # Attach Take Profit & Stop Loss Bracket Orders (20% default)
+        if can_bracket and trade and trade.order.orderId:
+            parent_id = trade.order.orderId
+            p_val = float(price)
+            
+            if p_val > 0: # Debit / Long
+                tp_price = round(p_val * (1.0 + tp_pct), 2)
+                sl_price = round(p_val * (1.0 - sl_pct), 2)
+                exit_action = 'SELL' if action == 'BUY' else 'BUY'
+            else: # Credit (signed negative)
+                abs_p = abs(p_val)
+                tp_price = -round(abs_p * (1.0 - tp_pct), 2)
+                sl_price = -round(abs_p * (1.0 + sl_pct), 2)
+                exit_action = 'BUY' if action == 'BUY' else 'SELL'
+
+            # 1. Take Profit Order (+20%)
+            tp_order = Order(
+                action=exit_action,
+                totalQuantity=quantity,
+                orderType='LMT',
+                lmtPrice=tp_price,
+                parentId=parent_id,
+                tif='DAY',
+                outsideRth=True,
+                transmit=False
+            )
+            print(f"DEBUG_LOG: Attaching Take Profit order (+{tp_pct*100:.0f}%): {exit_action} @ {tp_price} (parentId: {parent_id})")
+            self.ib.placeOrder(target_contract, tp_order)
+
+            # 2. Stop Loss Order (-20%) - Transmits full bracket
+            sl_order = Order(
+                action=exit_action,
+                totalQuantity=quantity,
+                orderType='STP' if len(legs_data) == 1 else 'LMT',
+                auxPrice=sl_price if len(legs_data) == 1 else None,
+                lmtPrice=sl_price if len(legs_data) > 1 else None,
+                parentId=parent_id,
+                tif='DAY',
+                outsideRth=True,
+                transmit=True
+            )
+            print(f"DEBUG_LOG: Attaching Stop Loss order (-{sl_pct*100:.0f}%): {exit_action} @ {sl_price} (parentId: {parent_id})")
+            self.ib.placeOrder(target_contract, sl_order)
 
         # 3. Wait for Submit
         import time
