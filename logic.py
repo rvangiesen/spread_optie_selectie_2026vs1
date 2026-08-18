@@ -1257,10 +1257,11 @@ class SpreadScanner:
             spreads_df['iv_rank'] = 0.0
             spreads_df['iv_percentile'] = 0.0
 
-        # --- CALCULATE SLUITINGSWINST (EXPECTED MOVE CLOSING PROFIT) ---
+        # --- CALCULATE SLUITINGSWINST (EXPECTED MOVE CLOSING PROFIT EM68 & EM85) ---
         # Berekent de geschatte winst ($) bij een vervroegde sluiting (na 5 dagen of halverwege)
-        # als de koers met 1 Expected Move in de gunstige richting beweegt.
-        closing_profits = []
+        # als de koers met 1x EM68 of 1x EM85 in de gunstige richting beweegt.
+        closing_profits_68 = []
+        closing_profits_85 = []
         if not spreads_df.empty:
             r = 0.04
             q = 0.015
@@ -1272,16 +1273,21 @@ class SpreadScanner:
                 is_bullish = ('bull' in strat) or ('longcall' in strat)
                 is_bearish = ('bear' in strat) or ('longput' in strat)
                 
-                em_val = float(row.get('EM68', row.get('expected_move', 0.0)))
-                if em_val == 0.0 and underlying_price > 0:
-                    em_val = underlying_price * iv_val * np.sqrt(float(row['dte']) / 365.0)
+                em68_val = float(row.get('EM68', row.get('expected_move', 0.0)))
+                em85_val = float(row.get('EM85', em68_val * 1.439535))
+                if em68_val == 0.0 and underlying_price > 0:
+                    em68_val = underlying_price * iv_val * np.sqrt(float(row['dte']) / 365.0)
+                    em85_val = em68_val * 1.439535
                 
                 if is_bullish:
-                    s_target = underlying_price + em_val
+                    s_target_68 = underlying_price + em68_val
+                    s_target_85 = underlying_price + em85_val
                 elif is_bearish:
-                    s_target = underlying_price - em_val
+                    s_target_68 = underlying_price - em68_val
+                    s_target_85 = underlying_price - em85_val
                 else: # Neutraal / overig
-                    s_target = underlying_price
+                    s_target_68 = underlying_price
+                    s_target_85 = underlying_price
                 
                 # Resterende looptijd bij sluiten (bijv. na 5 dagen, of halverwege als dte < 10)
                 dte_val = float(row['dte'])
@@ -1289,41 +1295,43 @@ class SpreadScanner:
                 dte_target = max(0.1, dte_target)
                 t_target = dte_target / 365.0
                 
-                def get_theo_price(strike, right_str):
+                def get_theo_price(strike, right_str, s_tgt):
                     if pd.isna(strike) or strike <= 0:
                         return 0.0
                     r_norm = 'c' if str(right_str).upper().startswith('C') else 'p'
                     try:
                         price_calc = BjerksundStensland2002.price_american_option(
-                            r_norm, float(s_target), float(strike), t_target, r, q, iv_val
+                            r_norm, float(s_tgt), float(strike), t_target, r, q, iv_val
                         )
                         return max(0.01, float(price_calc))
                     except:
                         return 0.01
 
-                # Bereken nieuwe netto prijs van de optie/spread
                 right = str(row['right']).upper()
-                if right == 'STR':
-                    pb_new = get_theo_price(row.get('strike_p_buy', row['strike_buy']), 'P')
-                    cb_new = get_theo_price(row.get('strike_c_buy', row['strike_buy']), 'C')
-                    net_price_new = pb_new + cb_new
-                elif right == 'IC':
-                    pb_new = get_theo_price(row.get('strike_p_buy', 0.0), 'P')
-                    ps_new = get_theo_price(row.get('strike_p_sell', 0.0), 'P')
-                    cs_new = get_theo_price(row.get('strike_c_sell', 0.0), 'C')
-                    cb_new = get_theo_price(row.get('strike_c_buy', 0.0), 'C')
-                    net_price_new = (pb_new + cb_new) - (ps_new + cs_new)
-                else: # Vertical Spread of Single Leg
-                    pb_new = get_theo_price(row['strike_buy'], row['right'])
-                    ps_new = get_theo_price(row['strike_sell'], row['right']) if row['strike_sell'] > 0 else 0.0
-                    net_price_new = pb_new - ps_new
+                def calc_net_new(s_tgt):
+                    if right == 'STR':
+                        pb_new = get_theo_price(row.get('strike_p_buy', row['strike_buy']), 'P', s_tgt)
+                        cb_new = get_theo_price(row.get('strike_c_buy', row['strike_buy']), 'C', s_tgt)
+                        return pb_new + cb_new
+                    elif right == 'IC':
+                        pb_new = get_theo_price(row.get('strike_p_buy', 0.0), 'P', s_tgt)
+                        ps_new = get_theo_price(row.get('strike_p_sell', 0.0), 'P', s_tgt)
+                        cs_new = get_theo_price(row.get('strike_c_sell', 0.0), 'C', s_tgt)
+                        cb_new = get_theo_price(row.get('strike_c_buy', 0.0), 'C', s_tgt)
+                        return (pb_new + cb_new) - (ps_new + cs_new)
+                    else: # Vertical Spread of Single Leg
+                        pb_new = get_theo_price(row['strike_buy'], row['right'], s_tgt)
+                        ps_new = get_theo_price(row['strike_sell'], row['right'], s_tgt) if row['strike_sell'] > 0 else 0.0
+                        return pb_new - ps_new
                 
-                # Winst = (netto prijs bij sluiten - netto prijs bij openen) * 100
                 net_price_entry = float(row['net_price'])
-                profit_est = (net_price_new - net_price_entry) * 100
-                closing_profits.append(profit_est)
+                p68 = (calc_net_new(s_target_68) - net_price_entry) * 100
+                p85 = (calc_net_new(s_target_85) - net_price_entry) * 100
+                closing_profits_68.append(p68)
+                closing_profits_85.append(p85)
         
-        spreads_df['sluitingswinst'] = closing_profits
+        spreads_df['sluitingswinst'] = closing_profits_68
+        spreads_df['sluitingswinst_em85'] = closing_profits_85
 
         # 6. Universeel Koopadvies (1% Target Rule)
         # Evaluates the spread's mathematical payout against +/- 1% targets.
@@ -1484,22 +1492,58 @@ class SpreadScanner:
         spreads_df['Efficient'] = is_efficient
 
         # --- Part 7: AntiGravity Score (AG Score) ---
-        # Combineert winstkans, rendement/risico (TEI), en veiligheidsmarges
-        # pop is 0-100. TEI is normally 0.5 - 3.0.
-        ag_score = spreads_df['pop'] * np.maximum(spreads_df['TEI Score'], 0.1)
+        # Combineert winstkans, TEI, EM85 veiligheidsdekking, Max Pain en Risk/Reward verhouding
+        
+        # 1. Bereken EM85 Dekkingsverhouding (EM85 Coverage Ratio)
+        em85_vals = np.maximum(0.01, spreads_df['EM85'].values)
+        bep_vals = spreads_df['BEP'].values if 'BEP' in spreads_df.columns else spreads_df['strike_buy'].values
+        strat_vals = spreads_df['strategy'].values
+        
+        # Afstand van Spot tot BEP
+        bep_dists = np.zeros(n)
+        for i in range(n):
+            st_val = strat_vals[i]
+            b_val = bep_vals[i]
+            if st_val in ['BullCall', 'BullPut', 'LongCall']:
+                bep_dists[i] = underlying_price - b_val if b_val > 0 else underlying_price - spreads_df['strike_sell'].iloc[i]
+            elif st_val in ['BearCall', 'BearPut', 'LongPut']:
+                bep_dists[i] = b_val - underlying_price if b_val > 0 else spreads_df['strike_sell'].iloc[i] - underlying_price
+            else:
+                bep_dists[i] = np.abs(underlying_price - spreads_df['strike_buy'].iloc[i])
+                
+        em85_coverage_ratio = bep_dists / em85_vals
+        spreads_df['em85_dekking_pct'] = np.round(em85_coverage_ratio * 100.0, 1)
+        
+        # EM85 Multiplier: Beloon trades waar BEP buiten het 85% EM bereik ligt (> 1.0)
+        # Bij ratio = 1.0 (BEP exact op 85% grens) -> 1.30x multiplier
+        # Bij ratio >= 1.5 (BEP diep beschermd achter EM85 & supports) -> 1.60x multiplier
+        em85_multiplier = 1.0 + np.clip((em85_coverage_ratio - 0.4) * 0.6, -0.3, 0.7)
+        
+        # 2. Risk/Reward Balans Multiplier (Winst vs Verlies)
+        # Voorkom extreem scheve verhoudingen (bijv. $5 winst vs $495 verlies = RoR < 0.05)
+        profits = spreads_df['max_profit'].values
+        widths = spreads_df['width'].values
+        max_loss = np.where(widths > 0, (widths * 100) - profits, 1.0)
+        max_loss = np.maximum(1.0, max_loss)
+        ror = profits / max_loss
+        
+        # Beloon de 'sweet spot' (10% - 50% rendement op risico) i.c.m. hoge EM85 dekking
+        ror_multiplier = np.where((ror >= 0.10) & (ror <= 0.60), 1.25, np.where(ror < 0.04, 0.50, 1.0))
+
+        # Base Score
+        ag_score = spreads_df['pop'] * np.maximum(spreads_df['TEI Score'], 0.1) * em85_multiplier * ror_multiplier
         
         # Bonus voor 1% regel (koopadvies)
-        ag_score = np.where(spreads_df['koopadvies'] == "✅", ag_score * 1.5, ag_score)
+        ag_score = np.where(spreads_df['koopadvies'] == "✅", ag_score * 1.3, ag_score)
         
         # Bonus voor Max Pain buffer
         if 'max_pain_buffer_ok' in spreads_df.columns:
             ag_score = np.where(spreads_df['max_pain_buffer_ok'], ag_score * 1.2, ag_score)
             
-        # Bonus voor BEP Afstand (Beloon diepere marge / veiligere trades)
-        # 5% marge geeft bijv. een bonus multiplier van ~ 1.20x (20% bonus) 
+        # Bonus voor BEP Afstand
         if 'bep_afstand_pct' in spreads_df.columns:
             bep_buffer_pct = np.maximum(0, spreads_df['bep_afstand_pct'])
-            bep_bonus_multiplier = 1.0 + (bep_buffer_pct / 100.0) * 4.0
+            bep_bonus_multiplier = 1.0 + (bep_buffer_pct / 100.0) * 2.0
             ag_score = ag_score * bep_bonus_multiplier
         
         # Penalty voor heel krappe afstand tot koers (strike_buy dicht op koers)

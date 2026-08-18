@@ -797,7 +797,7 @@ with tab1:
                                          elif auto_sentiment == 'Bearish':
                                              suggested = ['BearCall', 'BearPut', 'LongPut']
                                          else:
-                                             suggested = ['IronCondor', 'Strangle']
+                                             suggested = ['BullPut', 'BearCall', 'IronCondor', 'Strangle']
 
                                          overlap = [s for s in user_requested_strategies if s in suggested]
                                          if overlap:
@@ -1151,9 +1151,9 @@ with tab2:
             display_cols = [
                 'koopadvies', 'symbol', 'underlying_price', 'AG_Score', 'strategy', 'expiry', 'strike_buy', 'strike_sell', 'width', 
                 'strike_p_buy', 'strike_p_sell', 'strike_c_sell', 'strike_c_buy',
-                'spread_mid_abs', 'spread_ask_abs', 'b_l_verschil', 'max_profit', 'sluitingswinst', 'pop',
+                'spread_mid_abs', 'spread_ask_abs', 'b_l_verschil', 'max_profit', 'sluitingswinst', 'sluitingswinst_em85', 'pop',
                 'TTP (D)', 'TEI Score', 'Efficient',
-                'BEP', 'bep_afstand_pct', 'supports', 'resistances',
+                'BEP', 'bep_afstand_pct', 'em85_dekking_pct', 'supports', 'resistances',
                 'Sentiment', 'price_buy', 'price_sell', 'net_extrinsic', 'EM68', 'EM85',
                 'delta_buy', 'delta_sell', 'delta', 'delta_koers', 'gamma', 'theta', 'dte', 
                 'EMA_Cross', 'Stoch_RSI', 'iv_percentile', 'iv_rank', 'underlying_iv', 
@@ -1207,6 +1207,7 @@ with tab2:
             "spread_ask_abs": st.column_config.NumberColumn("Laatprijs", format="$%.2f"),
             "BEP": st.column_config.NumberColumn("BEP", format="$%.2f", help="Break Even Point gebaseerd op Laat prijs"),
             "bep_afstand_pct": st.column_config.NumberColumn("BEP Afstand", format="%.1f%%", help="Afstand in % tot het Break-Even Punt"),
+            "em85_dekking_pct": st.column_config.NumberColumn("EM85 Dekking", format="%.1f%%", help="Afstand van BEP tot koers als % van EM85 (>100% betekent dat BEP buiten 85% kansbereik ligt)"),
             "EMA_Cross": st.column_config.TextColumn("EMA 8/50"),
             "Stoch_RSI": st.column_config.TextColumn("Stoch RSI Status"),
             "Sentiment": st.column_config.TextColumn("Sentiment"),
@@ -1227,6 +1228,7 @@ with tab2:
             "dist_max_pain": st.column_config.NumberColumn("MP Afstand", format="$%.2f"),
             "max_profit": st.column_config.NumberColumn("Max Winst", format="$%.2f", help="Maximale winst in dollars"),
             "sluitingswinst": st.column_config.NumberColumn("Sluitingswinst (EM68)", format="$%.2f", help="Geschatte winst/verlies bij vervroegde sluiting (na 5 dagen of halverwege) bij 1 EM68 koersstijging/-daling in gunstige richting"),
+            "sluitingswinst_em85": st.column_config.NumberColumn("Sluitingswinst (EM85)", format="$%.2f", help="Geschatte winst/verlies bij vervroegde sluiting (na 5 dagen of halverwege) bij 1 EM85 koersstijging/-daling in gunstige richting"),
             "pop": st.column_config.NumberColumn("Kans op Winst (PoP)", format="%.1f%%", help="Probability of Profit"),
             "koopadvies": st.column_config.TextColumn("Koopadvies", help="Groen = Koopadvies (winstgevend bij p% beweging), Rood = Geen koopadvies", pinned=True),
             "TTP (D)": st.column_config.NumberColumn("TTP (Dagen)", format="%.1f", help="Days to Profit ($5 doel)"),
