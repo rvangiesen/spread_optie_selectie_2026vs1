@@ -444,6 +444,8 @@ class SpreadScanner:
                 em_value = component_price * iv_val * ((max(1, dte) / 365.0) ** 0.5)
                 if "Niveau 1" in itm_level:
                     safe_dist = em_value
+                elif "EM85" in itm_level:
+                    safe_dist = em_value * 1.439535
                 elif "Niveau 2" in itm_level:
                     safe_dist = em_value * 2.0
                 else: 

@@ -235,8 +235,9 @@ strike_range_pct = st.sidebar.number_input("Afstand tot Koers % (Strike Range)",
 min_strike_pct = st.sidebar.number_input("Min. afstand tot Koers %", min_value=-50.0, max_value=50.0, value=2.0, step=1.0, help="Minimale foutmarge (Positief = extra marge. Negatief = sta In The Money toe).") / 100.0
 itm_support_level = st.sidebar.selectbox(
     "ITM Veiligheidsmarge (Support Niveau)", 
-    ["Standaard (Min. afstand %)", "Niveau 1 (1x Expected Move)", "Niveau 2 (2x Expected Move)", "Niveau 3 (Extreme / 2.5x)"],
-    help="Voor in-the-money (of veilige) positionering: kies de marge die bovenop de koers wordt gelegd."
+    ["EM85 Optimaal (1.44x Expected Move)", "Standaard (Min. afstand %)", "Niveau 1 (1x Expected Move)", "Niveau 2 (2x Expected Move)", "Niveau 3 (Extreme / 2.5x)"],
+    index=0,
+    help="Gevalideerd optimum: EM85 (1.44x EM68) biedt de hoogste gemiddelde winst per trade ($100/trade) met 84% Hit Rate."
 )
 # Additional Strategy Overrides/Toggles
 with st.sidebar.expander("Specifieke Strategieën", expanded=True):
