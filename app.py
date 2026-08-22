@@ -1539,6 +1539,7 @@ with tab3:
                 )
 
                 single_bracket = st.checkbox("🎯 Voeg Take Profit (+20%) & Stop Loss (-20%) Bracket Orders toe", value=True, key="single_bracket")
+                split_oto = st.checkbox("⛓️ Plaats poten los als One-Triggers-Other (vermijd Riskless Combo weigering)", value=False, key="split_oto")
 
                 # Dynamic Profit Projection
                 worst_entry = selected_row.get('worst_entry_signed', 0.0)
@@ -1662,6 +1663,11 @@ with tab3:
                                 'strike_c_buy': selected_row.get('strike_c_buy', 0)
                             }
 
+                            leg_prices_dict = {
+                                'price_buy': selected_row.get('price_buy', 0),
+                                'price_sell': selected_row.get('price_sell', 0)
+                            }
+
                             # Determine Overall Action
                             # Since ib_client.py explicitly defines the legs representing the final position we want,
                             # we must always BUY the combination. Credit spreads will use a negative limit price.
@@ -1682,7 +1688,9 @@ with tab3:
                                 order_type=order_type_ui,
                                 enable_bracket=single_bracket,
                                 tp_pct=0.20,
-                                sl_pct=0.20
+                                sl_pct=0.20,
+                                split_oto=split_oto,
+                                leg_prices=leg_prices_dict
                             )
 
                             if trade:

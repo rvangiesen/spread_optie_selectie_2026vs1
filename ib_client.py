@@ -1083,7 +1083,7 @@ class IBClient:
             # print(f"[IBClient] Scanner Error: {e}")
             return []
             
-    def place_strategy_order(self, symbol, expiry, right, strategy, strikes_dict, action, quantity, price=None, order_type='LMT', enable_bracket=True, tp_pct=0.20, sl_pct=0.20):
+    def place_strategy_order(self, symbol, expiry, right, strategy, strikes_dict, action, quantity, price=None, order_type='LMT', enable_bracket=True, tp_pct=0.20, sl_pct=0.20, split_oto=False, leg_prices=None):
         """
         Intelligently places orders for any supported strategy (single or multi-leg).
         Supports Take Profit (+20%) and Stop Loss (-20%) attached bracket orders.
@@ -1201,6 +1201,45 @@ class IBClient:
                 order.algoParams = algo_params
             print(f"DEBUG_LOG: Placing single leg order: {action} {quantity} {contract.localSymbol} (Algo: {algo_strategy})")
             trade = self.ib.placeOrder(contract, order)
+        elif split_oto:
+            can_bracket = False # Disable bracket logic for split legs
+            parent_trade = None
+            parent_id = None
+            
+            for i, (contract, leg_action) in enumerate(legs_data):
+                is_last = (i == len(legs_data) - 1)
+                
+                leg_price = None
+                if leg_prices:
+                    if leg_action == 'BUY':
+                        leg_price = leg_prices.get('price_buy', 0)
+                    else:
+                        leg_price = leg_prices.get('price_sell', 0)
+                
+                leg_order_type = 'LMT' if (leg_price and float(leg_price) > 0) else 'MKT'
+                
+                order = Order(
+                    action=leg_action,
+                    totalQuantity=quantity,
+                    orderType=leg_order_type,
+                    lmtPrice=leg_price if leg_order_type == 'LMT' else None,
+                    tif='DAY',
+                    outsideRth=True,
+                    transmit=is_last
+                )
+                
+                if parent_id is not None:
+                    order.parentId = parent_id
+                    
+                print(f"DEBUG_LOG: Placing split OTO leg {i+1}: {leg_action} {quantity} {contract.localSymbol} (Type: {leg_order_type}, Price: {leg_price})")
+                trade_leg = self.ib.placeOrder(contract, order)
+                
+                if parent_id is None:
+                    parent_trade = trade_leg
+                    self.ib.sleep(0.1) # Wait slightly for order ID to be assigned
+                    parent_id = getattr(parent_trade.order, 'orderId', 0)
+                        
+            trade = parent_trade
         else:
             # Multi Leg (BAG)
             combo_legs = []
