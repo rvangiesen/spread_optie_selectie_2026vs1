@@ -1192,7 +1192,7 @@ class IBClient:
                 totalQuantity=quantity,
                 orderType=order_type_str,
                 lmtPrice=price if is_lmt else None,
-                tif='DAY',
+                tif='GTC',
                 outsideRth=True,
                 transmit=parent_transmit
             )
@@ -1220,7 +1220,7 @@ class IBClient:
                     totalQuantity=quantity,
                     orderType=leg_order_type,
                     lmtPrice=leg_price if leg_order_type == 'LMT' else None,
-                    tif='DAY',
+                    tif='GTC',
                     outsideRth=True,
                     transmit=True
                 )
@@ -1249,7 +1249,7 @@ class IBClient:
                 orderType=order_type_str,
                 lmtPrice=price if is_lmt else None,
                 transmit=parent_transmit,
-                tif='DAY',
+                tif='GTC',
                 outsideRth=True
             )
             if algo_strategy:
@@ -1280,7 +1280,7 @@ class IBClient:
                 orderType='LMT',
                 lmtPrice=tp_price,
                 parentId=parent_id,
-                tif='DAY',
+                tif='GTC',
                 outsideRth=True,
                 transmit=False
             )
@@ -1295,7 +1295,7 @@ class IBClient:
                 auxPrice=sl_price if len(legs_data) == 1 else None,
                 lmtPrice=sl_price if len(legs_data) > 1 else None,
                 parentId=parent_id,
-                tif='DAY',
+                tif='GTC',
                 outsideRth=True,
                 transmit=True
             )
