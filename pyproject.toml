@@ -8,6 +8,7 @@ dependencies = [
     "ib-insync>=0.9.86",
     "nest-asyncio>=1.6.0",
     "openpyxl>=3.1.5",
+    "plotly>=6.9.0",
     "py-vollib>=1.0.1",
     "streamlit>=1.54.0",
     "yfinance>=1.2.0",
