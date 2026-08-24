@@ -450,6 +450,7 @@ with tab1:
         else:
             st.write(f"Scan Modus: {scan_mode} - {len(symbols_to_scan)} symbolen te scannen.")
 
+        full_width_container = st.container()
         col1, col2, col3 = st.columns(3)
         with col1:
             start_pressed = st.button("Start Scan / Activeer Auto-Pilot", type="primary")
@@ -541,7 +542,7 @@ with tab1:
                              st.warning("Geen symbolen om te scannen.")
                          else:
                              # ... Proceed with Main Scan Logic ...
-                             scan_status = st.empty()
+                             scan_status = full_width_container.empty()
                              scan_status.text("🚀 Bezig met scannen... (Even geduld)")
 
                              all_results = pd.DataFrame()
@@ -563,9 +564,9 @@ with tab1:
                              else:
                                  all_unfiltered_global = pd.DataFrame()
                              # Progress bar
-                             progress_bar = st.progress(0)
-                             status_text = st.empty()
-                             log_area = st.expander("📋 Scan Log (Debug)", expanded=True)
+                             progress_bar = full_width_container.progress(0)
+                             status_text = full_width_container.empty()
+                             log_area = full_width_container.expander("📋 Scan Log (Debug)", expanded=True)
                              with log_area:
                                  log_placeholder = st.empty()
 
@@ -1060,10 +1061,10 @@ with tab1:
                                  ranked = scanner.rank_spreads(all_results, sort_criteria=criteria, top_n=100) 
                                  st.session_state['results'] = ranked
                                  log(f"✅ Top {len(ranked)} spreads geselecteerd")
-                                 st.success(f"{len(ranked)} optie contracten gevonden!")
+                                 full_width_container.success(f"{len(ranked)} optie contracten gevonden!")
                              else:
                                  log(f"⚠️ Geen optie contracten gevonden")
-                                 st.warning("Geen optie contracten gevonden. Probeer parameters te verruimen.")
+                                 full_width_container.warning("Geen optie contracten gevonden. Probeer parameters te verruimen.")
                              
                              # Update GUI: scan klaar
                              scan_status.success("✅ Scan voltooid!")
