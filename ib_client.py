@@ -1202,13 +1202,10 @@ class IBClient:
             print(f"DEBUG_LOG: Placing single leg order: {action} {quantity} {contract.localSymbol} (Algo: {algo_strategy})")
             trade = self.ib.placeOrder(contract, order)
         elif split_oto:
+            from ib_insync import ExecutionCondition
             can_bracket = False # Disable bracket logic for split legs
-            parent_trade = None
-            parent_id = None
             
             for i, (contract, leg_action) in enumerate(legs_data):
-                is_last = (i == len(legs_data) - 1)
-                
                 leg_price = None
                 if leg_prices:
                     if leg_action == 'BUY':
@@ -1225,21 +1222,19 @@ class IBClient:
                     lmtPrice=leg_price if leg_order_type == 'LMT' else None,
                     tif='DAY',
                     outsideRth=True,
-                    transmit=is_last
+                    transmit=True
                 )
                 
-                if parent_id is not None:
-                    order.parentId = parent_id
+                # If it's not the first leg, wait for an execution on the symbol
+                if i > 0:
+                    cond = ExecutionCondition(secType='OPT', exch=contract.exchange, symbol=contract.symbol)
+                    order.conditions.append(cond)
                     
                 print(f"DEBUG_LOG: Placing split OTO leg {i+1}: {leg_action} {quantity} {contract.localSymbol} (Type: {leg_order_type}, Price: {leg_price})")
                 trade_leg = self.ib.placeOrder(contract, order)
                 
-                if parent_id is None:
-                    parent_trade = trade_leg
-                    self.ib.sleep(0.1) # Wait slightly for order ID to be assigned
-                    parent_id = getattr(parent_trade.order, 'orderId', 0)
-                        
-            trade = parent_trade
+                if i == 0:
+                    trade = trade_leg # Track the first leg's status
         else:
             # Multi Leg (BAG)
             combo_legs = []

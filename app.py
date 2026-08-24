@@ -1070,7 +1070,7 @@ with tab1:
                              progress_bar.progress(100)
                      finally:
                          scan_ib.disconnect()
-                     st.rerun()
+                     update_price_dashboard()
         with col2:
             if st.button("Stop"):
                 st.warning("Scan gestopt.")
