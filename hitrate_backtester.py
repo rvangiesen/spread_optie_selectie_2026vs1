@@ -94,12 +94,15 @@ class SpreadHitRateTester:
                 is_bullish = price_entry >= ema50
                 
                 # Determine strategy: AUTO or user-selected target_strategy
-                if target_strategy and str(target_strategy).upper() in ['BULLPUT', 'BEARCALL', 'BULLCALL', 'BEARPUT']:
+                if target_strategy and str(target_strategy).upper() in ['BULLPUT', 'BEARCALL', 'BULLCALL', 'BEARPUT', 'LONGCALL', 'LONGPUT', 'SHORTPUT']:
                     st_clean = str(target_strategy).upper()
                     if st_clean == 'BULLPUT': strat = 'BullPut'
                     elif st_clean == 'BEARCALL': strat = 'BearCall'
                     elif st_clean == 'BULLCALL': strat = 'BullCall'
                     elif st_clean == 'BEARPUT': strat = 'BearPut'
+                    elif st_clean == 'LONGCALL': strat = 'LongCall'
+                    elif st_clean == 'LONGPUT': strat = 'LongPut'
+                    elif st_clean == 'SHORTPUT': strat = 'ShortPut'
                     else: strat = 'BullPut'
                 else:
                     strat = 'BullPut' if is_bullish else 'BearCall'
@@ -137,7 +140,7 @@ class SpreadHitRateTester:
                     bep_dist = max(0.1, bep - price_entry)
                     max_profit = (width_val - credit) * 100.0
                     max_loss = credit * 100.0
-                else: # BearPut
+                elif strat == 'BearPut':
                     long_strike = round(price_entry + (em_safety_dist * 0.2), 1)
                     short_strike = round(long_strike - width_val, 1)
                     credit = round(min(width_val * 0.56, max(0.50, (em68 * 0.35) * width_scale)), 2)
@@ -145,9 +148,39 @@ class SpreadHitRateTester:
                     bep_dist = max(0.1, price_entry - bep)
                     max_profit = (width_val - credit) * 100.0
                     max_loss = credit * 100.0
+                elif strat == 'LongCall':
+                    # Single-leg ATM Long Call
+                    long_strike = round(price_entry, 1)
+                    short_strike = 0.0
+                    credit = round(max(0.50, em68 * 0.40), 2)
+                    bep = round(long_strike + credit, 2)
+                    bep_dist = max(0.1, bep - price_entry)
+                    max_profit = 9999.0
+                    max_loss = credit * 100.0
+                elif strat == 'LongPut':
+                    # Single-leg ATM Long Put
+                    long_strike = round(price_entry, 1)
+                    short_strike = 0.0
+                    credit = round(max(0.50, em68 * 0.40), 2)
+                    bep = round(long_strike - credit, 2)
+                    bep_dist = max(0.1, price_entry - bep)
+                    max_profit = round((long_strike - credit) * 100.0, 2)
+                    max_loss = credit * 100.0
+                else: # ShortPut (Losse Short Put / Cash Secured Put)
+                    short_strike = round(price_entry - em_safety_dist, 1)
+                    long_strike = 0.0
+                    dist_factor = max(0.4, 2.0 - (em_multiplier * 0.75))
+                    credit = round(min(price_entry * 0.08, max(0.25, (em68 * 0.32) * dist_factor)), 2)
+                    bep = round(short_strike - credit, 2)
+                    bep_dist = price_entry - bep
+                    max_profit = credit * 100.0
+                    max_loss = (short_strike - credit) * 100.0
 
                 em85_dekking = (bep_dist / max(0.01, em85)) * 100.0
-                pop_est = min(96.0, max(60.0, 50.0 + (bep_dist / price_entry) * 350.0))
+                if strat in ['LongCall', 'LongPut']:
+                    pop_est = min(75.0, max(25.0, 50.0 - (bep_dist / price_entry) * 200.0))
+                else:
+                    pop_est = min(96.0, max(60.0, 50.0 + (bep_dist / price_entry) * 350.0))
 
                 trading_days = max(5, int(round(dte_val * 21.0 / 30.0)))
                 idx_exp = min(total_bars - 1, idx_entry + trading_days)
@@ -170,20 +203,67 @@ class SpreadHitRateTester:
                     touched_bep = min_price_during <= bep
                     breached_short = min_price_during <= long_strike
                     win = price_exp >= bep
-                else: # BearPut
+                elif strat == 'BearPut':
                     touched_bep = max_price_during >= bep
                     breached_short = max_price_during >= long_strike
                     win = price_exp <= bep
+                elif strat == 'LongCall':
+                    touched_bep = max_price_during >= bep
+                    breached_short = False
+                    win = price_exp > bep
+                elif strat == 'LongPut':
+                    touched_bep = min_price_during <= bep
+                    breached_short = False
+                    win = price_exp < bep
+                else: # ShortPut
+                    touched_bep = min_price_during <= bep
+                    breached_short = min_price_during <= short_strike
+                    win = price_exp >= short_strike
 
-                if win:
-                    realized_pnl = max_profit
-                    status = "✅ Winst (Expiratie OTM)"
-                elif touched_bep and not breached_short:
-                    realized_pnl = max_profit * 0.5
-                    status = "🟡 BEP Touch (Gered)"
+                if strat == 'LongCall':
+                    intrinsic_exp = max(0.0, price_exp - long_strike)
+                    realized_pnl = round((intrinsic_exp - credit) * 100.0, 2)
+                    em85_safe = win or (price_exp > long_strike)
+                    if win:
+                        status = "✅ Winst (Koers > BEP)"
+                    elif intrinsic_exp > 0:
+                        status = "🟡 Deels Verlies (Tussen Strike en BEP)"
+                    else:
+                        status = "🔴 Verlies (Waardeloos OTM)"
+                elif strat == 'LongPut':
+                    intrinsic_exp = max(0.0, long_strike - price_exp)
+                    realized_pnl = round((intrinsic_exp - credit) * 100.0, 2)
+                    em85_safe = win or (price_exp < long_strike)
+                    if win:
+                        status = "✅ Winst (Koers < BEP)"
+                    elif intrinsic_exp > 0:
+                        status = "🟡 Deels Verlies (Tussen Strike en BEP)"
+                    else:
+                        status = "🔴 Verlies (Waardeloos OTM)"
+                elif strat == 'ShortPut':
+                    em85_safe = not touched_bep
+                    if win:
+                        realized_pnl = max_profit
+                        status = "✅ Winst (Expiratie OTM / Premie Behouden)"
+                    elif price_exp >= bep:
+                        realized_pnl = round((price_exp - bep) * 100.0, 2)
+                        status = "🟡 Deelwinst (Tussen Strike en BEP)"
+                    else:
+                        actual_loss = (bep - price_exp) * 100.0
+                        loss_capped = min(actual_loss, max_profit * 2.0)
+                        realized_pnl = -round(loss_capped, 2)
+                        status = "🔴 Verlies (ITM / Aanwijzing)"
                 else:
-                    realized_pnl = -max_loss
-                    status = "🔴 Verlies (ITM)"
+                    em85_safe = not touched_bep
+                    if win:
+                        realized_pnl = max_profit
+                        status = "✅ Winst (Expiratie OTM)"
+                    elif touched_bep and not breached_short:
+                        realized_pnl = max_profit * 0.5
+                        status = "🟡 BEP Touch (Gered)"
+                    else:
+                        realized_pnl = -max_loss
+                        status = "🔴 Verlies (ITM)"
 
                 results.append({
                     'symbol': sym,

@@ -2899,9 +2899,18 @@ with tab6:
         trades_per_sym = st.number_input("Aantal spreads per aandeel", min_value=1, max_value=20, value=5)
         target_strat_choice = st.selectbox(
             "🎯 Strategie Validatie Filter:",
-            options=["Automatisch (Trend-afhankelijk)", "Enkel BullCall", "Enkel BullPut", "Enkel BearCall", "Enkel BearPut"],
+            options=[
+                "Automatisch (Trend-afhankelijk)", 
+                "Enkel BullCall", 
+                "Enkel BullPut", 
+                "Enkel BearCall", 
+                "Enkel BearPut",
+                "Enkel LongCall",
+                "Enkel LongPut",
+                "Enkel ShortPut"
+            ],
             index=0,
-            help="Kies een specifieke strategie om de Hit-Rate test uitsluitend voor die strategie (bijv. enkel BullCall op NVDA) uit te voeren."
+            help="Kies een specifieke strategie om de test uitsluitend voor die strategie (bijv. enkel BullCall, LongCall of losse ShortPut) uit te voeren."
         )
 
     # Combine selected preset symbols and custom input
