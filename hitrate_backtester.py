@@ -3,6 +3,25 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
+def round_to_strike(price):
+    """
+    Rounds a calculated price to a realistic US exchange option strike:
+    - price < 25: $0.50 intervals (e.g. 10.0, 10.5, 11.0...)
+    - 25 <= price < 100: $1.00 intervals (e.g. 48.0, 49.0, 50.0, 51.0...)
+    - 100 <= price < 250: $2.50 intervals (e.g. 150.0, 152.5, 155.0...)
+    - price >= 250: $5.00 intervals (e.g. 400.0, 405.0, 410.0...)
+    """
+    if price is None or pd.isna(price) or price <= 0:
+        return 0.0
+    if price < 25.0:
+        return round(round(price * 2.0) / 2.0, 2)
+    elif price < 100.0:
+        return float(round(price))
+    elif price < 250.0:
+        return round(round(price / 2.5) * 2.5, 2)
+    else:
+        return round(round(price / 5.0) * 5.0, 2)
+
 class SpreadHitRateTester:
     """
     Backtests historical spreads across liquid benchmark stocks to evaluate
@@ -115,43 +134,48 @@ class SpreadHitRateTester:
                 width_scale = width_val / 5.0
 
                 if strat == 'BullPut':
-                    short_strike = round(price_entry - em_safety_dist, 1)
-                    long_strike = short_strike - width_val
+                    short_strike = round_to_strike(price_entry - em_safety_dist)
+                    long_strike = round(short_strike - width_val, 2)
+                    optie_strike = f"Short ${short_strike:.2f} / Long ${long_strike:.2f}"
                     dist_factor = max(0.4, 2.0 - (em_multiplier * 0.75))
                     credit = round(min(width_val * 0.36, max(0.15, (em68 * 0.22) * dist_factor * width_scale)), 2)
-                    bep = short_strike - credit
+                    bep = round(short_strike - credit, 2)
                     bep_dist = price_entry - bep
                     max_profit = credit * 100.0
                     max_loss = (width_val - credit) * 100.0
                 elif strat == 'BearCall':
-                    short_strike = round(price_entry + em_safety_dist, 1)
-                    long_strike = short_strike + width_val
+                    short_strike = round_to_strike(price_entry + em_safety_dist)
+                    long_strike = round(short_strike + width_val, 2)
+                    optie_strike = f"Short ${short_strike:.2f} / Long ${long_strike:.2f}"
                     dist_factor = max(0.4, 2.0 - (em_multiplier * 0.75))
                     credit = round(min(width_val * 0.36, max(0.15, (em68 * 0.22) * dist_factor * width_scale)), 2)
-                    bep = short_strike + credit
+                    bep = round(short_strike + credit, 2)
                     bep_dist = bep - price_entry
                     max_profit = credit * 100.0
                     max_loss = (width_val - credit) * 100.0
                 elif strat == 'BullCall':
-                    long_strike = round(price_entry - (em_safety_dist * 0.2), 1)
-                    short_strike = round(long_strike + width_val, 1)
+                    long_strike = round_to_strike(price_entry - (em_safety_dist * 0.2))
+                    short_strike = round(long_strike + width_val, 2)
+                    optie_strike = f"Long ${long_strike:.2f} / Short ${short_strike:.2f}"
                     credit = round(min(width_val * 0.56, max(0.50, (em68 * 0.35) * width_scale)), 2)
-                    bep = long_strike + credit
+                    bep = round(long_strike + credit, 2)
                     bep_dist = max(0.1, bep - price_entry)
                     max_profit = (width_val - credit) * 100.0
                     max_loss = credit * 100.0
                 elif strat == 'BearPut':
-                    long_strike = round(price_entry + (em_safety_dist * 0.2), 1)
-                    short_strike = round(long_strike - width_val, 1)
+                    long_strike = round_to_strike(price_entry + (em_safety_dist * 0.2))
+                    short_strike = round(long_strike - width_val, 2)
+                    optie_strike = f"Long ${long_strike:.2f} / Short ${short_strike:.2f}"
                     credit = round(min(width_val * 0.56, max(0.50, (em68 * 0.35) * width_scale)), 2)
-                    bep = long_strike - credit
+                    bep = round(long_strike - credit, 2)
                     bep_dist = max(0.1, price_entry - bep)
                     max_profit = (width_val - credit) * 100.0
                     max_loss = credit * 100.0
                 elif strat == 'LongCall':
                     # Single-leg ATM Long Call
-                    long_strike = round(price_entry, 1)
-                    short_strike = 0.0
+                    long_strike = round_to_strike(price_entry)
+                    short_strike = None
+                    optie_strike = f"Long Call ${long_strike:.2f}"
                     credit = round(max(0.50, em68 * 0.40), 2)
                     bep = round(long_strike + credit, 2)
                     bep_dist = max(0.1, bep - price_entry)
@@ -159,16 +183,18 @@ class SpreadHitRateTester:
                     max_loss = credit * 100.0
                 elif strat == 'LongPut':
                     # Single-leg ATM Long Put
-                    long_strike = round(price_entry, 1)
-                    short_strike = 0.0
+                    long_strike = round_to_strike(price_entry)
+                    short_strike = None
+                    optie_strike = f"Long Put ${long_strike:.2f}"
                     credit = round(max(0.50, em68 * 0.40), 2)
                     bep = round(long_strike - credit, 2)
                     bep_dist = max(0.1, price_entry - bep)
                     max_profit = round((long_strike - credit) * 100.0, 2)
                     max_loss = credit * 100.0
                 else: # ShortPut (Losse Short Put / Cash Secured Put)
-                    short_strike = round(price_entry - em_safety_dist, 1)
-                    long_strike = 0.0
+                    short_strike = round_to_strike(price_entry - em_safety_dist)
+                    long_strike = None
+                    optie_strike = f"Short Put ${short_strike:.2f}"
                     dist_factor = max(0.4, 2.0 - (em_multiplier * 0.75))
                     credit = round(min(price_entry * 0.08, max(0.25, (em68 * 0.32) * dist_factor)), 2)
                     bep = round(short_strike - credit, 2)
@@ -276,6 +302,7 @@ class SpreadHitRateTester:
                     'spread_width': width_val,
                     'underlying_entry': price_entry,
                     'underlying_exp': price_exp,
+                    'optie_strike': optie_strike,
                     'short_strike': short_strike,
                     'long_strike': long_strike,
                     'bep': bep,
@@ -287,7 +314,7 @@ class SpreadHitRateTester:
                     'pop': round(pop_est, 1),
                     'status': status,
                     'win': win,
-                    'em85_safe': not touched_bep,
+                    'em85_safe': em85_safe,
                     'realized_pnl': realized_pnl
                 })
 
