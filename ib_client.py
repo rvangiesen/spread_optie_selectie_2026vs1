@@ -1490,12 +1490,47 @@ class IBClient:
         if not portfolio_items:
             portfolio_items = []
 
-        # Filter for option contracts (OPT and FOP) with non-zero position
+        # Filter for option contracts (OPT and FOP) and assigned stock positions (STK)
         opt_items = [p for p in portfolio_items if p.contract and p.contract.secType in ['OPT', 'FOP'] and p.position != 0]
+        stk_items = [p for p in portfolio_items if p.contract and p.contract.secType == 'STK' and p.position != 0]
 
-        if not opt_items:
-            print(f"DEBUG_LOG: Total portfolio items: {len(portfolio_items)}, Option items: 0")
+        if not opt_items and not stk_items:
+            print(f"DEBUG_LOG: Total portfolio items: {len(portfolio_items)}, Option/Stock items: 0")
             return []
+
+        positions_list = []
+
+        # 0. Process Assigned Stock Positions (Scenario B: Reeds Aangewezen)
+        from ib_insync import Stock
+        for s_item in stk_items:
+            s_sym = s_item.contract.symbol
+            s_qty = int(abs(s_item.position))
+            s_is_long = s_item.position > 0
+            s_mkt = float(s_item.marketPrice or 0.0)
+            s_cost = float(s_item.averageCost or 0.0)
+            s_pnl = float(s_item.unrealizedPNL or 0.0)
+            if s_mkt <= 0:
+                s_snap = self.get_market_data_snapshot(Stock(symbol=s_sym, exchange='SMART', currency='USD'), use_yf=True)
+                s_mkt = s_snap.get('price', s_cost)
+
+            positions_list.append({
+                'symbol': s_sym,
+                'strategy': 'Stock',
+                'expiry': 'Aandelen (Assignment)',
+                'dte': 0,
+                'qty': s_qty,
+                'is_long': s_is_long,
+                'strikes_str': f"{'+' if s_is_long else '-'}{s_qty} aandelen ({'Bull Put' if s_is_long else 'Bear Call'} toewijzing)",
+                'sold_strike': 0.0,
+                'bought_strike': 0.0,
+                'right': 'STK',
+                'market_price': s_mkt,
+                'entry_price': s_cost,
+                'unrealized_pnl': s_pnl,
+                'pnl_pct': (s_pnl / (s_cost * s_qty) * 100.0) if (s_cost * s_qty) > 0 else 0.0,
+                'underlying_price': s_mkt,
+                'legs': [s_item]
+            })
 
         # Group by (symbol, expiration)
         grouped = {}
@@ -1504,8 +1539,6 @@ class IBClient:
             if key not in grouped:
                 grouped[key] = []
             grouped[key].append(item)
-
-        positions_list = []
 
         for (sym, expiry), items in grouped.items():
             # Calculate DTE
@@ -1598,6 +1631,11 @@ class IBClient:
                     bought_strike = float(c2.strike)
                     strikes_str = f"{c1.strike}/{c2.strike}"
 
+                short_p = float(sell_item.marketPrice or 0.0) if sell_item else 0.0
+                short_delta = 0.0
+                if sell_item and hasattr(sell_item, 'modelGreeks') and sell_item.modelGreeks:
+                    short_delta = float(getattr(sell_item.modelGreeks, 'delta', 0.0) or 0.0)
+
                 positions_list.append({
                     'symbol': sym,
                     'strategy': strat,
@@ -1611,6 +1649,8 @@ class IBClient:
                     'right': list(rights)[0] if len(rights) == 1 else 'COMBO',
                     'market_price': (float(p1.marketPrice or 0) + float(p2.marketPrice or 0)) / 2.0,
                     'entry_price': (float(p1.averageCost or 0) + float(p2.averageCost or 0)) / 200.0,
+                    'short_leg_price': short_p,
+                    'short_delta': short_delta,
                     'unrealized_pnl': pnl_usd,
                     'pnl_pct': pnl_pct,
                     'underlying_price': und_price,
@@ -1664,28 +1704,77 @@ class IBClient:
                 results.append({'symbol': sym, 'status': 'SKIPPED', 'message': f"Geen optiebenen gevonden voor {sym}."})
                 continue
 
-            # --- CASE 1: SLUITEN / WINST BORGEN / STOP LOSS ---
-            if any(k in code for k in ['TIJDIG_SLUITEN', 'WINST_BORGEN', 'Direct Sluiten', 'Winst Borgen', 'Stop-Loss']):
+            # --- CASE 0: HERSTEL AANDELEN TOEWIJZING (Scenario B, Pg 19) ---
+            if any(k in code for k in ['HERSTEL_AANDELEN', 'Verkoop Aandelen', 'Terugkopen', 'STOCK_CLOSE']) or action.get('strategy') == 'Stock':
                 closed_count = 0
+                shares_qty = qty
+                act = 'SELL'
                 for item in legs:
                     c = item.contract
                     pos_qty = item.position
-                    if pos_qty == 0:
-                        continue
-                    
+                    if pos_qty == 0: continue
                     q_contract = self.qualify_contract_safe(c) or c
-                    close_action = 'BUY' if pos_qty < 0 else 'SELL'
-                    close_qty = int(abs(pos_qty))
-                    
-                    order = MarketOrder(action=close_action, totalQuantity=close_qty)
+                    act = 'SELL' if pos_qty > 0 else 'BUY'
+                    shares_qty = int(abs(pos_qty))
+                    order = MarketOrder(action=act, totalQuantity=shares_qty)
                     trade = self.ib.placeOrder(q_contract, order)
                     closed_count += 1
-                
                 results.append({
                     'symbol': sym,
                     'status': 'SUCCESS',
-                    'message': f"Sluitingsorder verstuurd naar TWS ({closed_count} leg(s) gesloten)."
+                    'message': f"Aandelenherstelorder verzonden naar TWS: {act} {shares_qty} aandelen {sym} om marge te herstellen."
                 })
+
+            # --- CASE 1: SLUITEN / WINST BORGEN / STOP LOSS (Anti-Assignment Bescherming) ---
+            elif any(k in code for k in ['TIJDIG_SLUITEN', 'WINST_BORGEN', 'Direct Sluiten', 'Winst Borgen', 'Stop-Loss', 'COMBO_CLOSE', 'Bescherm', 'Pin Risk', 'Tijdwaarde']):
+                # Probeer eerst als Combo-order (BAG) conform Pg 8 & 14 van het document om legging-in risico te vermijden
+                is_combo_success = False
+                if len(legs) == 2 and all(getattr(l.contract, 'secType', '') in ['OPT', 'FOP'] for l in legs):
+                    try:
+                        combo_legs = []
+                        for item in legs:
+                            c = self.qualify_contract_safe(item.contract) or item.contract
+                            leg_act = 'BUY' if item.position < 0 else 'SELL'
+                            combo_legs.append(ComboLeg(
+                                conId=c.conId,
+                                ratio=1,
+                                action=leg_act,
+                                exchange='SMART'
+                            ))
+                        bag = Contract(symbol=sym, secType='BAG', currency='USD', exchange='SMART', comboLegs=combo_legs)
+                        combo_order = MarketOrder(action='BUY', totalQuantity=qty)
+                        trade = self.ib.placeOrder(bag, combo_order)
+                        is_combo_success = True
+                        results.append({
+                            'symbol': sym,
+                            'status': 'SUCCESS',
+                            'message': f"Combo Sluitingsorder (BAG) succesvol verzonden naar TWS voor {qty}x contract (BUY Combo, voorkomt legging-in risico)."
+                        })
+                    except Exception as e_combo:
+                        print(f"DEBUG_LOG: Combo sluiting mislukt, fallback naar losse poten: {e_combo}")
+
+                # Fallback indien geen 2-leg combo of combo-fout
+                if not is_combo_success:
+                    closed_count = 0
+                    for item in legs:
+                        c = item.contract
+                        pos_qty = item.position
+                        if pos_qty == 0:
+                            continue
+                        
+                        q_contract = self.qualify_contract_safe(c) or c
+                        close_action = 'BUY' if pos_qty < 0 else 'SELL'
+                        close_qty = int(abs(pos_qty))
+                        
+                        order = MarketOrder(action=close_action, totalQuantity=close_qty)
+                        trade = self.ib.placeOrder(q_contract, order)
+                        closed_count += 1
+                    
+                    results.append({
+                        'symbol': sym,
+                        'status': 'SUCCESS',
+                        'message': f"Sluitingsorders verzonden naar TWS ({closed_count} optiepoot/poten gesloten)."
+                    })
 
             # --- CASE 2: DOORROLLEN (ROLLING) ---
             elif any(k in code for k in ['Doorrollen', 'DOORROLLEN', 'roll']):

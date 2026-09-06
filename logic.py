@@ -2614,8 +2614,258 @@ class PortfolioAnalyzer:
     using technical indicators and option metrics to recommend optimal loss-mitigation 
     and profit-locking exit strategies.
     """
-    def __init__(self, ib_client=None):
-        self.ib_client = ib_client
+    _dividend_cache = {}
+
+    def get_dividend_info(self, symbol):
+        if not symbol or symbol in ['N/A', '']:
+            return {'div_date': None, 'div_amount': 0.0}
+        if symbol in self._dividend_cache:
+            return self._dividend_cache[symbol]
+        try:
+            import yfinance as yf
+            t = yf.Ticker(symbol)
+            div_date = None
+            div_amount = 0.0
+            cal = getattr(t, 'calendar', None)
+            if cal is not None and not (hasattr(cal, 'empty') and cal.empty):
+                if isinstance(cal, dict):
+                    div_date = cal.get('Ex-Dividend Date') or cal.get('Dividend Date')
+                elif hasattr(cal, 'get'):
+                    div_date = cal.get('Ex-Dividend Date')
+            divs = getattr(t, 'dividends', None)
+            if divs is not None and len(divs) > 0:
+                div_amount = float(divs.iloc[-1])
+            res = {'div_date': str(div_date) if div_date else None, 'div_amount': div_amount}
+            self._dividend_cache[symbol] = res
+            return res
+        except Exception:
+            res = {'div_date': None, 'div_amount': 0.0}
+            self._dividend_cache[symbol] = res
+            return res
+
+    def evaluate_anti_assignment_routine(self, pos, underlying_p, dte, pnl_usd, pnl_pct):
+        """
+        Anti-Assignment Risico Evaluatieroutine gebaseerd op het 21-pagina document:
+        Detecteert de 7 gevarenzones en geeft directe melding, voorstel en actiecode.
+        """
+        sym = pos.get('symbol', 'N/A')
+        strat = pos.get('strategy', 'Spread')
+        sold_strike = float(pos.get('sold_strike', 0.0) or 0.0)
+        bought_strike = float(pos.get('bought_strike', 0.0) or 0.0)
+        right = str(pos.get('right', '')).upper()
+        qty = int(pos.get('qty', 1))
+        entry_price = float(pos.get('entry_price', 0.0) or 0.0)
+        mkt_price = float(pos.get('market_price', 0.0) or 0.0)
+        is_credit_strat = strat in ['BullPut', 'BearCall', 'ShortPut', 'ShortCall', 'IronCondor']
+
+        triggers = []
+        risk_level = "SAFE"
+        consequences = ""
+        action_code = "HANDHAVEN"
+        action_title = "Handhaven (Geen Aanwijzingsrisico)"
+        recommended_action = "Geen actie vereist: positie ligt in de veilige zone."
+        execution_type = "HANDHAVEN"
+
+        # 1. SCENARIO B: Reeds Aangewezen (Aandelen in account na expiratie of early assignment)
+        if strat == 'Stock' or right == 'STK':
+            is_long = pos.get('is_long', True)
+            risk_level = "CRITICAL"
+            if is_long:
+                triggers.append(f"🚨 AANDELEN TOEGEWEZEN: Account bevat +{qty} long aandelen {sym} (Bull Put toewijzing).")
+                consequences = f"Account staat long {qty} aandelen {sym} (waarde ca. ${underlying_p * qty:,.0f}). Dit leidt tot marginbeslag, liquidatierisico door IBKR en koersvalrisico over het weekend."
+                action_code = "HERSTEL_AANDELEN_VERKOOP"
+                action_title = f"Direct Verkoop {qty}x Aandelen {sym} (Marge Herstellen)"
+                recommended_action = f"Verkoop direct de {qty} aandelen via Market/Limit order om kastekort aan te vullen en verdere koersschade te stoppen."
+                execution_type = "STOCK_CLOSE"
+            else:
+                triggers.append(f"🚨 SHORT AANDELEN: Account bevat -{qty} short aandelen {sym} (Bear Call toewijzing).")
+                consequences = f"Account staat short {qty} aandelen {sym}. Er is oneindig opwaarts koersrisico en acute margin call dreiging."
+                action_code = "HERSTEL_AANDELEN_AANKOOP"
+                action_title = f"Direct Terugkopen {qty}x Short Aandelen {sym}"
+                recommended_action = f"Koop direct {qty} aandelen terug om de shortpositie op te heffen en het opwaartse risico af te kappen."
+                execution_type = "STOCK_CLOSE"
+            return {
+                'risk_level': risk_level,
+                'triggers': triggers,
+                'consequences': consequences,
+                'action_code': action_code,
+                'action_title': action_title,
+                'recommended_action': recommended_action,
+                'execution_type': execution_type,
+                'extrinsic_val': 0.0,
+                'intrinsic_val': 0.0,
+                'is_itm': True,
+                'is_pin_risk': False,
+                'is_between_strikes': False,
+                'ex_dividend_risk': False,
+                'deadline_status': 'REEDS_AANGEWEZEN'
+            }
+
+        # Bereken intrinsieke en extrinsieke waarde van de geschreven optie
+        is_put = 'P' in right or 'Put' in strat
+        is_call = 'C' in right or 'Call' in strat
+        is_itm = False
+        intrinsic_val = 0.0
+        extrinsic_val = 0.50 # default veilige aanname
+
+        if sold_strike > 0 and underlying_p > 0:
+            if is_put:
+                is_itm = underlying_p < sold_strike
+                intrinsic_val = max(0.0, sold_strike - underlying_p)
+            elif is_call:
+                is_itm = underlying_p > sold_strike
+                intrinsic_val = max(0.0, underlying_p - sold_strike)
+
+            short_p = float(pos.get('short_leg_price', 0.0) or 0.0)
+            if short_p <= 0:
+                short_p = max(mkt_price, intrinsic_val + 0.08)
+            extrinsic_val = max(0.0, short_p - intrinsic_val)
+
+        # 2. EXTRINSIEKE WAARDE & EARLY ASSIGNMENT EVALUATIE (Pg 19-20)
+        if is_itm and is_credit_strat:
+            if extrinsic_val < 0.05:
+                risk_level = "CRITICAL"
+                triggers.append(f"🚨 TIJDWAARDE VERDAMPT: Resterende extrinsieke waarde short leg is slechts ${extrinsic_val:.2f} (< $0.05).")
+                consequences = "De tegenpartij verliest vrijwel niets aan tijdswaarde bij uitoefening. Vroegtijdige aanwijzing kan elke nacht plaatsvinden!"
+                action_code = "TIJDIG_SLUITEN"
+                action_title = "Direct Sluiten als Combo Order (Verdampte Tijdswaarde)"
+                recommended_action = "Sluit direct de hele spread als combinatie (BUY combo) om toewijzing voor te zijn. Wacht niet af tot expiratie."
+                execution_type = "COMBO_CLOSE"
+            elif extrinsic_val < 0.10:
+                if risk_level != "CRITICAL": risk_level = "HIGH"
+                triggers.append(f"⚠️ GEVARENZONE TIJDWAARDE: Extrinsieke waarde short leg is ${extrinsic_val:.2f} (< $0.10).")
+                consequences = "Tijdswaarde is zeer laag. Bij lichte koersschommeling volgt direct uitoefening door tegenpartij."
+                action_code = "TIJDIG_SLUITEN"
+                action_title = "Direct Sluiten of Doorrollen (+30 DTE)"
+                recommended_action = "Sluit de positie of rol de spread door naar de volgende maand (+30 dagen) voor extra credit en hersteltijd."
+                execution_type = "COMBO_CLOSE"
+
+        # 3. EX-DIVIDEND RISICO BIJ BEAR CALL SPREADS (Pg 20)
+        ex_div_risk = False
+        if is_call and is_credit_strat and is_itm:
+            div_info = self.get_dividend_info(sym)
+            div_amt = div_info.get('div_amount', 0.0)
+            if div_amt > 0 and div_amt >= extrinsic_val:
+                ex_div_risk = True
+                risk_level = "CRITICAL"
+                triggers.append(f"🚨 100% EX-DIVIDEND RISICO: Dividendbedrag (${div_amt:.2f}) >= Tijdswaarde (${extrinsic_val:.2f}).")
+                consequences = "Vrijwel 100% van de short calls wordt de avond vóór de ex-dividenddatum uitgeoefend omdat de optiehouder het dividend wil incasseren!"
+                action_code = "TIJDIG_SLUITEN"
+                action_title = "Direct Sluiten vóór 22:00 uur (Ex-Dividend Arbitrage)"
+                recommended_action = "Sluit de Bear Call spread direct vóór 22:00 uur op de dag voorafgaand aan de ex-dividenddatum!"
+                execution_type = "COMBO_CLOSE"
+
+        # 4. DELTA & DIEP ITM STATUS (Pg 21)
+        short_delta = abs(float(pos.get('short_delta', 0.0) or 0.0))
+        if short_delta >= 0.80:
+            risk_level = "CRITICAL"
+            triggers.append(f"🚨 DIEP ITM (Delta = {short_delta:.2f} >= 0.80): Extreem hoog toewijzingsrisico.")
+            consequences = "Bij een delta van 0.80+ beweegt de optie vrijwel 1-op-1 met het aandeel mee en is de extrinsieke waarde nagenoeg nihil."
+            action_code = "TIJDIG_SLUITEN"
+            action_title = "Direct Sluiten (Delta >= 0.80 Stop)"
+            recommended_action = "Sluit de spread om te voorkomen dat de positie ongecontroleerd in aandelenlevering resulteert."
+            execution_type = "COMBO_CLOSE"
+
+        # 5. STOP-LOSS OP SPREAD-WAARDE (Pg 21: 1.5x tot 2.0x premie)
+        rec_prem_usd = abs(entry_price) * 100.0 * qty if entry_price != 0 else 100.0 * qty
+        if is_credit_strat and pnl_usd <= -1.5 * rec_prem_usd:
+            risk_level = "CRITICAL"
+            triggers.append(f"🛑 STOP-LOSS BEREIKT: Verlies bedraagt ${abs(pnl_usd):,.2f} (>= 1.5x ontvangen premie van ${rec_prem_usd:.2f}).")
+            consequences = "Wacht bij credit spreads nooit tot de expiratiedag als de trade fout zit. Het risico escaleert exponentieel."
+            action_code = "TIJDIG_SLUITEN"
+            action_title = "Direct Sluiten op Marktprijs (Vaste 1.5x Premie Stop-Loss)"
+            recommended_action = "Sluit de spread direct als combinatieorder om maximaal spreadverlies en leveringsgevaar af te kappen."
+            execution_type = "COMBO_CLOSE"
+
+        # 6. PIN RISK & TUSSEN DE STRIKES (Pg 8, 17-18, 20)
+        is_between = False
+        is_pin = False
+        if sold_strike > 0 and bought_strike > 0 and underlying_p > 0:
+            if strat == 'BullPut' and bought_strike < underlying_p < sold_strike:
+                is_between = True
+            elif strat == 'BearCall' and sold_strike < underlying_p < bought_strike:
+                is_between = True
+            
+            dist_to_sold = abs(underlying_p - sold_strike) / sold_strike
+            if dist_to_sold <= 0.015:
+                is_pin = True
+
+        if is_between and dte <= 5:
+            risk_level = "CRITICAL"
+            triggers.append(f"⚡ EXTREEM PIN RISK: Koers (${underlying_p:.2f}) staat TUSSEN de strikes ({sold_strike:.2f} / {bought_strike:.2f}).")
+            consequences = f"De long optie ({bought_strike:.2f}) vervalt waardeloos ($0,00) en beschermt je NIET meer. De short optie ({sold_strike:.2f}) wordt 100% aangewezen! Resultaat: maandagochtend zit je met 100 aandelen en een gigantisch margintekort."
+            action_code = "TIJDIG_SLUITEN"
+            action_title = "Direct Sluiten als Combo Order (Pin Risk Noodingreep)"
+            recommended_action = "Sluit de volledige spread (koop short terug, verkoop long) direct als combinatieorder vóór de uiterste deadline!"
+            execution_type = "COMBO_CLOSE"
+        elif is_pin and dte <= 2:
+            if risk_level != "CRITICAL": risk_level = "HIGH"
+            triggers.append(f"⚠️ PIN RISK ZONE: Koers (${underlying_p:.2f}) ligt binnen 1.5% van de short strike ({sold_strike:.2f}).")
+            consequences = "After-hours nieuws en koerssprongen tussen 22:00 en 23:30 uur kunnen alsnog tot onverwachte aanwijzing leiden."
+            action_code = "TIJDIG_SLUITEN"
+            action_title = "Sluiten vóór 21:30 uur (Pin Risk Vermijden)"
+            recommended_action = "Sluit de positie vóór 21:30 uur NL tijd. Die laatste paar euro winst wegen niet op tegen een margin call."
+            execution_type = "COMBO_CLOSE"
+
+        # 7. EXSPIRATIEDEADLINE TIJDPAD (Pg 13-15, 20)
+        import datetime
+        now_dt = datetime.datetime.now()
+        weekday = now_dt.weekday() # 3=Thursday, 4=Friday
+        hour = now_dt.hour
+
+        deadline_status = "REGULIER"
+        # Donderdagavond routine
+        if (weekday == 3 or dte == 1) and pnl_pct >= 80.0:
+            if risk_level == "SAFE": risk_level = "HIGH"
+            triggers.append(f"💰 DONDERDAG SWEET SPOT: Spread staat op {pnl_pct:.0f}% winst (>= 80%).")
+            consequences = "De Time Decay (Theta) heeft 90% van zijn werk gedaan. Wachten op de laatste 10% op vrijdag is 'picking up pennies in front of a steamroller'."
+            action_code = "WINST_BORGEN"
+            action_title = "Winst Borgen & Sluiten (Donderdagavond Routine)"
+            recommended_action = "Sluit de Combo vanavond en ga met een gerust hart het weekend in."
+            execution_type = "COMBO_CLOSE"
+            deadline_status = "DONDERDAG_WINST_80"
+
+        # Vrijdag expiratiedag routine
+        if weekday == 4 or dte == 0:
+            if hour < 18:
+                deadline_status = "VRIJDAG_OPENING"
+                if is_itm:
+                    triggers.append("📅 VRIJDAG EXSPIRATIEDAG: Optimale marktomstandigheden om de spread te sluiten via Combo Limit (Mid-price).")
+            elif 18 <= hour < 20:
+                deadline_status = "VRIJDAG_DEADLINE_18_20"
+                risk_level = "CRITICAL"
+                triggers.append("🚨 VRIJDAG DEADLINE (18:00 - 20:00 NL tijd): IBKR risico-algoritme scant actieve accounts!")
+                consequences = "Tussen 18:00 en 21:00 liquideert IBKR accounts met te weinig margin geforceerd tegen slechte marktprijzen. Neem zelf de regie!"
+                action_code = "TIJDIG_SLUITEN"
+                action_title = "Direct Zelf Sluiten Vóór 20:00 uur (IBKR Liquidatie Voorkomen)"
+                recommended_action = "Plaats direct een Combo Order om de trade vóór 20:00 uur definitief te verlaten."
+                execution_type = "COMBO_CLOSE"
+            elif hour >= 20:
+                deadline_status = "VRIJDAG_AFTER_HOURS_RISK"
+                risk_level = "CRITICAL"
+                triggers.append("🔴 DEADLINE VOORBIJ (> 20:00 NL tijd): Na 20:00 droogt liquiditeit op en geldt after-hours aanwijzingsrisico tot 23:30 uur.")
+                consequences = "Kopers van jouw short optie hebben tot 23:30 uur de tijd om alsnog aan te wijzen na beursnieuws."
+                action_code = "TIJDIG_SLUITEN"
+                action_title = "Noodsluiting op Marktprijs (Direct Flat Gaan)"
+                recommended_action = "Sluit de positie onmiddellijk op marktprijs om niet met aandelen het weekend in te gaan."
+                execution_type = "COMBO_CLOSE"
+
+        return {
+            'risk_level': risk_level,
+            'triggers': triggers,
+            'consequences': consequences,
+            'action_code': action_code,
+            'action_title': action_title,
+            'recommended_action': recommended_action,
+            'execution_type': execution_type,
+            'extrinsic_val': extrinsic_val,
+            'intrinsic_val': intrinsic_val,
+            'is_itm': is_itm,
+            'is_pin_risk': is_pin,
+            'is_between_strikes': is_between,
+            'ex_dividend_risk': ex_div_risk,
+            'deadline_status': deadline_status
+        }
 
     @staticmethod
     def calculate_keltner_channels(df, period=20, mult=2.0, atr_period=10):
@@ -2774,8 +3024,19 @@ class PortfolioAnalyzer:
         result_desc = "Laat het tijdswaardeverval (Theta) in jouw voordeel werken."
         urgency = "LOW"
 
+        # Evalueer eerst Anti-Assignment Risico conform het 21-pagina document
+        anti_assign = self.evaluate_anti_assignment_routine(pos, underlying_p, dte, pnl_usd, pnl_pct)
+
+        if anti_assign['risk_level'] in ['CRITICAL', 'HIGH']:
+            urgency = anti_assign['risk_level']
+            action_code = anti_assign['action_code']
+            action_title = anti_assign['action_title']
+            old_to_new = f"Lopende positie ({strat} {pos.get('strikes_str', '')})" + " → " + action_title
+            reasoning = " | ".join(anti_assign['triggers']) if anti_assign['triggers'] else reasoning
+            result_desc = anti_assign['consequences'] if anti_assign['consequences'] else result_desc
+
         # Check OmniTrader Exit Trigger condition
-        if omni_res['exit_signal']:
+        elif omni_res['exit_signal']:
             action_code = "TIJDIG_SLUITEN"
             action_title = "Direct Sluiten (OmniTrader BarToBar Stop)"
             old_to_new = "Openstaande Positie Handhaven" + " → " + f"Direct Sluiten op Marktprijs (OmniTrader Stop op ${omni_res['stop_price']:.2f})"
@@ -2826,12 +3087,18 @@ class PortfolioAnalyzer:
 
         alternatives = [
             f"[Aanbevolen] {action_title}",
-            "Direct Sluiten op Marktprijs (Stop-Loss)",
+            "Direct Sluiten als Combo Order (Mid-price / Market)",
             "Doorrollen naar Volgende Maand (+30 DTE voor Credit)",
             "Omzetten naar Iron Condor (Verkoop tegendraadse zijde)",
             "Winst Borgen & Positie Sluiten",
             "Handhaven (Geen Actie)"
         ]
+        if anti_assign['execution_type'] == 'STOCK_CLOSE':
+            alternatives = [
+                f"[Aanbevolen] {action_title}",
+                "Verkoop Aandelen via Market Order",
+                "Handhaven (Geen Actie)"
+            ]
 
         return {
             'symbol': sym,
@@ -2852,6 +3119,7 @@ class PortfolioAnalyzer:
             'result_desc': result_desc,
             'urgency': urgency,
             'alternatives': alternatives,
+            'anti_assignment': anti_assign,
             'omnitrader_b2b': omni_res,
             'technical_summary': f"OmniStop=${omni_res['stop_price']:.2f}, Coral={'Bull' if omni_res['marketstate']==1 else 'Bear'}, EMA8/20={'Bull' if ema_bullish else 'Bear'}, StochRSI={stoch_k_val:.1f}"
         }

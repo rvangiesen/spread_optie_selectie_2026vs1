@@ -204,20 +204,56 @@ def render_portfolio_management_dashboard(tws_host, tws_port):
     n_tot = len(evaluations)
     action_evals = [e for e in evaluations if e['action_code'] != 'HANDHAVEN']
     n_action = len(action_evals)
+    threatened_evals = [e for e in evaluations if e.get('anti_assignment', {}).get('risk_level') in ['CRITICAL', 'HIGH']]
+    n_threatened = len(threatened_evals)
 
-    m1, m2, m3 = st.columns(3)
+    m1, m2, m3, m4 = st.columns(4)
     m1.metric("Totaal Open Posities", n_tot)
-    m2.metric("Posities met Actievereiste", n_action, delta=f"{n_action} te wijzigen" if n_action > 0 else "0", delta_color="inverse" if n_action > 0 else "normal")
+    m2.metric("🚨 Aanwijzingsgevaar", n_threatened, delta=f"{n_threatened} bedreigd" if n_threatened > 0 else "0", delta_color="inverse" if n_threatened > 0 else "normal")
+    m3.metric("Actievereiste Totaal", n_action, delta=f"{n_action} te wijzigen" if n_action > 0 else "0", delta_color="inverse" if n_action > 0 else "normal")
     total_pnl = sum([e['pnl_usd'] for e in evaluations])
-    m3.metric("Totale Ongerealiseerde P&L", f"${total_pnl:,.2f}")
+    m4.metric("Totale Ongerealiseerde P&L", f"${total_pnl:,.2f}")
 
-    if n_action > 0:
+    if n_threatened > 0:
+        st.error(
+            f"🚨 **CRITIEK AANWIJZINGSRISICO GEDETECTEERD BIJ {n_threatened} POSITIE(S)**\n\n"
+            "Conform de richtlijnen uit het document (*'Bull Put- en Bear Call spread en TWS'*) dreigt voor deze posities ongewenste automatische uitoefening (verdampte extrinsieke waarde < $0.10, pin risk tussen strikes, of naderende broker-liquidatiedeadline).\n\n"
+            "**Gevaar bij niets doen**: Automatische uitoefening leidt tot verplichte afname/levering van 100 aandelen per contract ($10.000+ marginbeslag), weekend gap-risico en geforceerde broker-liquidaties tegen slechte prijzen!"
+        )
+        if st.button(f"🛡️ Actie Uitvoeren: Sluit Alle {n_threatened} Bedreigde Posities Direct (TWS Combo Orders)", type="primary", use_container_width=True, key="btn_close_all_threatened"):
+            exec_ib = IBClient()
+            import random
+            exec_id = random.randint(10000, 99999)
+            s_ok, s_msg = exec_ib.connect(tws_host, tws_port, exec_id)
+            if s_ok:
+                actions_to_exec = []
+                for th in threatened_evals:
+                    actions_to_exec.append({
+                        'symbol': th['symbol'],
+                        'strategy': th['strategy'],
+                        'selected_action': th['action_code'],
+                        'action_code': th['action_code'],
+                        'legs': th['pos_data'].get('legs', []),
+                        'qty': th['pos_data'].get('qty', 1)
+                    })
+                with st.spinner("Bezig met verzenden van beschermingsorders naar TWS..."):
+                    res = exec_ib.execute_portfolio_adjustments(actions_to_exec)
+                    for r in res:
+                        st.write(f"• **{r['symbol']}**: {r['message']}")
+                    st.success("🎉 Alle beschermingsorders zijn succesvol ingediend bij TWS!")
+                exec_ib.ib.sleep(1.0)
+                exec_ib.disconnect()
+                st.rerun()
+            else:
+                st.error(f"Fout bij verbinden met TWS: {s_msg}")
+
+    elif n_action > 0:
         st.warning(f"⚠️ **Portfolio Check Afgerond**: {n_action} van de {n_tot} openstaande posities vereisen een aanpassing van het exit-plan om verlies te minimaliseren of winst te borgen.")
     else:
-        st.success("✅ **Portfolio Gezond**: Alle openstaande posities liggen momenteel in de veilige zone. Geen ingreep vereist.")
+        st.success("✅ **Portfolio Gezond**: Alle openstaande posities liggen momenteel in de veilige zone. Geen toewijzingsgevaar gedetecteerd.")
 
     st.markdown("---")
-    st.markdown("### 📋 Positie Overzicht & Accordering Exit-Plan")
+    st.markdown("### 📋 Positie Overzicht, Risico-Meldingen & Uitklikbare Bescherming")
 
     approved_actions = []
 
@@ -235,12 +271,39 @@ def render_portfolio_management_dashboard(tws_host, tws_port):
         result_desc = item['result_desc']
         alternatives = item['alternatives']
         tech_sum = item['technical_summary']
+        anti_assign = item.get('anti_assignment', {})
+        risk_lvl = anti_assign.get('risk_level', item.get('urgency', 'LOW'))
 
-        urgency_color = "🔴 CRITICAL" if item['urgency'] == "CRITICAL" else ("🟠 HIGH" if item['urgency'] == "HIGH" else ("🟡 MEDIUM" if item['urgency'] == "MEDIUM" else "🟢 LOW"))
+        urgency_badge = "🔴 CRITICAL (AANWIJZINGSGEVAAR)" if risk_lvl == "CRITICAL" else ("🟠 HIGH (DEADLINE)" if risk_lvl == "HIGH" else ("🟡 MEDIUM" if risk_lvl == "MEDIUM" else "🟢 LOW (VEILIG)"))
 
-        with st.expander(f"{'⚠️' if act_code != 'HANDHAVEN' else '✅'} **#{idx+1} {sym} - {strat} ({item['pos_data']['strikes_str']})** | P&L: ${pnl_usd:,.2f} ({pnl_pct:.1f}%) | DTE: {dte}d | Status: {urgency_color}", expanded=(act_code != 'HANDHAVEN')):
+        with st.expander(f"{'🚨' if risk_lvl in ['CRITICAL', 'HIGH'] else ('⚠️' if act_code != 'HANDHAVEN' else '✅')} **#{idx+1} {sym} - {strat} ({item['pos_data']['strikes_str']})** | P&L: ${pnl_usd:,.2f} ({pnl_pct:.1f}%) | DTE: {dte}d | Status: {urgency_badge}", expanded=(risk_lvl in ['CRITICAL', 'HIGH'] or act_code != 'HANDHAVEN')):
             c1, c2 = st.columns([2, 1])
             with c1:
+                # 1. Anti-Assignment Risicomelding (Conform Gemini / Roland van Giesen PDF)
+                anti_assign = item.get('anti_assignment', {})
+                triggers = anti_assign.get('triggers', [])
+                consequences = anti_assign.get('consequences', '')
+                rec_action = anti_assign.get('recommended_action', '')
+                exec_type = anti_assign.get('execution_type', 'COMBO_CLOSE')
+                ext_val = anti_assign.get('extrinsic_val', 0.0)
+                intr_val = anti_assign.get('intrinsic_val', 0.0)
+
+                if triggers:
+                    st.markdown("##### 🛡️ Anti-Assignment Risico Melding:")
+                    for trg in triggers:
+                        st.error(trg)
+                    
+                    c_ext1, c_ext2 = st.columns(2)
+                    with c_ext1:
+                        st.metric("Resterende Tijdswaarde Short Leg", f"${ext_val:.2f}", delta="Gevarenzone (<$0.10)" if ext_val < 0.10 else "Veilig", delta_color="inverse" if ext_val < 0.10 else "normal")
+                    with c_ext2:
+                        st.metric("Intrinsieke Waarde Short Leg", f"${intr_val:.2f}", delta="In-The-Money" if intr_val > 0 else "Out-of-the-Money", delta_color="inverse" if intr_val > 0 else "normal")
+
+                if consequences:
+                    st.warning(f"⚠️ **Wat gebeurt er bij niets doen?**\n\n{consequences}")
+
+                st.info(f"👉 **Geadviseerde Beschermingsactie (Voorstel)**:\n\n{rec_action}")
+
                 st.markdown(f"**Oude Situatie $\\rightarrow$ Nieuwe Situatie:**")
                 st.info(f"👉 `{old_to_new}`")
                 st.markdown(f"**Onderbouwing (Indicatoren):** {reasoning}")
@@ -315,10 +378,85 @@ def render_portfolio_management_dashboard(tws_host, tws_port):
                         else:
                             st.caption("ℹ️ Geen historische koersdata beschikbaar voor deze grafiek.")
             with c2:
-                is_approved = st.checkbox(f" Akkoord per positie (#{idx+1} {sym})", value=(act_code != 'HANDHAVEN'), key=f"chk_app_{idx}_{sym}")
+                # Directe 1-klik Actieknoppen ("Uitklikbare Bescherming")
+                st.markdown("#### ⚡ 1-Klik Bescherming:")
+                if exec_type == 'STOCK_CLOSE':
+                    stock_qty = item['pos_data'].get('qty', 100)
+                    is_long_stock = item['pos_data'].get('is_long', True)
+                    stock_act_label = f"📉 Verkoop {stock_qty}x Aandelen {sym} Nu" if is_long_stock else f"📈 Koop {stock_qty}x Short Aandelen {sym} Terug"
+                    if st.button(stock_act_label, type="primary", key=f"btn_stock_rec_{idx}_{sym}"):
+                        single_act = [{
+                            'symbol': sym,
+                            'strategy': strat,
+                            'selected_action': act_code,
+                            'action_code': act_code,
+                            'legs': item['pos_data'].get('legs', []),
+                            'qty': stock_qty
+                        }]
+                        exec_ib = IBClient()
+                        import random
+                        s_ok, s_msg = exec_ib.connect(tws_host, tws_port, random.randint(10000, 99999))
+                        if s_ok:
+                            res = exec_ib.execute_portfolio_adjustments(single_act)
+                            for r in res:
+                                st.success(f"✅ {r['message']}")
+                            exec_ib.ib.sleep(1.0)
+                            exec_ib.disconnect()
+                            st.rerun()
+                        else:
+                            st.error(f"Verbinding mislukt: {s_msg}")
+
+                elif risk_lvl in ['CRITICAL', 'HIGH']:
+                    if st.button(f"🛡️ Sluit Positie Nu (Combo Order)", type="primary", key=f"btn_quick_close_{idx}_{sym}", help="Sluit beide optiebenen tegelijk als één combinatieorder in TWS om legging-in risico te vermijden."):
+                        single_act = [{
+                            'symbol': sym,
+                            'strategy': strat,
+                            'selected_action': 'TIJDIG_SLUITEN',
+                            'action_code': 'TIJDIG_SLUITEN',
+                            'legs': item['pos_data'].get('legs', []),
+                            'qty': item['pos_data'].get('qty', 1)
+                        }]
+                        exec_ib = IBClient()
+                        import random
+                        s_ok, s_msg = exec_ib.connect(tws_host, tws_port, random.randint(10000, 99999))
+                        if s_ok:
+                            res = exec_ib.execute_portfolio_adjustments(single_act)
+                            for r in res:
+                                st.success(f"✅ {r['message']}")
+                            exec_ib.ib.sleep(1.0)
+                            exec_ib.disconnect()
+                            st.rerun()
+                        else:
+                            st.error(f"Verbinding mislukt: {s_msg}")
+                    
+                    if st.button(f"🔄 Rol Door naar Volgende Maand", key=f"btn_quick_roll_{idx}_{sym}", help="Sluit huidige expiratie en opent nieuwe legs op +30 DTE voor credit."):
+                        single_act = [{
+                            'symbol': sym,
+                            'strategy': strat,
+                            'selected_action': 'DOORROLLEN_CREDIT',
+                            'action_code': 'DOORROLLEN_CREDIT',
+                            'legs': item['pos_data'].get('legs', []),
+                            'qty': item['pos_data'].get('qty', 1)
+                        }]
+                        exec_ib = IBClient()
+                        import random
+                        s_ok, s_msg = exec_ib.connect(tws_host, tws_port, random.randint(10000, 99999))
+                        if s_ok:
+                            res = exec_ib.execute_portfolio_adjustments(single_act)
+                            for r in res:
+                                st.success(f"✅ {r['message']}")
+                            exec_ib.ib.sleep(1.0)
+                            exec_ib.disconnect()
+                            st.rerun()
+                        else:
+                            st.error(f"Verbinding mislukt: {s_msg}")
+
+                st.markdown("---")
+                st.markdown("#### ⚙️ Batch Accordering:")
+                is_approved = st.checkbox(f" Accordeer selectie (#{idx+1} {sym})", value=(act_code != 'HANDHAVEN'), key=f"chk_app_{idx}_{sym}")
                 
                 selected_alt = st.selectbox(
-                    "Alternatief Exit-Plan:",
+                    "Gekozen Actie:",
                     options=alternatives,
                     index=0,
                     key=f"sel_alt_{idx}_{sym}"
@@ -2013,17 +2151,31 @@ with tab3:
                 st.markdown("### Handelen")
                 order_qty = st.number_input("Aantal Contracten", min_value=1, value=1)
 
-                # Display Limit Price natively signed (negative for credit)
+                # TWS Spread Order Structure (Conform handleiding Roland van Giesen Pg 1-2)
                 strat = selected_row['strategy']
                 is_credit = strat not in ['LongCall', 'LongPut', 'BullCall', 'BearPut', 'Strangle']
-                
-                # Default limit price logic: use Laatprijs (Ask price / Worst entry)
-                raw_ask = selected_row.get('spread_ask_abs', 0)
-                # Standard default of $0.10 if no price data, else use the realistic target ask price
-                default_price = float(raw_ask) if raw_ask > 0 else 0.10
-                default_price_signed = -default_price if is_credit else default_price
+                tws_action = "SELL" if is_credit else "BUY"
+                cashflow_label = "Credit Ontvangen" if is_credit else "Debit Betalen"
 
-                limit_price_signed = st.number_input("Limiet Prijs ($)", value=default_price_signed, step=0.01, format="%.2f", help="Standaard ingevuld met Laatprijs. Let op: negatief is Credit.")
+                st.info(
+                    f"🏷️ **TWS Orderstructuur** (Conform handleiding Roland van Giesen, Pg 1–2):\n"
+                    f"- **Strategie**: `{strat}`\n"
+                    f"- **Actie in TWS**: **`{tws_action}`** ({cashflow_label})\n"
+                    f"- *Uitleg*: Credit spreads (zoals Bull Put & Bear Call) worden geopend met **SELL** om netto premie te ontvangen. Sluiten gebeurt later met **BUY**."
+                )
+
+                raw_ask = selected_row.get('spread_ask_abs', 0)
+                default_price = float(raw_ask) if raw_ask > 0 else 0.10
+
+                limit_price_input = st.number_input(
+                    f"Netto Premie per Aandeel ($) [{cashflow_label}]",
+                    min_value=0.01,
+                    value=default_price,
+                    step=0.01,
+                    format="%.2f",
+                    help=f"Standaard Laatprijs (${default_price:.2f}). Dit is het netto {'creditbedrag dat je ontvangt' if is_credit else 'debitbedrag dat je betaalt'}."
+                )
+                limit_price_signed = -limit_price_input if is_credit else limit_price_input
 
                 order_type_ui = st.selectbox("Order Type (Executie)", 
                     ["LMT (Standaard Limiet)", "Adaptive - Normal", "Adaptive - Urgent", "Adaptive - Patient"],
@@ -2235,10 +2387,10 @@ with tab3:
                                 else:
                                     right_val = 'C'
                                     
-                            action = 'BUY'
+                            action = tws_action
                             limit_price_val = abs(float(limit_price_signed)) if limit_price_signed else 0.10
 
-                            st.write(f"Plaatsen order ({strat}) voor {order_qty} stuks. Actie: {action} Combo (Prijs: ${limit_price_val:.2f})...")
+                            st.write(f"Plaatsen order ({strat}) voor {order_qty} stuks. TWS Actie: **{action}** ({cashflow_label}, Premie: ${limit_price_val:.2f})...")
 
                             trade = order_ib.place_strategy_order(
                                 symbol=selected_row['symbol'],
@@ -2265,8 +2417,8 @@ with tab3:
                                 with st.expander("🔍 Technische Details (voor verificatie in TWS)"):
                                     st.write(f"**Symbool:** {selected_row['symbol']}")
                                     st.write(f"**Strategie:** {strat}")
-                                    st.write(f"**Netto Actie:** {action}")
-                                    st.write(f"**Limit Prijs:** ${limit_price_signed}")
+                                    st.write(f"**TWS Actie:** {action} ({cashflow_label})")
+                                    st.write(f"**Netto Premie:** ${limit_price_val:.2f}")
                                     st.write(f"**Port:** {tws_port} ({'Paper' if tws_port==7497 else 'Live/Custom'})")
 
                                 # Show logs for diagnostics
