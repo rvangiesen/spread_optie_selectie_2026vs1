@@ -12,7 +12,7 @@ class SpreadHitRateTester:
     def __init__(self):
         pass
 
-    def run_backtest(self, symbols=['SPY', 'AAPL', 'MSFT', 'NVDA', 'QQQ'], trades_per_symbol=5, em_multiplier=1.439535, target_strategy='AUTO', progress_callback=None, log_callback=None):
+    def run_backtest(self, symbols=['SPY', 'AAPL', 'MSFT', 'NVDA', 'QQQ'], trades_per_symbol=5, em_multiplier=1.439535, target_strategy='AUTO', dte=30, spread_width=5.0, progress_callback=None, log_callback=None):
         def log(msg):
             if log_callback:
                 log_callback(msg)
@@ -25,6 +25,9 @@ class SpreadHitRateTester:
         results = []
         total_steps = len(symbols) * trades_per_symbol
         current_step = 0
+
+        dte_val = int(dte) if dte and dte > 0 else 30
+        width_val = float(spread_width) if spread_width and spread_width > 0 else 5.0
 
         for sym in symbols:
             try:
@@ -101,52 +104,53 @@ class SpreadHitRateTester:
                 else:
                     strat = 'BullPut' if is_bullish else 'BearCall'
 
-                dte = 30
-                em68 = price_entry * hv_val * np.sqrt(dte / 365.0)
+                em68 = price_entry * hv_val * np.sqrt(dte_val / 365.0)
                 em85 = em68 * 1.439535
 
                 # Distance used for strike placement based on passed em_multiplier
                 em_safety_dist = em68 * em_multiplier
+                width_scale = width_val / 5.0
 
                 if strat == 'BullPut':
                     short_strike = round(price_entry - em_safety_dist, 1)
-                    long_strike = short_strike - 5.0
+                    long_strike = short_strike - width_val
                     dist_factor = max(0.4, 2.0 - (em_multiplier * 0.75))
-                    credit = round(min(1.80, max(0.15, (em68 * 0.22) * dist_factor)), 2)
+                    credit = round(min(width_val * 0.36, max(0.15, (em68 * 0.22) * dist_factor * width_scale)), 2)
                     bep = short_strike - credit
                     bep_dist = price_entry - bep
                     max_profit = credit * 100.0
-                    max_loss = (5.0 - credit) * 100.0
+                    max_loss = (width_val - credit) * 100.0
                 elif strat == 'BearCall':
                     short_strike = round(price_entry + em_safety_dist, 1)
-                    long_strike = short_strike + 5.0
+                    long_strike = short_strike + width_val
                     dist_factor = max(0.4, 2.0 - (em_multiplier * 0.75))
-                    credit = round(min(1.80, max(0.15, (em68 * 0.22) * dist_factor)), 2)
+                    credit = round(min(width_val * 0.36, max(0.15, (em68 * 0.22) * dist_factor * width_scale)), 2)
                     bep = short_strike + credit
                     bep_dist = bep - price_entry
                     max_profit = credit * 100.0
-                    max_loss = (5.0 - credit) * 100.0
+                    max_loss = (width_val - credit) * 100.0
                 elif strat == 'BullCall':
                     long_strike = round(price_entry - (em_safety_dist * 0.2), 1)
-                    short_strike = round(long_strike + 5.0, 1)
-                    credit = round(min(2.80, max(0.50, (em68 * 0.35))), 2)
+                    short_strike = round(long_strike + width_val, 1)
+                    credit = round(min(width_val * 0.56, max(0.50, (em68 * 0.35) * width_scale)), 2)
                     bep = long_strike + credit
                     bep_dist = max(0.1, bep - price_entry)
-                    max_profit = (5.0 - credit) * 100.0
+                    max_profit = (width_val - credit) * 100.0
                     max_loss = credit * 100.0
                 else: # BearPut
                     long_strike = round(price_entry + (em_safety_dist * 0.2), 1)
-                    short_strike = round(long_strike - 5.0, 1)
-                    credit = round(min(2.80, max(0.50, (em68 * 0.35))), 2)
+                    short_strike = round(long_strike - width_val, 1)
+                    credit = round(min(width_val * 0.56, max(0.50, (em68 * 0.35) * width_scale)), 2)
                     bep = long_strike - credit
                     bep_dist = max(0.1, price_entry - bep)
-                    max_profit = (5.0 - credit) * 100.0
+                    max_profit = (width_val - credit) * 100.0
                     max_loss = credit * 100.0
 
                 em85_dekking = (bep_dist / max(0.01, em85)) * 100.0
                 pop_est = min(96.0, max(60.0, 50.0 + (bep_dist / price_entry) * 350.0))
 
-                idx_exp = min(total_bars - 1, idx_entry + 22)
+                trading_days = max(5, int(round(dte_val * 21.0 / 30.0)))
+                idx_exp = min(total_bars - 1, idx_entry + trading_days)
                 df_trade_period = df_hist.iloc[idx_entry+1:idx_exp+1]
                 price_exp = float(df_hist.iloc[idx_exp]['Close'])
                 date_exp = df_hist.index[idx_exp]
@@ -188,6 +192,8 @@ class SpreadHitRateTester:
                     'strategy': strat,
                     'vol_regime': vol_regime,
                     'hv30_%': round(hv_val * 100, 1),
+                    'dte': dte_val,
+                    'spread_width': width_val,
                     'underlying_entry': price_entry,
                     'underlying_exp': price_exp,
                     'short_strike': short_strike,
@@ -232,6 +238,176 @@ class SpreadHitRateTester:
         return {
             'summary': summary,
             'details_df': df_res
+        }
+
+    def compare_sidebar_vs_standard(self, symbols=['SPY', 'AAPL', 'MSFT', 'NVDA', 'QQQ'], trades_per_symbol=5, sidebar_params=None, standard_params=None, progress_callback=None, log_callback=None):
+        """
+        Runs a side-by-side comparative backtest between the user's current Sidebar settings
+        and the Standard optimal Benchmark (EM85 / 30 DTE / $5 width).
+        Produces stock-by-stock recommendations and determines optimal parameters per ticker.
+        """
+        def log(msg):
+            if log_callback:
+                log_callback(msg)
+            else:
+                try:
+                    print(msg)
+                except UnicodeEncodeError:
+                    print(msg.encode('ascii', 'ignore').decode('ascii'))
+
+        if standard_params is None:
+            standard_params = {
+                'dte': 30,
+                'spread_width': 5.0,
+                'em_multiplier': 1.439535,
+                'target_strategy': 'AUTO',
+                'name': 'Standaard (EM85 / 30DTE / $5.00)'
+            }
+
+        if sidebar_params is None:
+            sidebar_params = {
+                'dte': 30,
+                'spread_width': 10.0,
+                'em_multiplier': 1.439535,
+                'target_strategy': 'AUTO',
+                'name': 'Huidige Sidebar Instellingen'
+            }
+
+        log(f"⚖️ Vergelijkingstest gestart voor {len(symbols)} symbolen...")
+        log(f"   Configuratie A (Sidebar): DTE={sidebar_params.get('dte', 30)}, Breedte=${sidebar_params.get('spread_width', 10.0)}, EM={sidebar_params.get('em_multiplier', 1.44):.2f}x, Strat={sidebar_params.get('target_strategy', 'AUTO')}")
+        log(f"   Configuratie B (Standaard): DTE={standard_params.get('dte', 30)}, Breedte=${standard_params.get('spread_width', 5.0)}, EM={standard_params.get('em_multiplier', 1.44):.2f}x, Strat={standard_params.get('target_strategy', 'AUTO')}")
+
+        def p_sb(pct, msg):
+            if progress_callback:
+                progress_callback(pct * 0.5, f"Testen Sidebar Instellingen: {msg}")
+
+        def p_std(pct, msg):
+            if progress_callback:
+                progress_callback(0.5 + (pct * 0.5), f"Testen Standaard Benchmark: {msg}")
+
+        res_sb = self.run_backtest(
+            symbols=symbols,
+            trades_per_symbol=trades_per_symbol,
+            em_multiplier=sidebar_params.get('em_multiplier', 1.439535),
+            target_strategy=sidebar_params.get('target_strategy', 'AUTO'),
+            dte=sidebar_params.get('dte', 30),
+            spread_width=sidebar_params.get('spread_width', 10.0),
+            progress_callback=p_sb,
+            log_callback=log_callback
+        )
+
+        res_std = self.run_backtest(
+            symbols=symbols,
+            trades_per_symbol=trades_per_symbol,
+            em_multiplier=standard_params.get('em_multiplier', 1.439535),
+            target_strategy=standard_params.get('target_strategy', 'AUTO'),
+            dte=standard_params.get('dte', 30),
+            spread_width=standard_params.get('spread_width', 5.0),
+            progress_callback=p_std,
+            log_callback=log_callback
+        )
+
+        df_sb = res_sb['details_df']
+        df_std = res_std['details_df']
+
+        comp_rows = []
+        stock_profiles = {}
+
+        for sym in symbols:
+            sub_sb = df_sb[df_sb['symbol'] == sym] if not df_sb.empty else pd.DataFrame()
+            sub_std = df_std[df_std['symbol'] == sym] if not df_std.empty else pd.DataFrame()
+
+            if sub_sb.empty and sub_std.empty:
+                continue
+
+            sb_trades = len(sub_sb)
+            sb_wins = int(sub_sb['win'].sum()) if not sub_sb.empty else 0
+            sb_hr = (sb_wins / sb_trades * 100.0) if sb_trades > 0 else 0.0
+            sb_avg_pnl = float(sub_sb['realized_pnl'].mean()) if sb_trades > 0 else 0.0
+            sb_tot_pnl = float(sub_sb['realized_pnl'].sum()) if sb_trades > 0 else 0.0
+            sb_safe_rate = (float(sub_sb['em85_safe'].sum()) / sb_trades * 100.0) if sb_trades > 0 else 0.0
+
+            std_trades = len(sub_std)
+            std_wins = int(sub_std['win'].sum()) if not sub_std.empty else 0
+            std_hr = (std_wins / std_trades * 100.0) if std_trades > 0 else 0.0
+            std_avg_pnl = float(sub_std['realized_pnl'].mean()) if std_trades > 0 else 0.0
+            std_tot_pnl = float(sub_std['realized_pnl'].sum()) if std_trades > 0 else 0.0
+            std_safe_rate = (float(sub_std['em85_safe'].sum()) / std_trades * 100.0) if std_trades > 0 else 0.0
+
+            pnl_delta = sb_avg_pnl - std_avg_pnl
+
+            # Determine best model for this specific stock
+            if std_avg_pnl > (sb_avg_pnl + 2.0):
+                winner = "Standaard"
+                gain_per_trade = std_avg_pnl - sb_avg_pnl
+                advies = f"Standaard is beter (+${gain_per_trade:.2f}/trade)"
+                winning_params = standard_params
+            elif sb_avg_pnl > (std_avg_pnl + 2.0):
+                winner = "Sidebar"
+                gain_per_trade = sb_avg_pnl - std_avg_pnl
+                advies = f"Sidebar is beter (+${gain_per_trade:.2f}/trade)"
+                winning_params = sidebar_params
+            else:
+                # Close in profit, use hit rate / safe rate to break tie
+                if std_hr >= sb_hr:
+                    winner = "Standaard"
+                    advies = "Gelijkwaardig (Standaard heeft hogere/gelijke Hit Rate)"
+                    winning_params = standard_params
+                else:
+                    winner = "Sidebar"
+                    advies = "Gelijkwaardig (Sidebar heeft hogere Hit Rate)"
+                    winning_params = sidebar_params
+
+            stock_profiles[sym] = {
+                'winner': winner,
+                'winning_params': winning_params,
+                'sb_avg_pnl': sb_avg_pnl,
+                'std_avg_pnl': std_avg_pnl,
+                'sb_hr': sb_hr,
+                'std_hr': std_hr,
+                'pnl_gain': abs(pnl_delta)
+            }
+
+            comp_rows.append({
+                'symbol': sym,
+                'sb_hit_rate': round(sb_hr, 1),
+                'sb_avg_pnl': round(sb_avg_pnl, 2),
+                'sb_total_pnl': round(sb_tot_pnl, 2),
+                'sb_safe_rate': round(sb_safe_rate, 1),
+                'std_hit_rate': round(std_hr, 1),
+                'std_avg_pnl': round(std_avg_pnl, 2),
+                'std_total_pnl': round(std_tot_pnl, 2),
+                'std_safe_rate': round(std_safe_rate, 1),
+                'winner': winner,
+                'pnl_delta': round(pnl_delta, 2),
+                'advies': advies
+            })
+
+        df_comp = pd.DataFrame(comp_rows)
+
+        sb_glob_pnl = res_sb['summary'].get('avg_pnl', 0.0)
+        std_glob_pnl = res_std['summary'].get('avg_pnl', 0.0)
+
+        if std_glob_pnl > (sb_glob_pnl + 1.0):
+            global_best = "Standaard"
+        elif sb_glob_pnl > (std_glob_pnl + 1.0):
+            global_best = "Sidebar"
+        else:
+            sb_glob_hr = res_sb['summary'].get('hit_rate', 0.0)
+            std_glob_hr = res_std['summary'].get('hit_rate', 0.0)
+            global_best = "Standaard" if std_glob_hr >= sb_glob_hr else "Sidebar"
+
+        return {
+            'sidebar_summary': res_sb['summary'],
+            'standard_summary': res_std['summary'],
+            'sidebar_details': df_sb,
+            'standard_details': df_std,
+            'comparison_df': df_comp,
+            'global_best': global_best,
+            'global_pnl_diff': round(abs(sb_glob_pnl - std_glob_pnl), 2),
+            'stock_profiles': stock_profiles,
+            'sidebar_params': sidebar_params,
+            'standard_params': standard_params
         }
 
     def optimize_em_multipliers(self, symbols=['SPY', 'AAPL', 'MSFT', 'NVDA', 'QQQ'], trades_per_symbol=5, multipliers=[0.8, 1.0, 1.2, 1.44, 1.65, 1.8, 2.0], progress_callback=None, log_callback=None):

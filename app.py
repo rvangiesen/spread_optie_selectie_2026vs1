@@ -744,24 +744,50 @@ if 'preset_min_strike' not in st.session_state:
     st.session_state['preset_min_strike'] = 8.0  # Spreads baseline: 8.0%
 if 'preset_koopadvies_p' not in st.session_state:
     st.session_state['preset_koopadvies_p'] = 1.0 # Longs/Spreads baseline: 1.0%
+if 'sb_min_dte' not in st.session_state:
+    st.session_state['sb_min_dte'] = 5
+if 'sb_max_dte' not in st.session_state:
+    st.session_state['sb_max_dte'] = 32
+if 'sb_width' not in st.session_state:
+    st.session_state['sb_width'] = 10
+if 'sb_itm_support' not in st.session_state:
+    st.session_state['sb_itm_support'] = "EM85 Optimaal (1.44x Expected Move)"
+if 'use_stock_profiles' not in st.session_state:
+    st.session_state['use_stock_profiles'] = True
+if 'optimal_stock_configs' not in st.session_state:
+    st.session_state['optimal_stock_configs'] = {}
 
 # Filters
 st.sidebar.subheader("Filters & Criteria")
 
-if st.sidebar.button("⚡ Reset Optimale Filters per Strategie", use_container_width=True, help="Reset alle filters naar de optimale basisinstellingen per strategie (8% BEP afstand voor Spreads, 1% voor Longs)"):
-    is_long_only = any(s in active_strategies for s in ["LongCall", "LongPut"]) and not any(s in active_strategies for s in ["BullCall", "BullPut", "BearCall", "BearPut", "IronCondor", "Strangle"])
-    if is_long_only:
-        st.session_state['preset_min_strike'] = 1.0 # 1% voor Longs
-    else:
-        st.session_state['preset_min_strike'] = 8.0 # Minimaal 8% BEP voor Spreads
-    st.session_state['preset_koopadvies_p'] = 1.0
-    st.sidebar.success("✅ Filters gereset naar optimale basiswaarden (8% BEP Spreads / 1% Longs)!")
-    st.rerun()
+col_sb_res1, col_sb_res2 = st.sidebar.columns(2)
+with col_sb_res1:
+    if st.button("⚡ Reset Filters", use_container_width=True, help="Reset alle filters naar de optimale basisinstellingen per strategie (8% BEP afstand voor Spreads, 1% voor Longs)"):
+        is_long_only = any(s in active_strategies for s in ["LongCall", "LongPut"]) and not any(s in active_strategies for s in ["BullCall", "BullPut", "BearCall", "BearPut", "IronCondor", "Strangle"])
+        if is_long_only:
+            st.session_state['preset_min_strike'] = 1.0 # 1% voor Longs
+            st.session_state['sb_width'] = 5
+        else:
+            st.session_state['preset_min_strike'] = 8.0 # Minimaal 8% BEP voor Spreads
+            st.session_state['sb_width'] = 10
+        st.session_state['preset_koopadvies_p'] = 1.0
+        st.session_state['sb_min_dte'] = 5
+        st.session_state['sb_max_dte'] = 32
+        st.session_state['sb_itm_support'] = "EM85 Optimaal (1.44x Expected Move)"
+        st.sidebar.success("✅ Filters gereset!")
+        st.rerun()
+
+with col_sb_res2:
+    if st.button("🔬 Optimaliseer", use_container_width=True, help="Test huidige sidebar instellingen tegen de standaard EM85 benchmark en optimaliseer"):
+        st.session_state['run_comparison_test_trigger'] = True
+
+if st.session_state.get('optimal_stock_configs'):
+    st.sidebar.caption(f"🎯 **{len(st.session_state['optimal_stock_configs'])} aandeel-profielen** actief in scanner")
 
 use_cache_toggle = st.sidebar.checkbox("Gebruik Cache (Indien parameters gelijk blijven)", value=True)
-min_dte = st.sidebar.number_input("Min Dagen tot Expiratie", value=5)
-max_dte = st.sidebar.number_input("Max Dagen tot Expiratie", value=32)
-width = st.sidebar.number_input("Spread Breedte", value=10)
+min_dte = st.sidebar.number_input("Min Dagen tot Expiratie", value=int(st.session_state.get('sb_min_dte', 5)), key='sb_min_dte')
+max_dte = st.sidebar.number_input("Max Dagen tot Expiratie", value=int(st.session_state.get('sb_max_dte', 32)), key='sb_max_dte')
+width = st.sidebar.number_input("Spread Breedte", value=int(st.session_state.get('sb_width', 10)), key='sb_width')
 min_pop = st.sidebar.slider("Min Kans op Winst (PoP %)", 0, 100, 50)
 min_profit = st.sidebar.number_input("Min Winst Potentie ($)", value=100)
 max_pain_buffer = st.sidebar.number_input("Max Pain Buffer (Punten)", value=5, help="Minimale afstand tot Max Pain strike")
@@ -772,10 +798,15 @@ koopadvies_p = st.sidebar.slider("Koopadvies Drempel (p %)", -5.0, 10.0, float(s
 only_koopadvies = st.sidebar.checkbox("Alleen Koopadvies tonen", value=False)
 strike_range_pct = st.sidebar.number_input("Afstand tot Koers % (Strike Range)", min_value=-50.0, max_value=50.0, value=30.0, step=1.0, help="Positief = Bull Spreads ONDER de koers. Negatief = Bull Spreads BOVEN de koers.") / 100.0
 min_strike_pct = st.sidebar.number_input("Min. afstand tot Koers % (BEP Afstand)", min_value=-50.0, max_value=50.0, value=float(st.session_state.get('preset_min_strike', 8.0)), step=1.0, help="Minimale foutmarge / BEP Afstand (Basissetting Spreads = 8.0%, Longs = 1.0%).") / 100.0
+
+itm_options = ["EM85 Optimaal (1.44x Expected Move)", "Standaard (Min. afstand %)", "Niveau 1 (1x Expected Move)", "Niveau 2 (2x Expected Move)", "Niveau 3 (Extreme / 2.5x)"]
+curr_itm_val = st.session_state.get('sb_itm_support', "EM85 Optimaal (1.44x Expected Move)")
+curr_itm_idx = itm_options.index(curr_itm_val) if curr_itm_val in itm_options else 0
 itm_support_level = st.sidebar.selectbox(
     "ITM Veiligheidsmarge (Support Niveau)", 
-    ["EM85 Optimaal (1.44x Expected Move)", "Standaard (Min. afstand %)", "Niveau 1 (1x Expected Move)", "Niveau 2 (2x Expected Move)", "Niveau 3 (Extreme / 2.5x)"],
-    index=0,
+    itm_options,
+    index=curr_itm_idx,
+    key='sb_itm_support',
     help="Gevalideerd optimum: EM85 (1.44x EM68) biedt de hoogste gemiddelde winst per trade ($100/trade) met 84% Hit Rate."
 )
 # Additional Strategy Overrides/Toggles
@@ -1455,7 +1486,13 @@ with tab1:
                                          
                                          if res.empty:
                                              widths_to_check = [int(width)]
-                                             if price > 0:
+                                             if st.session_state.get('use_stock_profiles', True) and sym in st.session_state.get('optimal_stock_configs', {}):
+                                                 opt_prof = st.session_state['optimal_stock_configs'][sym]
+                                                 opt_w = opt_prof.get('winning_params', {}).get('spread_width')
+                                                 if opt_w:
+                                                     widths_to_check = [int(opt_w)]
+                                                     log(f"   🎯 Aandeel-optimalisatie actief voor {sym}: Breedte geoptimaliseerd naar ${int(opt_w)}")
+                                             elif price > 0:
                                                  if price < 50 and 5 not in widths_to_check:
                                                      widths_to_check.append(5)
                                                  if price > 400 and 15 not in widths_to_check:
@@ -2884,12 +2921,84 @@ with tab6:
     else:
         st.info(f"📊 **Test Configuratie**: {total_test_trades} spreads over **{n_syms} aandeel/aandelen**: `{', '.join(test_symbols)}` ({trades_per_sym} spreads per aandeel) | Strategie: **{target_strat_choice}**")
 
-    start_hitrate_btn = st.button(
-        f"🧪 Start Hit-Rate Test ({total_test_trades} Spreads / {n_syms} Aandeel{'en' if n_syms != 1 else ''})", 
-        type="primary",
-        disabled=(n_syms == 0)
-    )
-    
+    col_act1, col_act2 = st.columns(2)
+    with col_act1:
+        start_hitrate_btn = st.button(
+            f"🧪 Start Standaard Hit-Rate Test ({total_test_trades} Spreads)", 
+            type="secondary",
+            use_container_width=True,
+            disabled=(n_syms == 0)
+        )
+    with col_act2:
+        start_comp_btn = st.button(
+            f"⚖️ Test & Optimaliseer: Sidebar vs. Standaard ({total_test_trades} Spreads)", 
+            type="primary",
+            use_container_width=True,
+            disabled=(n_syms == 0),
+            help="Test uw huidige sidebar-instellingen (DTE, breedte, EM) tegen de standaard benchmark over dezelfde aandelen en optimaliseer direct."
+        )
+
+    if st.session_state.get('run_comparison_test_trigger', False):
+        start_comp_btn = True
+        st.session_state['run_comparison_test_trigger'] = False
+
+    target_strat_key = 'AUTO' if "Automatisch" in target_strat_choice else target_strat_choice.replace("Enkel ", "").strip()
+
+    if start_comp_btn and n_syms > 0:
+        from hitrate_backtester import SpreadHitRateTester
+        tester = SpreadHitRateTester()
+        
+        progress_bar = st.progress(0.0)
+        status_text = st.empty()
+        log_box = st.expander("Bekijk optimalisatie test-logboeken", expanded=True)
+        log_messages = []
+        
+        def comp_progress(pct, msg):
+            progress_bar.progress(pct)
+            status_text.text(msg)
+            
+        def comp_log(msg):
+            log_messages.append(msg)
+            with log_box:
+                st.text(msg)
+                
+        sb_avg_dte = max(10, (int(min_dte) + int(max_dte)) // 2)
+        sb_width = float(width)
+        if "Niveau 1" in itm_support_level:
+            sb_em_mult = 1.0
+        elif "Niveau 2" in itm_support_level:
+            sb_em_mult = 2.0
+        elif "Niveau 3" in itm_support_level:
+            sb_em_mult = 2.5
+        else:
+            sb_em_mult = 1.439535
+
+        with st.spinner(f"Vergelijkingstest wordt uitgevoerd voor {n_syms} aandeel/aandelen (Sidebar vs. Standaard)..."):
+            comp_dict = tester.compare_sidebar_vs_standard(
+                symbols=test_symbols,
+                trades_per_symbol=trades_per_sym,
+                sidebar_params={
+                    'dte': sb_avg_dte,
+                    'spread_width': sb_width,
+                    'em_multiplier': sb_em_mult,
+                    'target_strategy': target_strat_key,
+                    'name': f"Sidebar ({sb_avg_dte}d / ${sb_width:.0f} / {sb_em_mult:.2f}x)"
+                },
+                standard_params={
+                    'dte': 30,
+                    'spread_width': 5.0,
+                    'em_multiplier': 1.439535,
+                    'target_strategy': 'AUTO',
+                    'name': "Standaard (30d / $5.0 / 1.44x)"
+                },
+                progress_callback=comp_progress,
+                log_callback=comp_log
+            )
+            
+        st.session_state['comparison_results'] = comp_dict
+        st.session_state['optimal_stock_configs'] = comp_dict['stock_profiles']
+        st.success(f"✅ Vergelijkingstest & Optimalisatie over {n_syms} aandeel/aandelen voltooid!")
+
     if start_hitrate_btn and n_syms > 0:
         from hitrate_backtester import SpreadHitRateTester
         tester = SpreadHitRateTester()
@@ -2908,7 +3017,6 @@ with tab6:
             with log_box:
                 st.text(msg)
                 
-        target_strat_key = 'AUTO' if "Automatisch" in target_strat_choice else target_strat_choice.replace("Enkel ", "").strip()
         with st.spinner(f"Hit-Rate test wordt uitgevoerd voor {n_syms} aandeel/aandelen op historische marktdata..."):
             res_dict = tester.run_backtest(
                 symbols=test_symbols,
@@ -2920,6 +3028,106 @@ with tab6:
             
         st.session_state['hitrate_results'] = res_dict
         st.success(f"✅ Hit-Rate test over {n_syms} aandeel/aandelen ({total_test_trades} spreads) succesvol voltooid!")
+
+    if 'comparison_results' in st.session_state and st.session_state['comparison_results'].get('comparison_df') is not None:
+        cres = st.session_state['comparison_results']
+        df_comp = cres['comparison_df']
+        sb_sum = cres['sidebar_summary']
+        std_sum = cres['standard_summary']
+        glob_best = cres['global_best']
+        pnl_diff = cres['global_pnl_diff']
+
+        st.markdown("---")
+        st.subheader("⚖️ Resultaten Vergelijkingstest: Sidebar vs. Standaard Benchmark")
+        
+        if glob_best == "Standaard":
+            st.warning(f"🏆 **Standaard Benchmark is Globaal Winstgevender!** Gemiddelde winst: **${std_sum.get('avg_pnl', 0):.2f} / trade** (Standaard) vs. **${sb_sum.get('avg_pnl', 0):.2f} / trade** (Sidebar). Winstverschil: **+${pnl_diff:.2f} / trade** ten gunste van de Standaard Benchmark.")
+        elif glob_best == "Sidebar":
+            st.success(f"🚀 **Uw Huidige Sidebar Instellingen zijn Globaal Winstgevender!** Gemiddelde winst: **${sb_sum.get('avg_pnl', 0):.2f} / trade** (Sidebar) vs. **${std_sum.get('avg_pnl', 0):.2f} / trade** (Standaard). Winstverschil: **+${pnl_diff:.2f} / trade** ten gunste van uw Sidebar.")
+        else:
+            st.info("⚖️ **Gelijkwaardige Prestaties**: Beide configuraties leveren vrijwel dezelfde gemiddelde winst op.")
+
+        mc1, mc2, mc3, mc4 = st.columns(4)
+        mc1.metric(
+            "Gem. Winst / Trade",
+            f"${std_sum.get('avg_pnl', 0):.2f} (Std)",
+            f"${sb_sum.get('avg_pnl', 0):.2f} (Sidebar)"
+        )
+        mc2.metric(
+            "Hit Rate (%)",
+            f"{std_sum.get('hit_rate', 0):.1f}% (Std)",
+            f"{sb_sum.get('hit_rate', 0):.1f}% (Sidebar)"
+        )
+        mc3.metric(
+            "Totale Winst Portfolio",
+            f"${std_sum.get('total_pnl', 0):,.2f} (Std)",
+            f"${sb_sum.get('total_pnl', 0):,.2f} (Sidebar)"
+        )
+        mc4.metric(
+            "Geen-BEP-Touch Rate",
+            f"{std_sum.get('em85_safe_rate', 0):.1f}% (Std)",
+            f"{sb_sum.get('em85_safe_rate', 0):.1f}% (Sidebar)"
+        )
+
+        st.markdown("### 🔄 1-Klik Synchronisatie & Optimalisatie")
+        act_col1, act_col2 = st.columns(2)
+        with act_col1:
+            if st.button("⚡ Pas Beste Globale Instellingen Toe op de Linker Sidebar", type="primary", use_container_width=True, key="btn_apply_best_global"):
+                if glob_best == "Standaard":
+                    st.session_state['sb_width'] = 5
+                    st.session_state['sb_min_dte'] = 20
+                    st.session_state['sb_max_dte'] = 35
+                    st.session_state['sb_itm_support'] = "EM85 Optimaal (1.44x Expected Move)"
+                    st.session_state['preset_min_strike'] = 8.0
+                    st.success("✅ Sidebar filters direct bijgewerkt naar Standaard Benchmark waarden (Breedte: $5.00, DTE: 20-35, EM85)!")
+                else:
+                    st.info("✅ Uw huidige sidebar instellingen presteren al optimaal! Geen wijziging nodig.")
+                st.rerun()
+
+        with act_col2:
+            use_profiles = st.checkbox(
+                "🎯 Gebruik Aandeel-Specifieke Instellingen in Scanner",
+                value=st.session_state.get('use_stock_profiles', True),
+                key="chk_use_profiles",
+                help="Wanneer ingeschakeld, gebruikt de live scanner in Tab 1 voor elk individueel aandeel automatisch de winnende instelling uit deze test!"
+            )
+            st.session_state['use_stock_profiles'] = use_profiles
+            if use_profiles:
+                st.caption(f"✅ Scanner hanteert nu per aandeel het hoogst renderende profiel ({len(cres['stock_profiles'])} aandelen).")
+
+        st.markdown("### 📋 Resultaten & Advies per Aandeel")
+        st.dataframe(
+            df_comp,
+            use_container_width=True,
+            column_config={
+                "symbol": "Aandeel",
+                "sb_avg_pnl": st.column_config.NumberColumn("Sidebar Winst/Trade", format="$%.2f"),
+                "sb_hit_rate": st.column_config.NumberColumn("Sidebar Hit Rate", format="%.1f%%"),
+                "sb_total_pnl": st.column_config.NumberColumn("Sidebar Totaal ($)", format="$%.2f"),
+                "std_avg_pnl": st.column_config.NumberColumn("Standaard Winst/Trade", format="$%.2f"),
+                "std_hit_rate": st.column_config.NumberColumn("Standaard Hit Rate", format="%.1f%%"),
+                "std_total_pnl": st.column_config.NumberColumn("Standaard Totaal ($)", format="$%.2f"),
+                "winner": "Beste Keuze",
+                "advies": "Advies & Winstverbetering"
+            }
+        )
+
+        import io
+        buf_comp = io.BytesIO()
+        with pd.ExcelWriter(buf_comp, engine='openpyxl') as writer:
+            df_comp.to_excel(writer, index=False, sheet_name='Vergelijking_Per_Aandeel')
+            if not cres['sidebar_details'].empty:
+                cres['sidebar_details'].to_excel(writer, index=False, sheet_name='Trades_Sidebar')
+            if not cres['standard_details'].empty:
+                cres['standard_details'].to_excel(writer, index=False, sheet_name='Trades_Standaard')
+
+        st.download_button(
+            label="💾 Download Vergelijkingsrapport (Excel)",
+            data=buf_comp.getvalue(),
+            file_name=f"Optimalisatie_Sidebar_vs_Standaard_{datetime.date.today().strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="secondary"
+        )
             
     if 'hitrate_results' in st.session_state and st.session_state['hitrate_results'].get('summary'):
         res = st.session_state['hitrate_results']
