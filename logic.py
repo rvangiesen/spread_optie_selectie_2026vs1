@@ -147,8 +147,9 @@ class SpreadScanner:
         
         if hist_df.empty: return signals
         
-        # 1. EMA 8/50 Crossover Analysis
+        # 1. EMA 8/50 and EMA 20/50 Crossover Analysis
         ema8 = self.calculate_ema(hist_df, 8)
+        ema20 = self.calculate_ema(hist_df, 20)
         ema50 = self.calculate_ema(hist_df, 50)
         
         if len(ema8) > 2 and len(ema50) > 2:
@@ -169,6 +170,21 @@ class SpreadScanner:
                 signals['ema_status'] = f"{direction} Cross ({bars_ago}d ago){fresh_tag}"
             else:
                 signals['ema_status'] = "Positive" if current_8 > current_50 else "Negative"
+
+        if len(ema20) > 2 and len(ema50) > 2:
+            c_ema20 = float(ema20.iloc[-1])
+            c_ema50 = float(ema50.iloc[-1])
+            cross_20_50 = (ema20 > ema50).astype(int).diff()
+            c_indices = cross_20_50[cross_20_50 != 0].index
+            if not c_indices.empty:
+                l_idx = c_indices[-1]
+                b_ago = (len(hist_df.index) - 1) - hist_df.index.get_loc(l_idx)
+                dir_2050 = "Bullish (EMA20 > EMA50)" if cross_20_50.loc[l_idx] == 1 else "Bearish (EMA20 < EMA50)"
+                signals['ema20_50_status'] = f"{dir_2050} ({b_ago}d ago)"
+            else:
+                signals['ema20_50_status'] = "Bullish (EMA20 > EMA50)" if c_ema20 > c_ema50 else "Bearish (EMA20 < EMA50)"
+        else:
+            signals['ema20_50_status'] = "N/A"
 
         # 2. Stoch RSI Analysis (14, 9, 3, 6)
         stoch = self.calculate_stoch_rsi(hist_df, 14, 9, 3, 6)
@@ -203,11 +219,140 @@ class SpreadScanner:
                 
         return signals
 
-    def filter_symbols_by_ema(self, symbols_data, ema_spans, direction='bull', ema_crossover=False):
+    def predict_1month_trend(self, hist_df):
+        """
+        Calculates a multi-factor 1-month directional forecast (Stijging vs Daling) for the next 30 days.
+        Combines 4 independent technical pillars:
+        1. 30-Day Linear Regression Slope (% angle)
+        2. MACD (12, 26, 9) Momentum & Histogram
+        3. DMI / ADX Direction (+DI vs -DI) over 14 bars
+        4. EMA 20 & EMA 50 Structural Alignment (Price > EMA20 > EMA50)
+        
+        Returns a dict with score (-4 to +4) and forecast.
+        """
+        result = {
+            'score': 0,
+            'forecast': "Zijwaarts / Neutraal",
+            'confidence': 0.5,
+            'passed_bullish': False,
+            'passed_bearish': False,
+            'details': {}
+        }
+        
+        if hist_df is None or hist_df.empty or 'close' not in hist_df.columns or len(hist_df) < 30:
+            return result
+
+        closes = hist_df['close'].astype(float).values
+        price = closes[-1]
+        score = 0
+        details = {}
+
+        # 1. 30-Day Linear Regression Slope
+        recent_closes = closes[-30:]
+        x = np.arange(len(recent_closes))
+        slope, intercept = np.polyfit(x, recent_closes, 1)
+        slope_pct = (slope * 30 / price) * 100.0 if price > 0 else 0.0
+        
+        if slope_pct >= 1.2:
+            score += 1
+            details['regression'] = f"Bullish (Stijgingshoek +{slope_pct:.1f}%)"
+        elif slope_pct <= -1.2:
+            score -= 1
+            details['regression'] = f"Bearish (Dalingshoek {slope_pct:.1f}%)"
+        else:
+            details['regression'] = f"Neutraal (Hoek {slope_pct:.1f}%)"
+
+        # 2. MACD (12, 26, 9)
+        ema12 = hist_df['close'].ewm(span=12, adjust=False).mean()
+        ema26 = hist_df['close'].ewm(span=26, adjust=False).mean()
+        macd_line = ema12 - ema26
+        signal_line = macd_line.ewm(span=9, adjust=False).mean()
+        macd_hist = macd_line - signal_line
+        
+        curr_macd_hist = float(macd_hist.iloc[-1])
+        if curr_macd_hist > 0:
+            score += 1
+            details['macd'] = f"Bullish (Hist +{curr_macd_hist:.2f})"
+        else:
+            score -= 1
+            details['macd'] = f"Bearish (Hist {curr_macd_hist:.2f})"
+
+        # 3. DMI (+DI vs -DI over 14 bars)
+        if 'high' in hist_df.columns and 'low' in hist_df.columns:
+            highs = hist_df['high'].astype(float).values
+            lows = hist_df['low'].astype(float).values
+            
+            up_move = highs[1:] - highs[:-1]
+            down_move = lows[:-1] - lows[1:]
+            
+            plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+            minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+            
+            tr1 = highs[1:] - lows[1:]
+            tr2 = np.abs(highs[1:] - closes[:-1])
+            tr3 = np.abs(lows[1:] - closes[:-1])
+            tr = np.maximum(tr1, np.maximum(tr2, tr3))
+            
+            period = 14
+            if len(tr) >= period:
+                tr_smooth = pd.Series(tr).ewm(alpha=1/period, adjust=False).mean().values
+                plus_di = 100 * (pd.Series(plus_dm).ewm(alpha=1/period, adjust=False).mean().values / np.maximum(1e-5, tr_smooth))
+                minus_di = 100 * (pd.Series(minus_dm).ewm(alpha=1/period, adjust=False).mean().values / np.maximum(1e-5, tr_smooth))
+                
+                curr_p_di = float(plus_di[-1])
+                curr_m_di = float(minus_di[-1])
+                
+                if curr_p_di > curr_m_di:
+                    score += 1
+                    details['dmi'] = f"Bullish (+DI {curr_p_di:.1f} > -DI {curr_m_di:.1f})"
+                else:
+                    score -= 1
+                    details['dmi'] = f"Bearish (-DI {curr_m_di:.1f} > +DI {curr_p_di:.1f})"
+            else:
+                details['dmi'] = "N/A"
+        else:
+            details['dmi'] = "N/A"
+
+        # 4. EMA 20 vs EMA 50 Alignment
+        ema20 = self.calculate_ema(hist_df, 20)
+        ema50 = self.calculate_ema(hist_df, 50)
+        
+        if not ema20.empty and not ema50.empty:
+            c_ema20 = float(ema20.iloc[-1])
+            c_ema50 = float(ema50.iloc[-1])
+            if price > c_ema20 and c_ema20 > c_ema50:
+                score += 1
+                details['ema_structure'] = f"Bullish (Koers ${price:.2f} > EMA20 ${c_ema20:.2f} > EMA50 ${c_ema50:.2f})"
+            elif price < c_ema20 and c_ema20 < c_ema50:
+                score -= 1
+                details['ema_structure'] = f"Bearish (Koers ${price:.2f} < EMA20 ${c_ema20:.2f} < EMA50 ${c_ema50:.2f})"
+            else:
+                details['ema_structure'] = f"Neutraal (EMA20 ${c_ema20:.2f}, EMA50 ${c_ema50:.2f})"
+        else:
+            details['ema_structure'] = "N/A"
+
+        # Final Evaluation
+        if score >= 2:
+            forecast = "Duidelijk Verwachte Stijging (Bullish)"
+        elif score <= -2:
+            forecast = "Duidelijk Verwachte Daling (Bearish)"
+        else:
+            forecast = "Zijwaarts / Neutraal"
+
+        result['score'] = score
+        result['forecast'] = forecast
+        result['confidence'] = min(1.0, abs(score) / 4.0)
+        result['passed_bullish'] = score >= 2
+        result['passed_bearish'] = score <= -2
+        result['details'] = details
+        return result
+
+    def filter_symbols_by_ema(self, symbols_data, ema_spans, direction='bull', ema_crossover=False, ema20_50_crossover=False):
         """
         Filters symbols based on EMA trend and optionally crossovers.
         direction: 'bull' (Price > EMA) or 'bear' (Price < EMA)
         ema_crossover: If True, checks if EMA 8 > EMA 50.
+        ema20_50_crossover: If True, checks if EMA 20 > EMA 50 (for bull) or EMA 20 < EMA 50 (for bear).
         """
         passed_symbols = []
         
@@ -249,6 +394,19 @@ class SpreadScanner:
                 
                 if ema8.iloc[-1] <= ema50.iloc[-1]:
                     continue  # Fail crossover
+
+            # Check Crossover (EMA 20 vs EMA 50)
+            if ema20_50_crossover:
+                ema20 = self.calculate_ema(hist_df, 20)
+                ema50 = self.calculate_ema(hist_df, 50)
+                
+                if ema20.empty or ema50.empty or len(ema20) < 1:
+                    continue
+                
+                if direction == 'bull' and ema20.iloc[-1] <= ema50.iloc[-1]:
+                    continue  # Fail bull crossover
+                elif direction == 'bear' and ema20.iloc[-1] >= ema50.iloc[-1]:
+                    continue  # Fail bear crossover
             
             passed_symbols.append(symbol)
         
@@ -598,65 +756,125 @@ class SpreadScanner:
                 log_func(f"   ⚠️ 0 {strategy} kandidaten. Skips door: {', '.join(summary)}")
               
         return pd.DataFrame(spreads)
-    def parse_barchart_flow(self, df):
+    def parse_barchart_flow(self, df, min_size=100, strict_codes=False, log_func=None):
         """
         Parses a Barchart Option Flow DataFrame, filters for 'Smart Money' trades
         (large size + specific execution codes), and proposes vertical spreads.
-        Follows user's VBA logic rules.
+        Supports case-insensitive column mapping and aliases.
         """
         spreads = []
-        if df.empty: return pd.DataFrame()
-            
+        if df is None or df.empty:
+            return pd.DataFrame()
+
+        def get_val(row_dict, aliases, default=None):
+            row_keys_lower = {str(k).lower().strip(): k for k in row_dict.keys()}
+            for alias in aliases:
+                a_lower = alias.lower().strip()
+                if a_lower in row_keys_lower:
+                    val = row_dict[row_keys_lower[a_lower]]
+                    if pd.notna(val):
+                        return val
+            return default
+
+        def safe_float(v, default=0.0):
+            if v is None or pd.isna(v): return default
+            try:
+                clean_str = str(v).replace('$', '').replace('%', '').replace(',', '').strip()
+                return float(clean_str)
+            except (ValueError, TypeError):
+                return default
+
+        def safe_int(v, default=0):
+            if v is None or pd.isna(v): return default
+            try:
+                clean_str = str(v).replace(',', '').strip()
+                return int(float(clean_str))
+            except (ValueError, TypeError):
+                return default
+
+        total_rows = len(df)
+        skipped_type = 0
+        skipped_dte = 0
+        skipped_size = 0
+        skipped_code = 0
+        skipped_delta = 0
+
+        valid_codes = ["MLCT", "MLFT", "MLAT", "TLFT", "TLAT", "SLCN", "ISOI", "SLAN", "SLAI"]
+
         for idx, row in df.iterrows():
             try:
-                t_type = str(row.get('Type', '')).upper().strip()
-                t_strike = float(row.get('Strike', 0))
-                t_price = float(row.get('Price~', 0))
-                t_dte = int(row.get('DTE', 0))
-                t_size = int(row.get('Size', 0))
-                t_delta = float(row.get('Delta', 0))
-                t_code = str(row.get('Code', '')).strip()
-                symbol = str(row.get('Symbol', '')).strip()
+                row_dict = row.to_dict()
+                symbol = str(get_val(row_dict, ['Symbol', 'SYMBOL', 'Ticker', 'TICKER', 'Sym'], '')).strip()
+                t_type = str(get_val(row_dict, ['Type', 'TYPE', 'Option Type', 'Call/Put', 'Right', 'RIGHT'], '')).upper().strip()
+                t_strike = safe_float(get_val(row_dict, ['Strike', 'STRIKE', 'Strike Price'], 0))
+                t_price = safe_float(get_val(row_dict, ['Price~', 'PRICE~', 'Price', 'PRICE', 'Underlying Price', 'Latest', 'LATEST', 'Last', 'Spot'], 0))
+                t_dte = safe_int(get_val(row_dict, ['DTE', 'dte', 'Days to Expiration', 'Days', 'EXP DTE'], 0))
+                t_size = safe_int(get_val(row_dict, ['Size', 'SIZE', 'Volume', 'VOLUME', 'Qty', 'QTY'], 0))
+                t_delta = safe_float(get_val(row_dict, ['Delta', 'DELTA'], 0))
+                t_code = str(get_val(row_dict, ['Code', 'CODE', 'Trade Code', 'Flags', 'FLAGS'], '')).strip()
+
+                if not symbol or symbol.lower() == 'nan':
+                    continue
+
+                if t_type not in ["CALL", "PUT", "C", "P"]:
+                    skipped_type += 1
+                    continue
                 
+                if t_type in ["CALL", "C"]: t_type = "CALL"
+                elif t_type in ["PUT", "P"]: t_type = "PUT"
+
                 # DTE filter
-                if t_dte < 7 or t_dte > 365: continue
+                if t_dte > 0 and (t_dte < 5 or t_dte > 365):
+                    skipped_dte += 1
+                    continue
+
                 # Size filter
-                if t_size < 800: continue
-                
+                if min_size > 0 and t_size > 0 and t_size < min_size:
+                    skipped_size += 1
+                    continue
+
                 # Code filter
-                valid_codes = ["MLCT", "MLFT", "MLAT", "TLFT", "TLAT", "SLCN", "ISOI", "SLAN", "SLAI"]
-                if t_code not in valid_codes: continue
-                
+                if strict_codes and t_code and t_code not in valid_codes:
+                    skipped_code += 1
+                    continue
+
                 short_strike = None
                 strategy = None
-                
-                # ITM CALL -> Bull Call Vertical
+
+                # ITM / OTM CALL -> Bull Call Vertical
                 if t_type == "CALL":
-                    if t_strike < t_price and 0.35 <= t_delta <= 0.95:
-                        strategy = 'BullCall'
-                        if t_strike < 180: short_strike = t_strike + 20
-                        elif t_strike < 200: short_strike = t_strike + 15
-                        else: short_strike = t_strike + 10
-                
-                # ITM PUT -> Bear Put Vertical
+                    if t_delta != 0 and not (0.15 <= abs(t_delta) <= 0.95):
+                        skipped_delta += 1
+                        continue
+                    strategy = 'BullCall'
+                    if t_strike < 180: short_strike = t_strike + 20
+                    elif t_strike < 200: short_strike = t_strike + 15
+                    else: short_strike = t_strike + 10
+
+                # ITM / OTM PUT -> Bear Put Vertical
                 elif t_type == "PUT":
-                    if t_strike > t_price and -0.95 <= t_delta <= -0.30:
-                        strategy = 'BearPut'
-                        if t_strike > 220: short_strike = t_strike - 20
-                        elif t_strike > 200: short_strike = t_strike - 15
-                        else: short_strike = t_strike - 10
-                        
+                    if t_delta != 0 and not (0.15 <= abs(t_delta) <= 0.95):
+                        skipped_delta += 1
+                        continue
+                    strategy = 'BearPut'
+                    if t_strike > 220: short_strike = t_strike - 20
+                    elif t_strike > 200: short_strike = t_strike - 15
+                    else: short_strike = t_strike - 10
+
                 if strategy and short_strike:
-                    # Parse expires (e.g., '2026-05-15T16:30:00-05:00' -> '20260515')
-                    raw_exp = str(row.get('Expires', ''))
-                    if 'T' in raw_exp:
-                        exp_date = raw_exp.split('T')[0].replace('-', '')
-                    else:
-                        exp_date = raw_exp.replace('-', '')
-                        
-                    iv_str = str(row.get('IV', '0')).replace('%', '')
-                    base_iv = float(iv_str) / 100.0 if iv_str.replace('.','',1).isdigit() else 0.0
-                        
+                    raw_exp = str(get_val(row_dict, ['Expires', 'EXPIRES', 'Expiration', 'EXPIRATION', 'Expiry', 'EXPIRY'], ''))
+                    exp_date = ''
+                    if raw_exp and raw_exp.lower() != 'nan':
+                        if 'T' in raw_exp:
+                            exp_date = raw_exp.split('T')[0].replace('-', '')
+                        else:
+                            exp_date = raw_exp.replace('-', '').replace('/', '')
+
+                    iv_val = safe_float(get_val(row_dict, ['IV', 'iv', 'Implied Volatility', 'IV %'], 0))
+                    if iv_val > 5.0: iv_val = iv_val / 100.0
+
+                    prem_val = safe_float(get_val(row_dict, ['Premium', 'PREMIUM', 'Value', 'VALUE'], 0))
+
                     spreads.append({
                         'symbol': symbol,
                         'strategy': strategy,
@@ -666,14 +884,22 @@ class SpreadScanner:
                         'strike_sell': short_strike,
                         'right': 'C' if strategy == 'BullCall' else 'P',
                         'width': abs(t_strike - short_strike),
-                        'iv': base_iv,
+                        'iv': iv_val,
                         'barchart_size': t_size,
-                        'barchart_premium': row.get('Premium', 0)
+                        'barchart_premium': prem_val
                     })
             except Exception as e:
-                if self.log_func: self.log_func(f"Fout bij parsen rij {idx}: {e}")
+                if log_func: log_func(f"Fout bij parsen rij {idx}: {e}")
                 continue
-                
+
+        if log_func:
+            try:
+                log_func(f"📊 Barchart Flow Analyse: {total_rows} rijen in CSV -> {len(spreads)} Smart Money Option Flow setup(s) goedgekeurd.")
+                if len(spreads) == 0 and total_rows > 0:
+                    log_func(f"   ℹ️ Afwijkingen details: Geen Type/Optie kolommen={skipped_type}, DTE={skipped_dte}, Size<{min_size}={skipped_size}, Code={skipped_code}, Delta={skipped_delta}")
+            except Exception:
+                pass
+
         return pd.DataFrame(spreads)
 
     def analyze_market_structure(self, chain_data):
@@ -1725,11 +1951,162 @@ class SpreadScanner:
             guidance['suggested_delta'] = round(top_by_profit['delta_sell'].abs().median(), 3)
             
         return guidance
+
+    def analyze_filter_bottlenecks(self, unfiltered_df, filters, target_n=5):
+        """
+        Analyzes why candidate spreads were filtered out and computes:
+        1. Exact count & percentage of candidates dropped per filter rule.
+        2. Average (and median) actual metric values of the generated candidates.
+        3. Top 3 bottleneck filter reasons (ranked by rejection impact).
+        4. Minimum required threshold adjustments (minimaal benodigde instellingen) to yield at least target_n candidates.
+        """
+        if unfiltered_df is None or unfiltered_df.empty:
+            return {
+                'total_generated': 0,
+                'breakdown': [],
+                'top_bottlenecks': []
+            }
+
+        n_total = len(unfiltered_df)
+        df = unfiltered_df.copy()
+
+        filter_specs = [
+            {
+                'key': 'only_koopadvies',
+                'name': 'Koopadvies (1% Regel)',
+                'col': 'koopadvies',
+                'type': 'bool',
+                'setting_str': 'Alleen ✅ Koopadvies' if filters.get('only_koopadvies') else 'Alle trades',
+                'active': bool(filters.get('only_koopadvies'))
+            },
+            {
+                'key': 'min_profit',
+                'name': 'Minimaal Rendement / Profit ($)',
+                'col': 'max_profit',
+                'type': 'min',
+                'setting_str': f"${filters.get('min_profit', 0):.2f}",
+                'active': filters.get('min_profit', 0) > 0
+            },
+            {
+                'key': 'min_pop',
+                'name': 'Winstkans (PoP %)',
+                'col': 'pop',
+                'type': 'min',
+                'setting_str': f"{filters.get('min_pop', 0):.1f}%",
+                'active': filters.get('min_pop', 0) > 0
+            },
+            {
+                'key': 'min_delta',
+                'name': 'Delta Sell Bereik',
+                'col': 'delta_sell',
+                'type': 'min_abs',
+                'setting_str': f">= {filters.get('min_delta', 0):.2f}",
+                'active': filters.get('min_delta', 0) > 0
+            },
+            {
+                'key': 'max_pain_dist',
+                'name': 'Max Pain Afstand ($)',
+                'col': 'spread_dist_max_pain',
+                'type': 'max',
+                'setting_str': f"<= ${filters.get('max_pain_dist', 0):.2f}",
+                'active': filters.get('max_pain_dist', 0) > 0
+            },
+            {
+                'key': 'min_gamma',
+                'name': 'Minimaal Gamma',
+                'col': 'gamma',
+                'type': 'min',
+                'setting_str': f">= {filters.get('min_gamma', 0):.3f}",
+                'active': filters.get('min_gamma', 0) != 0
+            },
+            {
+                'key': 'dte_range',
+                'name': 'DTE Looptijd Range',
+                'col': 'dte',
+                'type': 'range',
+                'setting_str': f"{filters.get('min_dte', 0)} - {filters.get('max_dte', 999)} d",
+                'active': True
+            }
+        ]
+
+        breakdown = []
+        q_target = max(0.0, min(0.99, 1.0 - (target_n / n_total))) if n_total > 0 else 0.5
+
+        for spec in filter_specs:
+            col = spec['col']
+            if col not in df.columns and spec['type'] != 'bool':
+                continue
+
+            isolated_fails = 0
+            avg_val = "-"
+            suggested_val = "-"
+
+            if spec['type'] == 'bool' and col in df.columns:
+                isolated_fails = int((df[col] != "✅").sum())
+                pass_ratio = float((df[col] == "✅").mean() * 100.0)
+                avg_val = f"{pass_ratio:.1f}% met ✅"
+                suggested_val = "Vink 'Alleen Koopadvies' uit" if filters.get('only_koopadvies') else "N.v.t."
+            elif spec['type'] == 'min' and col in df.columns:
+                thresh = float(filters.get(spec['key'], 0))
+                vals = df[col].dropna()
+                if not vals.empty:
+                    isolated_fails = int((vals < thresh).sum()) if thresh > 0 else 0
+                    mean_val = float(vals.mean())
+                    avg_val = f"${mean_val:.2f}" if 'profit' in col else f"{mean_val:.1f}%"
+                    q_val = float(vals.quantile(q_target))
+                    suggested_val = f"${q_val:.2f}" if 'profit' in col else f"{q_val:.1f}%"
+            elif spec['type'] == 'min_abs' and col in df.columns:
+                thresh = float(filters.get(spec['key'], 0))
+                abs_vals = df[col].abs().dropna()
+                if not abs_vals.empty:
+                    isolated_fails = int((abs_vals < thresh).sum()) if thresh > 0 else 0
+                    avg_val = f"{abs_vals.mean():.3f}"
+                    q_val = float(abs_vals.quantile(q_target))
+                    suggested_val = f">= {q_val:.3f}"
+            elif spec['type'] == 'max' and col in df.columns:
+                thresh = float(filters.get(spec['key'], 999))
+                vals = df[col].dropna()
+                if not vals.empty:
+                    isolated_fails = int((vals > thresh).sum()) if thresh > 0 else 0
+                    avg_val = f"${vals.mean():.2f}"
+                    q_val = float(vals.quantile(min(1.0, target_n / n_total)))
+                    suggested_val = f"<= ${q_val:.2f}"
+            elif spec['type'] == 'range' and col in df.columns:
+                min_d = float(filters.get('min_dte', 0))
+                max_d = float(filters.get('max_dte', 999))
+                vals = df[col].dropna()
+                if not vals.empty:
+                    isolated_fails = int(((vals < min_d) | (vals > max_d)).sum())
+                    avg_val = f"{vals.mean():.1f} d"
+                    suggested_val = f"{int(vals.min())} - {int(vals.max())} d"
+
+            pct_failed = float((isolated_fails / n_total) * 100.0) if n_total > 0 else 0.0
+
+            breakdown.append({
+                'key': spec['key'],
+                'name': spec['name'],
+                'setting_str': spec['setting_str'],
+                'active': spec['active'],
+                'dropped_count': isolated_fails,
+                'dropped_pct': round(pct_failed, 1),
+                'actual_avg': avg_val,
+                'suggested_min': suggested_val
+            })
+
+        sorted_bottlenecks = sorted(breakdown, key=lambda x: x['dropped_count'], reverse=True)
+        top_3 = sorted_bottlenecks[:3]
+
+        return {
+            'total_generated': n_total,
+            'breakdown': sorted_bottlenecks,
+            'top_bottlenecks': top_3
+        }
     
-    def rank_spreads(self, spreads_df, sort_criteria=None, top_n=10):
+    def rank_spreads(self, spreads_df, sort_criteria=None, top_n=100, max_per_symbol=None):
         """
         Ranks spreads based on a list of criteria.
         sort_criteria: list of strings, e.g. ['expected_move', 'gamma', 'delta', 'max_pain']
+        max_per_symbol: max number of results to keep per symbol for diversification
         """
         if spreads_df.empty:
             return spreads_df
@@ -1784,7 +2161,10 @@ class SpreadScanner:
             sort_asc = [False, False]
 
         try:
-            return spreads_df.sort_values(by=sort_cols, ascending=sort_asc).head(top_n)
+            sorted_df = spreads_df.sort_values(by=sort_cols, ascending=sort_asc)
+            if max_per_symbol and max_per_symbol > 0 and 'symbol' in sorted_df.columns:
+                sorted_df = sorted_df.groupby('symbol', group_keys=False).head(max_per_symbol).sort_values(by=sort_cols, ascending=sort_asc)
+            return sorted_df.head(top_n)
         except KeyError:
             # Fallback if specific columns missing
             return spreads_df.head(top_n)
@@ -1866,267 +2246,281 @@ class SpreadScanner:
         import pandas as pd
         import numpy as np
         import time
+        import math
+        import datetime
+        import concurrent.futures
         from ib_insync import Option, Stock
         
         def log(msg):
-            if log_func: log_func(msg)
-            else: print(msg)
+            if log_func: 
+                try:
+                    log_func(msg)
+                except Exception:
+                    pass
+            else: 
+                try:
+                    print(msg)
+                except UnicodeEncodeError:
+                    print(str(msg).encode('ascii', errors='replace').decode('ascii'))
             
         start_time = time.time()
         if progress_callback:
             progress_callback(5, "Koersen ophalen via yfinance (bulk)...", None)
             
+        if not strategies or not any(s in ['LongCall', 'LongPut'] for s in strategies):
+            strategies = ['LongCall', 'LongPut']
+            log("ℹ️ Geen specifieke Long-strategie geselecteerd. Supersnelle scan activeert automatisch LongCall en LongPut.")
+            
         log(f"🚀 Start Supersnelle Scan op {len(symbols)} symbolen...")
         
-        # 1. Fetch stock prices via yfinance bulk download
+        # Helper for Index -> yfinance symbol mapping
+        YF_INDEX_MAP = {
+            'SPX': '^SPX',
+            'NDX': '^NDX',
+            'RUT': '^RUT',
+            'VIX': '^VIX',
+            'DAX': '^GDAXI',
+            'DJI': '^DJI'
+        }
+        def to_yf_sym(s):
+            return YF_INDEX_MAP.get(s.upper(), s)
+
+        # 1. Fetch stock prices via yfinance bulk download & parallel fallback
         log("📊 Koersen ophalen via yfinance (bulk)...")
         symbol_prices = {}
         try:
-            tickers_str = " ".join(symbols)
-            prices_df = yf.download(tickers_str, period="1d", group_by="ticker", progress=False, threads=True, timeout=20)
+            yf_symbols = [to_yf_sym(s) for s in symbols]
+            tickers_str = " ".join(yf_symbols)
+            prices_df = yf.download(tickers_str, period="1d", group_by="ticker", progress=False, threads=True, timeout=25)
             
-            for sym in symbols:
+            if isinstance(prices_df.columns, pd.MultiIndex):
+                lvl0 = prices_df.columns.levels[0]
+                lvl1 = prices_df.columns.levels[1]
+                for sym in symbols:
+                    yf_s = to_yf_sym(sym)
+                    try:
+                        c_series = None
+                        if yf_s in lvl0:
+                            c_series = prices_df[yf_s]['Close'].dropna()
+                        elif 'Close' in lvl0 and yf_s in lvl1:
+                            c_series = prices_df['Close'][yf_s].dropna()
+                        if c_series is not None and not c_series.empty:
+                            symbol_prices[sym] = float(c_series.iloc[-1])
+                    except Exception:
+                        pass
+            elif not prices_df.empty and 'Close' in prices_df.columns:
+                c_series = prices_df['Close'].dropna()
+                if not c_series.empty:
+                    symbol_prices[symbols[0]] = float(c_series.iloc[-1])
+        except Exception as e:
+            log(f"⚠️ yfinance bulk download melding: {e}")
+            
+        # Parallel fallback for missing prices
+        missing_symbols = [s for s in symbols if s not in symbol_prices or symbol_prices[s] <= 0]
+        if missing_symbols:
+            log(f"📡 Ophalen van {len(missing_symbols)} ontbrekende koersen via snelle parallelle fallback...")
+            def fetch_single_price(sym):
                 try:
-                    if len(symbols) == 1:
-                        close_series = prices_df['Close'].dropna()
-                    else:
-                        if sym in prices_df.columns.levels[0]:
-                            close_series = prices_df[sym]['Close'].dropna()
-                        else:
-                            continue
-                            
-                    if not close_series.empty:
-                        symbol_prices[sym] = float(close_series.iloc[-1])
+                    yf_s = to_yf_sym(sym)
+                    t = yf.Ticker(yf_s)
+                    h = t.history(period="1d")
+                    if not h.empty:
+                        return sym, float(h['Close'].iloc[-1])
                 except Exception:
                     pass
-        except Exception as e:
-            log(f"⚠️ yfinance bulk download mislukt: {e}. Terugvallen op TWS...")
-            
-        # TWS Fallback for missing prices (only if 10 or fewer are missing to prevent hangs)
-        missing_symbols = [s for s in symbols if s not in symbol_prices]
-        if missing_symbols and len(missing_symbols) <= 10 and self.ib_client.is_connected():
-            if progress_callback:
-                progress_callback(8, f"Ontbrekende koersen ophalen via TWS ({len(missing_symbols)} stuks)...", None)
-            log(f"📡 {len(missing_symbols)} koersen ontbreken. Ophalen via TWS...")
-            contracts = [Stock(s, 'SMART', 'USD') for s in missing_symbols]
-            tws_prices = self.ib_client.get_market_data_batch(contracts)
-            for sym, price in tws_prices.items():
-                if price > 0:
-                    symbol_prices[sym] = price
-        elif missing_symbols:
-            log(f"⚠️ {len(missing_symbols)} koersen ontbreken en worden overgeslagen om TWS-vertraging te voorkomen.")
-                    
+                return sym, 0.0
+
+            max_workers = min(30, len(missing_symbols))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futs = [executor.submit(fetch_single_price, s) for s in missing_symbols]
+                for fut in concurrent.futures.as_completed(futs):
+                    s, p = fut.result()
+                    if p > 0:
+                        symbol_prices[s] = p
+                        
         log(f"✅ Koersen opgehaald voor {len(symbol_prices)}/{len(symbols)} symbolen.")
-        
+        if not symbol_prices:
+            log("❌ Geen koersen kunnen ophalen.")
+            if progress_callback:
+                progress_callback(100, "Geen koersen opgehaald.", 0)
+            return pd.DataFrame()
+            
         # 2. Get target expirations
         expirations = self.get_target_expirations(min_dte, max_dte)
         if not expirations:
-            log("❌ Geen geschikte expiratie-vrijdagen gevonden binnen de DTE range.")
-            if progress_callback:
-                progress_callback(100, "Geen geschikte expiraties gevonden.", 0)
-            return pd.DataFrame()
-        log(f"📅 Doel-expiratie(s): {', '.join(expirations)}")
+            # Fallback: estimate Friday expirations if range was too narrow
+            today_date = datetime.date.today()
+            for dte in range(max(1, int(min_dte)), int(max_dte) + 60):
+                target_date = today_date + datetime.timedelta(days=dte)
+                if target_date.weekday() == 4:
+                    expirations.append(target_date.strftime('%Y%m%d'))
+                    break
+        log(f"📅 Doel-expiratie(s): {', '.join(expirations) if expirations else 'Automatisch dynamisch per symbool'}")
         
-        # 3. Generate candidate option contracts
-        log("🔧 Option candidates genereren...")
-        candidate_options = []
-        for sym, price in symbol_prices.items():
-            strikes = self.get_candidate_strikes(sym, price)
-            for exp in expirations:
-                for strike in strikes:
-                    if 'LongCall' in strategies:
-                        candidate_options.append(Option(symbol=sym, lastTradeDateOrContractMonth=exp, strike=float(strike), right='C', multiplier='100', exchange='SMART', currency='USD'))
-                    if 'LongPut' in strategies:
-                        candidate_options.append(Option(symbol=sym, lastTradeDateOrContractMonth=exp, strike=float(strike), right='P', multiplier='100', exchange='SMART', currency='USD'))
-                        
-        if not candidate_options:
-            log("⚠️ Geen optiekandidaten gegenereerd.")
-            if progress_callback:
-                progress_callback(100, "Geen optiekandidaten gegenereerd.", 0)
-            return pd.DataFrame()
+        # 3. Option Market Data Retrieval
+        log(f"📡 Optiedata ophalen voor {len(symbol_prices)} symbolen...")
+        if progress_callback:
+            progress_callback(30, "Optie-koersen ophalen...", None)
             
-        # 3. Skip option qualification and request market data directly
-        log(f"📡 Overslaan kwalificatie: direct live prijzen ophalen voor {len(candidate_options)} opties...")
-        qualified_options = candidate_options
-        
-        # 4. Fetch option market prices
         option_data = []
         
-        if self.ib_client.is_connected():
-            chunk_size = 50
-            total_mkt_chunks = math.ceil(len(qualified_options) / chunk_size)
-            
-            try:
-                for idx, i in enumerate(range(0, len(qualified_options), chunk_size)):
-                    chunk = qualified_options[i:i+chunk_size]
-                    tickers = []
-                    for c in chunk:
-                        tickers.append(self.ib_client.ib.reqMktData(c, '', False, False))
-                        
-                    self.ib_client.ib.sleep(1.0)
-                    
-                    for t in tickers:
-                        bid = t.bid if t.bid > 0 else 0.0
-                        ask = t.ask if t.ask > 0 else 0.0
-                        last = t.last if t.last > 0 else 0.0
-                        close = t.close if t.close > 0 else 0.0
-                        
-                        mid = (bid + ask) / 2 if (bid > 0 and ask > 0) else (last if last > 0 else close)
-                        
-                        if mid > 0:
-                            option_data.append({
-                                'conId': t.contract.conId,
-                                'symbol': t.contract.symbol,
-                                'strike': t.contract.strike,
-                                'right': t.contract.right,
-                                'expiry': t.contract.lastTradeDateOrContractMonth,
-                                'bid': bid,
-                                'ask': ask if ask > 0 else mid,
-                                'mid': mid,
-                                'last': last if last > 0 else mid
-                            })
+        # TWS option retrieval if connected and candidate list is reasonably sized
+        if self.ib_client.is_connected() and len(symbol_prices) <= 20 and expirations:
+            candidate_options = []
+            for sym, price in symbol_prices.items():
+                strikes = self.get_candidate_strikes(sym, price)
+                for exp in expirations:
+                    for strike in strikes:
+                        if 'LongCall' in strategies:
+                            candidate_options.append(Option(symbol=sym, lastTradeDateOrContractMonth=exp, strike=float(strike), right='C', multiplier='100', exchange='SMART', currency='USD'))
+                        if 'LongPut' in strategies:
+                            candidate_options.append(Option(symbol=sym, lastTradeDateOrContractMonth=exp, strike=float(strike), right='P', multiplier='100', exchange='SMART', currency='USD'))
                             
-                    for t in tickers:
-                        self.ib_client.ib.cancelMktData(t.contract)
-                        
-                    # Progress & Time estimation
-                    elapsed = time.time() - start_time
-                    chunks_processed = idx + 1
-                    avg_time_per_chunk = elapsed / chunks_processed
-                    remaining_chunks = total_mkt_chunks - chunks_processed
-                    est_remaining = max(1, int(remaining_chunks * avg_time_per_chunk))
+            if candidate_options:
+                chunk_size = 50
+                try:
+                    for i in range(0, len(candidate_options), chunk_size):
+                        chunk = candidate_options[i:i+chunk_size]
+                        tickers = [self.ib_client.ib.reqMktData(c, '', False, False) for c in chunk]
+                        self.ib_client.ib.sleep(0.8)
+                        for t in tickers:
+                            bid = t.bid if t.bid > 0 else 0.0
+                            ask = t.ask if t.ask > 0 else 0.0
+                            last = t.last if t.last > 0 else 0.0
+                            mid = (bid + ask) / 2 if (bid > 0 and ask > 0) else (last if last > 0 else t.close)
+                            if mid > 0:
+                                option_data.append({
+                                    'conId': t.contract.conId,
+                                    'symbol': t.contract.symbol,
+                                    'strike': t.contract.strike,
+                                    'right': t.contract.right,
+                                    'expiry': t.contract.lastTradeDateOrContractMonth,
+                                    'bid': bid, 'ask': ask if ask > 0 else mid, 'mid': mid, 'last': last if last > 0 else mid
+                                })
+                            self.ib_client.ib.cancelMktData(t.contract)
+                except Exception as e:
+                    log(f"⚠️ TWS optiedata ophalen afgebroken: {e}")
                     
-                    pct = 10 + int(85 * (idx + 1) / total_mkt_chunks)
-                    if progress_callback:
-                        msg = f"Live marktprijzen ophalen: chunk {idx + 1}/{total_mkt_chunks}..."
-                        progress_callback(pct, msg, est_remaining)
-            except Exception as e:
-                log(f"⚠️ Fout bij ophalen TWS marktdata: {e}. Terugvallen op yfinance...")
-        else:
-            log("⚠️ TWS niet verbonden. Terugvallen op yfinance optiedata fallback...")
-                
-        # Check if we got very little or no market data from TWS, and trigger yfinance fallback
-        if len(option_data) < len(qualified_options) * 0.1:
-            log("⚠️ Weinig of geen marktdata van TWS. Starten yfinance optiedata fallback...")
-            if progress_callback:
-                progress_callback(90, "Optie-koersen ophalen via yfinance...", None)
+        # 4. yfinance parallel option data retrieval (super fast & accurate ATM matching)
+        if len(option_data) < len(symbol_prices) * 0.5:
+            log("⚡ Snel parallel optie-ketens analyseren via yfinance (ATM matching)...")
+            today_date = datetime.date.today()
             
-            import concurrent.futures
-            import yfinance as yf
-            
-            # Helper to fetch options for a single symbol
             def fetch_yf_option_data(sym):
                 rows = []
                 s_price = symbol_prices.get(sym, 0.0)
                 if s_price <= 0:
                     return rows
                 try:
-                    ticker = yf.Ticker(sym)
-                    for exp in expirations:
-                        yf_exp = f"{exp[:4]}-{exp[4:6]}-{exp[6:8]}"
+                    yf_s = to_yf_sym(sym)
+                    ticker = yf.Ticker(yf_s)
+                    available_exps = list(ticker.options) if ticker.options else []
+                    if not available_exps:
+                        return rows
+                        
+                    target_exps = []
+                    for exp_str in available_exps:
                         try:
-                            chain = ticker.option_chain(yf_exp)
-                            strikes_to_find = self.get_candidate_strikes(sym, s_price)
+                            exp_date = datetime.datetime.strptime(exp_str, '%Y-%m-%d').date()
+                            dte = (exp_date - today_date).days
+                            if min_dte <= dte <= max_dte:
+                                target_exps.append((exp_str, dte))
+                        except Exception:
+                            pass
                             
-                            for strike in strikes_to_find:
-                                strike_round = round(float(strike), 4)
+                    if not target_exps and available_exps:
+                        mid_target_dte = (min_dte + max_dte) / 2
+                        best_exp, best_diff, best_dte = None, 9999, 30
+                        for exp_str in available_exps:
+                            try:
+                                exp_date = datetime.datetime.strptime(exp_str, '%Y-%m-%d').date()
+                                dte = (exp_date - today_date).days
+                                if dte > 0:
+                                    diff = abs(dte - mid_target_dte)
+                                    if diff < best_diff:
+                                        best_diff, best_exp, best_dte = diff, exp_str, dte
+                            except Exception:
+                                pass
+                        if best_exp:
+                            target_exps.append((best_exp, best_dte))
+                            
+                    for exp_str, dte in target_exps[:1]:
+                        try:
+                            chain = ticker.option_chain(exp_str)
+                            exp_clean = exp_str.replace('-', '')
+                            
+                            # True ATM LongCall matching
+                            if 'LongCall' in strategies and not chain.calls.empty:
+                                calls = chain.calls
+                                idx = (calls['strike'] - s_price).abs().idxmin()
+                                row = calls.loc[idx]
+                                strike_val = round(float(row['strike']), 4)
+                                bid = float(row.get('bid', 0.0))
+                                ask = float(row.get('ask', 0.0))
+                                last = float(row.get('lastPrice', 0.0))
+                                intr = max(0.0, s_price - strike_val)
+                                min_valid = max(0.0, intr - 0.50)
                                 
-                                # Find call
-                                if 'LongCall' in strategies:
-                                    c_row = chain.calls[abs(chain.calls['strike'] - strike_round) < 0.01]
-                                    if not c_row.empty:
-                                        row = c_row.iloc[0]
-                                        bid = float(row.get('bid', 0.0))
-                                        ask = float(row.get('ask', 0.0))
-                                        last = float(row.get('lastPrice', 0.0))
-                                        intr = max(0.0, s_price - strike_round)
-                                        min_valid = max(0.0, intr - 0.50)
-                                        
-                                        if bid > 0 and ask > 0 and ((bid + ask) / 2) >= min_valid:
-                                            mid = (bid + ask) / 2
-                                        elif last >= min_valid and last > 0:
-                                            mid = last
-                                        else:
-                                            mid = max(min_valid, BjerksundStensland2002.price_american_option('C', s_price, strike_round, 30/365.0, 0.04, 0.015, 0.2))
-                                            
-                                        if mid > 0:
-                                            rows.append({
-                                                'conId': 0,
-                                                'symbol': sym,
-                                                'strike': strike_round,
-                                                'right': 'C',
-                                                'expiry': exp,
-                                                'bid': bid if bid >= min_valid else mid,
-                                                'ask': ask if ask >= min_valid else mid,
-                                                'mid': mid,
-                                                'last': mid
-                                            })
-                                            
-                                # Find put
-                                if 'LongPut' in strategies:
-                                    p_row = chain.puts[abs(chain.puts['strike'] - strike_round) < 0.01]
-                                    if not p_row.empty:
-                                        row = p_row.iloc[0]
-                                        bid = float(row.get('bid', 0.0))
-                                        ask = float(row.get('ask', 0.0))
-                                        last = float(row.get('lastPrice', 0.0))
-                                        intr = max(0.0, strike_round - s_price)
-                                        min_valid = max(0.0, intr - 0.50)
-                                        
-                                        if bid > 0 and ask > 0 and ((bid + ask) / 2) >= min_valid:
-                                            mid = (bid + ask) / 2
-                                        elif last >= min_valid and last > 0:
-                                            mid = last
-                                        else:
-                                            mid = max(min_valid, BjerksundStensland2002.price_american_option('P', s_price, strike_round, 30/365.0, 0.04, 0.015, 0.2))
-                                            
-                                        if mid > 0:
-                                            rows.append({
-                                                'conId': 0,
-                                                'symbol': sym,
-                                                'strike': strike_round,
-                                                'right': 'P',
-                                                'expiry': exp,
-                                                'bid': bid if bid >= min_valid else mid,
-                                                'ask': ask if ask >= min_valid else mid,
-                                                'mid': mid,
-                                                'last': mid
-                                            })
+                                mid = (bid + ask) / 2 if (bid > 0 and ask > 0 and ((bid + ask)/2) >= min_valid) else (last if last >= min_valid and last > 0 else max(min_valid, 0.05))
+                                bid_val = bid if bid >= min_valid and bid > 0 else mid
+                                ask_val = ask if ask >= min_valid and ask > 0 else mid
+                                
+                                rows.append({
+                                    'conId': 0, 'symbol': sym, 'strike': strike_val, 'right': 'C',
+                                    'expiry': exp_clean, 'bid': bid_val, 'ask': ask_val, 'mid': mid, 'last': mid
+                                })
+                                
+                            # True ATM LongPut matching
+                            if 'LongPut' in strategies and not chain.puts.empty:
+                                puts = chain.puts
+                                idx = (puts['strike'] - s_price).abs().idxmin()
+                                row = puts.loc[idx]
+                                strike_val = round(float(row['strike']), 4)
+                                bid = float(row.get('bid', 0.0))
+                                ask = float(row.get('ask', 0.0))
+                                last = float(row.get('lastPrice', 0.0))
+                                intr = max(0.0, strike_val - s_price)
+                                min_valid = max(0.0, intr - 0.50)
+                                
+                                mid = (bid + ask) / 2 if (bid > 0 and ask > 0 and ((bid + ask)/2) >= min_valid) else (last if last >= min_valid and last > 0 else max(min_valid, 0.05))
+                                bid_val = bid if bid >= min_valid and bid > 0 else mid
+                                ask_val = ask if ask >= min_valid and ask > 0 else mid
+                                
+                                rows.append({
+                                    'conId': 0, 'symbol': sym, 'strike': strike_val, 'right': 'P',
+                                    'expiry': exp_clean, 'bid': bid_val, 'ask': ask_val, 'mid': mid, 'last': mid
+                                })
                         except Exception:
                             pass
                 except Exception:
                     pass
                 return rows
 
-            # Fetch in parallel
             symbols_to_fetch = list(symbol_prices.keys())
             yf_results = []
-            max_workers = min(30, len(symbols_to_fetch))
+            max_workers = min(35, len(symbols_to_fetch))
             if max_workers > 0:
                 with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                     futures = {executor.submit(fetch_yf_option_data, s): s for s in symbols_to_fetch}
                     for fut in concurrent.futures.as_completed(futures):
                         yf_results.extend(fut.result())
-            
-            # Merge results
+                        
             existing_keys = set((opt['symbol'], opt['right'], opt['expiry'], round(opt['strike'], 4)) for opt in option_data)
             for opt in yf_results:
                 key = (opt['symbol'], opt['right'], opt['expiry'], round(opt['strike'], 4))
                 if key not in existing_keys:
                     option_data.append(opt)
                     existing_keys.add(key)
+                    
+            log(f"✅ Optiedata ophalen voltooid. Totaal {len(option_data)} ATM optie-contracten geanalyseerd.")
             
-            log(f"✅ yfinance optiedata fallback voltooid. Totaal {len(option_data)} opties na fallback.")
-
         if not option_data:
             log("❌ Geen marktdata kunnen ophalen voor opties.")
             if progress_callback:
                 progress_callback(100, "Geen marktdata opgehaald.", 0)
             return pd.DataFrame()
             
-        log(f"✅ Marktdata opgehaald voor {len(option_data)} opties.")
-        
-        # 5. Group by (symbol, right, expiry) and keep only the ATM option (closest to stock price)
+        # 5. Keep best ATM option per (symbol, right, expiry)
         grouped = {}
         for opt in option_data:
             sym = opt['symbol']
@@ -2157,10 +2551,13 @@ class SpreadScanner:
             ask = opt['ask']
             last = opt['last']
             
-            target_date = pd.to_datetime(exp)
-            now_date = pd.Timestamp.now().normalize()
-            dte = (target_date - now_date).days
-            
+            try:
+                target_date = pd.to_datetime(exp)
+                now_date = pd.Timestamp.now().normalize()
+                dte = (target_date - now_date).days
+            except Exception:
+                dte = 30
+                
             p = koopadvies_p
             if r == 'C':
                 target_price = s_price * (1 + p)
@@ -2209,3 +2606,366 @@ class SpreadScanner:
         if progress_callback:
             progress_callback(100, "Supersnelle scan voltooid!", 0)
         return df_results
+
+
+class PortfolioAnalyzer:
+    """
+    Analyzes open portfolio positions (Spreads & Single Leg Options) 
+    using technical indicators and option metrics to recommend optimal loss-mitigation 
+    and profit-locking exit strategies.
+    """
+    def __init__(self, ib_client=None):
+        self.ib_client = ib_client
+
+    @staticmethod
+    def calculate_keltner_channels(df, period=20, mult=2.0, atr_period=10):
+        if df is None or df.empty or 'close' not in df.columns or len(df) < 5:
+            return pd.DataFrame()
+        try:
+            df_copy = df.copy()
+            df_copy['prev_close'] = df_copy['close'].shift(1)
+            tr1 = df_copy['high'] - df_copy['low']
+            tr2 = (df_copy['high'] - df_copy['prev_close']).abs()
+            tr3 = (df_copy['low'] - df_copy['prev_close']).abs()
+            tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+            atr = tr.rolling(window=min(atr_period, len(df_copy))).mean().fillna(0)
+            
+            middle = df_copy['close'].ewm(span=min(period, len(df_copy)), adjust=False).mean()
+            upper = middle + mult * atr
+            lower = middle - mult * atr
+            return pd.DataFrame({'middle': middle, 'upper': upper, 'lower': lower, 'atr': atr}, index=df.index)
+        except Exception:
+            return pd.DataFrame()
+
+    @staticmethod
+    def calculate_coral_trend(df, period=15):
+        if df is None or df.empty or 'close' not in df.columns or len(df) < 5:
+            return pd.Series(dtype=float)
+        try:
+            c = df['close']
+            p = min(period, len(df))
+            i1 = c.ewm(span=p, adjust=False).mean()
+            i2 = i1.ewm(span=p, adjust=False).mean()
+            return 2 * i1 - i2
+        except Exception:
+            return pd.Series(dtype=float)
+
+    @staticmethod
+    def calculate_cci(df, period=20):
+        if df is None or df.empty or 'close' not in df.columns or len(df) < 5:
+            return pd.Series(dtype=float)
+        try:
+            p = min(period, len(df))
+            tp = (df['high'] + df['low'] + df['close']) / 3.0
+            sma_tp = tp.rolling(window=p).mean()
+            mad = tp.rolling(window=p).apply(lambda x: np.mean(np.abs(x - np.mean(x))), raw=True)
+            cci = (tp - sma_tp) / (0.015 * mad.replace(0, np.nan))
+            return cci.fillna(0)
+        except Exception:
+            return pd.Series(dtype=float)
+
+    @staticmethod
+    def calculate_macd(df, fast=12, slow=26, signal_span=9):
+        if df is None or df.empty or 'close' not in df.columns or len(df) < 5:
+            return pd.DataFrame()
+        try:
+            ema_fast = df['close'].ewm(span=min(fast, len(df)), adjust=False).mean()
+            ema_slow = df['close'].ewm(span=min(slow, len(df)), adjust=False).mean()
+            macd_line = ema_fast - ema_slow
+            signal_line = macd_line.ewm(span=min(signal_span, len(df)), adjust=False).mean()
+            hist = macd_line - signal_line
+            return pd.DataFrame({'macd': macd_line, 'signal': signal_line, 'hist': hist}, index=df.index)
+        except Exception:
+            return pd.DataFrame()
+
+    def evaluate_position_health(self, pos, hist_df=None):
+        """
+        Evaluates a single portfolio position (Spread or Single Leg Option)
+        and returns a detailed health assessment dict.
+        """
+        sym = pos.get('symbol', 'N/A')
+        strat = pos.get('strategy', 'Spread')
+        expiry = str(pos.get('expiry', 'N/A'))
+        dte = pos.get('dte', 30)
+        pnl_usd = pos.get('unrealized_pnl', 0.0)
+        pnl_pct = pos.get('pnl_pct', 0.0)
+        mkt_price = pos.get('market_price', 0.0)
+        entry_price = pos.get('entry_price', 0.0)
+        sold_strike = pos.get('sold_strike', 0.0)
+        bought_strike = pos.get('bought_strike', 0.0)
+        underlying_p = pos.get('underlying_price', 0.0)
+
+        # Technical Indicators on hist_df
+        ema8_val, ema20_val = 0.0, 0.0
+        ema_bullish = False
+        keltner_lower, keltner_upper = 0.0, 0.0
+        keltner_break_down = False
+        coral_red = False
+        stoch_k_val = 50.0
+        stoch_oversold = False
+        cci_val = 0.0
+        cci_oversold = False
+
+        if hist_df is not None and not hist_df.empty and len(hist_df) >= 5:
+            # 1. EMA 8 vs 20
+            ema8 = hist_df['close'].ewm(span=min(8, len(hist_df)), adjust=False).mean()
+            ema20 = hist_df['close'].ewm(span=min(20, len(hist_df)), adjust=False).mean()
+            if len(ema8) > 0 and len(ema20) > 0:
+                ema8_val, ema20_val = float(ema8.iloc[-1]), float(ema20.iloc[-1])
+                ema_bullish = ema8_val >= ema20_val
+
+            # 2. Keltner
+            kelt = self.calculate_keltner_channels(hist_df)
+            if not kelt.empty:
+                keltner_lower = float(kelt['lower'].iloc[-1])
+                keltner_upper = float(kelt['upper'].iloc[-1])
+                if underlying_p > 0 and keltner_lower > 0:
+                    keltner_break_down = underlying_p < keltner_lower
+
+            # 3. Coral
+            coral = self.calculate_coral_trend(hist_df)
+            if len(coral) >= 2:
+                coral_red = float(coral.iloc[-1]) < float(coral.iloc[-2])
+
+            # 4. StochRSI
+            stoch = SpreadScanner(None).calculate_stoch_rsi(hist_df)
+            if not stoch.empty and 'k' in stoch.columns:
+                stoch_k_val = float(stoch['k'].iloc[-1])
+                stoch_oversold = stoch_k_val < 25
+
+            # 5. CCI
+            cci = self.calculate_cci(hist_df)
+            if len(cci) > 0:
+                cci_val = float(cci.iloc[-1])
+                cci_oversold = cci_val < -100
+
+            # 6. MACD
+            macd_df = self.calculate_macd(hist_df)
+
+        # Build decision logic
+        is_bullish_strat = strat in ['BullPut', 'BullCall', 'LongCall', 'ShortPut']
+        is_bearish_strat = strat in ['BearCall', 'BearPut', 'LongPut', 'ShortCall']
+
+        # Calculate OmniTrader BarToBar Advanced Exit Plan (Template STPB2BADV2CT)
+        omni_res = self.calculate_omnitrader_b2b_exit_plan(
+            hist_df, 
+            entry_price=underlying_p, 
+            signal_type="Long" if is_bullish_strat else "Short",
+            init_mult=7.0,
+            atr_periods=7,
+            p_factor=0.4,
+            pct_close_up=0.25,
+            pct_close_down=0.25,
+            use_adr=True,
+            marketstate_active=True
+        )
+
+        sold_strike_threatened = False
+        if sold_strike > 0 and underlying_p > 0:
+            if is_bullish_strat and underlying_p <= sold_strike * 1.015:
+                sold_strike_threatened = True
+            elif is_bearish_strat and underlying_p >= sold_strike * 0.985:
+                sold_strike_threatened = True
+
+        action_code = "HANDHAVEN"
+        action_title = "Handhaven (Positie Gezond)"
+        old_to_new = f"Lopende positie ({expiry})" + " → " + "Handhaven (Geen actie vereist)"
+        reasoning = f"Positie ligt in veilige zone (DTE={dte}d). Trend is stabiel."
+        result_desc = "Laat het tijdswaardeverval (Theta) in jouw voordeel werken."
+        urgency = "LOW"
+
+        # Check OmniTrader Exit Trigger condition
+        if omni_res['exit_signal']:
+            action_code = "TIJDIG_SLUITEN"
+            action_title = "Direct Sluiten (OmniTrader BarToBar Stop)"
+            old_to_new = "Openstaande Positie Handhaven" + " → " + f"Direct Sluiten op Marktprijs (OmniTrader Stop op ${omni_res['stop_price']:.2f})"
+            reasoning = f"OmniTrader BarToBar stopniveau van ${omni_res['stop_price']:.2f} is doorbroken met Coral Trend = {omni_res['marketstate']}."
+            result_desc = "Volgt de OmniTrader BarToBar dynamische risicobewaking."
+            urgency = "CRITICAL"
+
+        # Check standard conditions
+        elif pnl_pct >= 60.0 or (pnl_pct >= 40.0 and dte <= 7):
+            action_code = "WINST_BORGEN"
+            action_title = "Winst Borgen & Positie Sluiten"
+            old_to_new = f"Lopende Winstpositie ({pnl_pct:.0f}% winst)" + " → " + "Winst Borgen & Positie Sluiten op Marktprijs"
+            reasoning = f"Ruim {pnl_pct:.0f}% winst behaald of DTE ({dte}d) is kort. Voorkom expiratierisico."
+            result_desc = f"Borg de winst van ${pnl_usd:.2f} direct en maak kapitaal vrij."
+            urgency = "HIGH"
+
+        elif is_bullish_strat and (coral_red and not ema_bullish and (keltner_break_down or cci_val < -150 or pnl_pct < -35.0)):
+            action_code = "TIJDIG_SLUITEN"
+            action_title = "Direct Sluiten (Strikte Stop-Loss)"
+            old_to_new = "Openstaande Positie Handhaven" + " → " + "Direct Sluiten op Marktprijs (Stop-Loss)"
+            reasoning = f"Sterke neerwaartse trendbreuk (Coral Rood, EMA8 < 20, CCI={cci_val:.0f}). Risk op max verlies."
+            result_desc = "Beperkt verlies en voorkomt 100% verlies van inleg/marge op expiratie."
+            urgency = "CRITICAL"
+
+        elif is_bearish_strat and (not coral_red and ema_bullish and (cci_val > 150 or pnl_pct < -35.0)):
+            action_code = "TIJDIG_SLUITEN"
+            action_title = "Direct Sluiten (Strikte Stop-Loss)"
+            old_to_new = "Openstaande Positie Handhaven" + " → " + "Direct Sluiten op Marktprijs (Stop-Loss)"
+            reasoning = f"Sterke opwaartse trendbreuk tegen Bear-positie in (EMA8 > 20, CCI={cci_val:.0f})."
+            result_desc = "Beperkt verlies en voorkomt max verlies bij verdere uitbraak omhoog."
+            urgency = "CRITICAL"
+
+        elif dte <= 21 or sold_strike_threatened or pnl_pct < -15.0:
+            if stoch_oversold or cci_oversold or dte <= 21:
+                action_code = "DOORROLLEN_CREDIT"
+                action_title = "Doorrollen naar Volgende Maand (+30 DTE voor Credit)"
+                old_to_new = f"Expiratie {expiry} ({dte} DTE)" + " → " + f"Doorrollen naar volgende maand (+30 DTE) voor Net Credit"
+                reasoning = f"Positie onder druk (DTE={dte}d, StochRSI={stoch_k_val:.0f}). Oversold dip signaleert herstelkans."
+                result_desc = "Wint 30 dagen extra hersteltijd en verlaagt de Break-Even uitoefenprijs door extra premie."
+                urgency = "MEDIUM"
+            else:
+                action_code = "OMZETTEN_IRON_CONDOR"
+                action_title = "Omzetten naar Iron Condor (Verkoop Onbedreigde Zijde)"
+                old_to_new = f"{strat}" + " → " + "Iron Condor (Verkoop tegendraadse spread voor extra credit)"
+                reasoning = "Zijwaartse markt. Verkoop de onbedreigde bovenzijde/onderzijde voor extra premie."
+                result_desc = "Ontvang extra premie zonder het maximale risico op de positie te verhogen."
+                urgency = "MEDIUM"
+
+        alternatives = [
+            f"[Aanbevolen] {action_title}",
+            "Direct Sluiten op Marktprijs (Stop-Loss)",
+            "Doorrollen naar Volgende Maand (+30 DTE voor Credit)",
+            "Omzetten naar Iron Condor (Verkoop tegendraadse zijde)",
+            "Winst Borgen & Positie Sluiten",
+            "Handhaven (Geen Actie)"
+        ]
+
+        return {
+            'symbol': sym,
+            'strategy': strat,
+            'expiry': expiry,
+            'dte': dte,
+            'pnl_usd': pnl_usd,
+            'pnl_pct': pnl_pct,
+            'market_price': mkt_price,
+            'entry_price': entry_price,
+            'sold_strike': sold_strike,
+            'bought_strike': bought_strike,
+            'underlying_price': underlying_p,
+            'action_code': action_code,
+            'action_title': action_title,
+            'old_to_new': old_to_new,
+            'reasoning': reasoning,
+            'result_desc': result_desc,
+            'urgency': urgency,
+            'alternatives': alternatives,
+            'omnitrader_b2b': omni_res,
+            'technical_summary': f"OmniStop=${omni_res['stop_price']:.2f}, Coral={'Bull' if omni_res['marketstate']==1 else 'Bear'}, EMA8/20={'Bull' if ema_bullish else 'Bear'}, StochRSI={stoch_k_val:.1f}"
+        }
+
+    def calculate_omnitrader_b2b_exit_plan(self, df_hist, entry_price, signal_type="Long", init_mult=7.0, atr_periods=7, p_factor=0.4, pct_close_up=0.25, pct_close_down=0.25, use_adr=True, marketstate_active=True, trade_bars_back=30):
+        """
+        OmniTrader BarToBarAdvanced Versie2 gecombineerd met indCORALtrend.
+        Berekent de dynamische trapsgewijze stop-drempel (Drempel / ExitLevel)
+        vanaf het instapmoment (trade_bars_back) van de actieve trade.
+        """
+        if df_hist is None or df_hist.empty or len(df_hist) < 3:
+            return {
+                'stop_price': round(entry_price * 0.985, 2) if signal_type == "Long" else round(entry_price * 1.015, 2),
+                'exit_signal': False,
+                'marketstate': 1,
+                'drempel_history': [],
+                'marketstate_history': [],
+                'latest_close': entry_price
+            }
+        
+        df = df_hist.copy().reset_index(drop=True)
+        df.columns = [c.lower() for c in df.columns]
+        
+        # Calculate Volatility X (ATR vs ADR/WMA)
+        if use_adr:
+            hl_diff = df['high'] - df['low']
+            df['x_vol'] = hl_diff.ewm(span=atr_periods, adjust=False).mean()
+        else:
+            tr1 = df['high'] - df['low']
+            tr2 = (df['high'] - df['close'].shift(1)).abs()
+            tr3 = (df['low'] - df['close'].shift(1)).abs()
+            tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+            df['x_vol'] = tr.rolling(window=min(atr_periods, len(df)), min_periods=1).mean()
+
+        # Calculate Coral Trend for MarketState
+        coral = self.calculate_coral_trend(df)
+        
+        drempel_list = [None] * len(df)
+        marketstate_list = [1] * len(df)
+        
+        # Bepaal start_bar van de actieve trade (SignalStartBar in OmniTrader)
+        tb_back = max(5, min(len(df) - 1, trade_bars_back))
+        start_bar = len(df) - tb_back
+
+        drempel = 0.0
+        for i in range(len(df)):
+            # Marketstate (Coral Trend Check) voor alle bars
+            mstate = 1
+            if marketstate_active and len(coral) > i:
+                if i > 0 and coral.iloc[i] > coral.iloc[i-1]:
+                    mstate = 1
+                else:
+                    mstate = 0
+            marketstate_list[i] = mstate
+
+            if i < start_bar:
+                continue
+
+            c_curr = float(df['close'].iloc[i])
+            c_prev = float(df['close'].iloc[i-1]) if i > 0 else c_curr
+            low_curr = float(df['low'].iloc[i])
+            vol = float(df['x_vol'].iloc[i])
+
+            # 1. Initialiseer startwaarde van de stop op start_bar (Trade Entry Bar)
+            if i == start_bar or drempel <= 0:
+                ref_p = entry_price if (entry_price > 0 and abs(entry_price - c_curr)/c_curr < 0.3) else c_prev
+                if signal_type == "Long":
+                    drempel = ref_p - (init_mult * vol)
+                else:
+                    drempel = ref_p + (init_mult * vol)
+            else:
+                # 2. Bar-by-bar Trailing updates tijdens de trade
+                if signal_type == "Long":
+                    if c_curr >= c_prev:
+                        drempel += ((c_curr - c_prev) * p_factor) + (pct_close_up / 100.0 * c_curr)
+                    else:
+                        drempel += (pct_close_down / 100.0 * c_curr)
+                else: # Short
+                    if c_curr >= c_prev:
+                        drempel -= ((c_curr - c_prev) * p_factor) - (pct_close_up / 100.0 * c_curr)
+                    else:
+                        drempel -= (pct_close_down / 100.0 * c_curr)
+
+            # 3. Low 3-times above Entry Price: Stop increased faster to reduce risk
+            if i >= start_bar + 2 and entry_price > 0:
+                low1 = float(df['low'].iloc[i-1])
+                low2 = float(df['low'].iloc[i-2])
+                if low_curr > entry_price and low1 > entry_price and low2 > entry_price:
+                    alt_drempel = min(low_curr, low1, low2)
+                    if alt_drempel > drempel:
+                        drempel = max(entry_price * 0.985, drempel)
+
+            drempel_list[i] = round(drempel, 2)
+
+        current_drempel = drempel_list[-1]
+        prev_drempel_val = drempel_list[-2] if len(drempel_list) >= 2 else current_drempel
+        curr_close = float(df['close'].iloc[-1])
+        curr_high = float(df['high'].iloc[-1])
+        curr_mstate = marketstate_list[-1]
+
+        exit_triggered = False
+        if signal_type == "Long":
+            if curr_close < prev_drempel_val and prev_drempel_val > 0 and curr_mstate == 0:
+                exit_triggered = True
+        else: # Short
+            if curr_high > prev_drempel_val and prev_drempel_val > 0:
+                exit_triggered = True
+
+        return {
+            'stop_price': current_drempel,
+            'exit_signal': exit_triggered,
+            'marketstate': curr_mstate,
+            'drempel_history': drempel_list,
+            'marketstate_history': marketstate_list,
+            'latest_close': curr_close
+        }
+

@@ -21,7 +21,7 @@ except RuntimeError:
 
 from ib_insync import IB, Stock, Index, Option # Explicit import here
 from ib_client import IBClient
-from logic import SpreadScanner
+from logic import SpreadScanner, PortfolioAnalyzer
 
 # Page config
 st.set_page_config(page_title="Spread Selectie Tool", layout="wide")
@@ -49,6 +49,373 @@ def update_price_dashboard():
         price_dashboard.info("Dashboard wordt gevuld tijdens de scan...")
 
 update_price_dashboard()
+
+def create_omnitrader_plotly_chart(df_hist, omni_info, symbol, entry_price, target_price=None, stop_price=None):
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+    
+    if df_hist is None or df_hist.empty:
+        return None
+        
+    df = df_hist.copy().reset_index(drop=True)
+    df.columns = [c.lower() for c in df.columns]
+    
+    if 'date' in df.columns:
+        date_col = df['date']
+    else:
+        date_col = pd.Series(df.index)
+    
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.82, 0.18], vertical_spacing=0.04)
+    
+    # 1. Candlesticks
+    fig.add_trace(go.Candlestick(
+        x=date_col, open=df['open'], high=df['high'], low=df['low'], close=df['close'],
+        name=f'{symbol} Koers',
+        increasing_line_color='#26a69a', decreasing_line_color='#ef5350'
+    ), row=1, col=1)
+    
+    # 2a. Entry Price Horizontal Line (SteelBlue)
+    if entry_price > 0:
+        fig.add_trace(go.Scatter(
+            x=[date_col.iloc[0], date_col.iloc[-1]],
+            y=[entry_price, entry_price],
+            mode='lines',
+            line=dict(color='SteelBlue', width=2),
+            name=f'Entry Price (${entry_price:.2f})'
+        ), row=1, col=1)
+
+    # 2b. Handmatige Winstdoel Koers Line (Groen Gestreept)
+    if target_price and target_price > 0:
+        fig.add_trace(go.Scatter(
+            x=[date_col.iloc[0], date_col.iloc[-1]],
+            y=[target_price, target_price],
+            mode='lines',
+            line=dict(color='#00e676', width=2, dash='dash'),
+            name=f'Winstdoel Target (${target_price:.2f})'
+        ), row=1, col=1)
+
+    # 2c. Handmatige Stoploss Koers Line (Rood Gestreept)
+    if stop_price and stop_price > 0:
+        fig.add_trace(go.Scatter(
+            x=[date_col.iloc[0], date_col.iloc[-1]],
+            y=[stop_price, stop_price],
+            mode='lines',
+            line=dict(color='#ff1744', width=2, dash='dash'),
+            name=f'Handmatige Stoploss (${stop_price:.2f})'
+        ), row=1, col=1)
+        
+    # 3. Trapsgewijze Stoplijn (Stepped Line shape='vh')
+    d_hist = omni_info.get('drempel_history', [])
+    if d_hist and len(d_hist) == len(df):
+        fig.add_trace(go.Scatter(
+            x=date_col, y=d_hist, mode='lines',
+            line=dict(color='#00bfff', width=2.5, shape='vh'),
+            name='OmniTrader Trapsgewijze Stop (Trailing Stop)'
+        ), row=1, col=1)
+
+    # 4. MarketState Bar at bottom (MediumSeaGreen = Bull, Orange = Bear)
+    mstate_list = omni_info.get('marketstate_history', [omni_info.get('marketstate', 1)] * len(df))
+    ms_colors = ['MediumSeaGreen' if m == 1 else 'Orange' for m in mstate_list]
+    fig.add_trace(go.Bar(
+        x=date_col,
+        y=[1] * len(df),
+        marker_color=ms_colors,
+        name='MarketState (Coral Trend)'
+    ), row=2, col=1)
+    
+    fig.update_layout(
+        title=f"🛡️ OmniTrader BarToBar Advanced Grafiek: {symbol}",
+        xaxis_rangeslider_visible=False,
+        template="plotly_dark",
+        height=480,
+        margin=dict(l=20, r=20, t=40, b=20),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+    return fig
+
+def run_portfolio_check_action(tws_host, tws_port):
+    import random
+    client_id = random.randint(10000, 99999)
+    ib_p = IBClient()
+    success, msg = ib_p.connect(tws_host, tws_port, client_id)
+    if not success:
+        st.sidebar.error(f"Kan geen verbinding maken met TWS: {msg}")
+        return
+    
+    with st.spinner("🔍 Bezig met ophalen en analyseren van TWS portfolio posities..."):
+        positions = ib_p.get_account_portfolio_spreads()
+        analyzer = PortfolioAnalyzer(ib_p)
+        
+        evaluations = []
+        for pos in positions:
+            sym = pos['symbol']
+            hist_df = pd.DataFrame()
+            try:
+                hist_df = ib_p.get_historical_data(Stock(symbol=sym, exchange='SMART', currency='USD'), duration='3 M', bar_size='1 day')
+            except Exception:
+                hist_df = pd.DataFrame()
+
+            # yfinance Fallback if TWS returns empty
+            if hist_df is None or hist_df.empty:
+                try:
+                    yf_t = yf.Ticker(sym)
+                    yf_h = yf_t.history(period="3m")
+                    if not yf_h.empty:
+                        hist_df = yf_h.reset_index()
+                        hist_df.rename(columns={'Date': 'date', 'Open': 'open', 'High': 'high', 'Low': 'low', 'Close': 'close', 'Volume': 'volume'}, inplace=True)
+                except Exception:
+                    hist_df = pd.DataFrame()
+                
+            eval_res = analyzer.evaluate_position_health(pos, hist_df)
+            eval_res['pos_data'] = pos
+            eval_res['hist_df'] = hist_df
+            evaluations.append(eval_res)
+            
+        st.session_state['portfolio_evaluations'] = evaluations
+        st.session_state['portfolio_checked_time'] = datetime.datetime.now().strftime("%H:%M:%S")
+        ib_p.disconnect()
+        st.sidebar.success(f"✅ Portfolio gecontroleerd ({len(evaluations)} posities) om {st.session_state['portfolio_checked_time']}!")
+
+
+def render_portfolio_management_dashboard(tws_host, tws_port):
+    st.markdown("## 🛡️ Portfolio Bewaking & Geautomatiseerd Verliesbeheer")
+    st.caption("Controleert live TWS posities en berekent indicator-gestuurde verliesbeperking en winstborging voor spreads én losse opties.")
+
+    col_cp1, col_cp2 = st.columns([3, 1])
+    with col_cp1:
+        if st.button("🔍 Voer Live Portfolio Check Uit", type="primary", key="btn_run_port_check"):
+            run_portfolio_check_action(tws_host, tws_port)
+            st.rerun()
+    with col_cp2:
+        if 'portfolio_checked_time' in st.session_state:
+            st.caption(f"Laatste check: {st.session_state['portfolio_checked_time']}")
+
+    evaluations = st.session_state.get('portfolio_evaluations', [])
+    if not evaluations:
+        if 'portfolio_checked_time' in st.session_state:
+            st.warning("⚠️ **0 Openstaande Optieposities Gevonden**: De controle is uitgevoerd om " + st.session_state['portfolio_checked_time'] + ", maar er zijn momenteel geen actieve optieposities (spreads of losse opties) in jouw verbonden TWS account.\n\n"
+                       "**Tips als je wél openstaande optieposities in TWS hebt staan:**\n"
+                       "1. Controleer of de juiste TWS account is verbonden in de zijbalk (Paper Trading vs Real Trading op poort 7497 / 7496).\n"
+                       "2. Controleer in TWS of de posities daadwerkelijk opties zijn (`OPT` / `FOP`) en niet enkel aandelen (`STK`).")
+        else:
+            st.info("ℹ️ Klik op **'🔍 Voer Live Portfolio Check Uit'** (of de knop in de zijbalk) om jouw TWS posities en risico-status in te laden.")
+        return
+
+    n_tot = len(evaluations)
+    action_evals = [e for e in evaluations if e['action_code'] != 'HANDHAVEN']
+    n_action = len(action_evals)
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Totaal Open Posities", n_tot)
+    m2.metric("Posities met Actievereiste", n_action, delta=f"{n_action} te wijzigen" if n_action > 0 else "0", delta_color="inverse" if n_action > 0 else "normal")
+    total_pnl = sum([e['pnl_usd'] for e in evaluations])
+    m3.metric("Totale Ongerealiseerde P&L", f"${total_pnl:,.2f}")
+
+    if n_action > 0:
+        st.warning(f"⚠️ **Portfolio Check Afgerond**: {n_action} van de {n_tot} openstaande posities vereisen een aanpassing van het exit-plan om verlies te minimaliseren of winst te borgen.")
+    else:
+        st.success("✅ **Portfolio Gezond**: Alle openstaande posities liggen momenteel in de veilige zone. Geen ingreep vereist.")
+
+    st.markdown("---")
+    st.markdown("### 📋 Positie Overzicht & Accordering Exit-Plan")
+
+    approved_actions = []
+
+    for idx, item in enumerate(evaluations):
+        sym = item['symbol']
+        strat = item['strategy']
+        expiry = item['expiry']
+        dte = item['dte']
+        pnl_usd = item['pnl_usd']
+        pnl_pct = item['pnl_pct']
+        act_code = item['action_code']
+        act_title = item['action_title']
+        old_to_new = item['old_to_new']
+        reasoning = item['reasoning']
+        result_desc = item['result_desc']
+        alternatives = item['alternatives']
+        tech_sum = item['technical_summary']
+
+        urgency_color = "🔴 CRITICAL" if item['urgency'] == "CRITICAL" else ("🟠 HIGH" if item['urgency'] == "HIGH" else ("🟡 MEDIUM" if item['urgency'] == "MEDIUM" else "🟢 LOW"))
+
+        with st.expander(f"{'⚠️' if act_code != 'HANDHAVEN' else '✅'} **#{idx+1} {sym} - {strat} ({item['pos_data']['strikes_str']})** | P&L: ${pnl_usd:,.2f} ({pnl_pct:.1f}%) | DTE: {dte}d | Status: {urgency_color}", expanded=(act_code != 'HANDHAVEN')):
+            c1, c2 = st.columns([2, 1])
+            with c1:
+                st.markdown(f"**Oude Situatie $\\rightarrow$ Nieuwe Situatie:**")
+                st.info(f"👉 `{old_to_new}`")
+                st.markdown(f"**Onderbouwing (Indicatoren):** {reasoning}")
+                st.markdown(f"**Technisch Overzicht:** `{tech_sum}`")
+                st.markdown(f"**Verwacht Resultaat:** {result_desc}")
+
+                # OmniTrader BarToBar Advanced Exit Details Box
+                omni_info = item.get('omnitrader_b2b', {})
+                if omni_info:
+                    st_price = omni_info.get('stop_price', 0.0)
+                    mstate = omni_info.get('marketstate', 1)
+                    trig = omni_info.get('exit_signal', False)
+                    ms_color = "🟢 Coral Bullish (1)" if mstate == 1 else "🟠 Coral Red / Bearish (0)"
+                    trig_color = "🔴 EXIT SIGNAAL ACTIEF" if trig else "🟢 POSITIE VEILIG"
+                    st.caption(f"🛡️ **OmniTrader BarToBar Exit Model**: Stop-Niveau = **${st_price:.2f}** | Trend = **{ms_color}** | Status = **{trig_color}**")
+                    
+                    with st.expander(f"🎯 Handmatige Winst- & Verliessimulator (Koers X / Y)", expanded=True):
+                        und_p = item.get('underlying_price', 100.0)
+                        sold_k = item.get('sold_strike', 0.0)
+                        bought_k = item.get('bought_strike', 0.0)
+                        entry_p = item.get('entry_price', 0.0)
+                        pos_qty = item['pos_data'].get('qty', 1)
+                        is_bullish = strat in ['BullPut', 'BullCall', 'LongCall', 'ShortPut']
+                        is_credit_pos = strat in ['BullPut', 'BearCall', 'ShortPut', 'ShortCall', 'IronCondor']
+
+                        csim1, csim2 = st.columns(2)
+                        with csim1:
+                            def_tp_price = round(und_p * 1.05, 2) if is_bullish else round(und_p * 0.95, 2)
+                            tp_stock_p = st.number_input(f"Winstdoel Koers {sym} ($)", min_value=0.01, value=def_tp_price, step=0.50, key=f"tp_stock_{idx}_{sym}")
+                            
+                            # Calculate profit estimate at target price
+                            if is_credit_pos:
+                                max_p_usd = abs(entry_p) * 100.0 * pos_qty if entry_p != 0 else 100.0 * pos_qty
+                                if (is_bullish and tp_stock_p >= sold_k) or (not is_bullish and tp_stock_p <= sold_k):
+                                    est_tp_pnl = max_p_usd
+                                else:
+                                    dist = abs(sold_k - tp_stock_p)
+                                    est_tp_pnl = max(-max_p_usd * 2, max_p_usd - (dist * 100.0 * pos_qty))
+                            else:
+                                est_tp_pnl = (abs(tp_stock_p - und_p) if (is_bullish and tp_stock_p > und_p) else -abs(tp_stock_p - und_p)) * 100.0 * pos_qty
+
+                            st.success(f"💰 **Winst op Koers ${tp_stock_p:.2f}**: **+${est_tp_pnl:,.2f}**")
+
+                        with csim2:
+                            def_sl_price = round(und_p * 0.95, 2) if is_bullish else round(und_p * 1.05, 2)
+                            sl_stock_p = st.number_input(f"Stoploss Koers {sym} ($)", min_value=0.01, value=def_sl_price, step=0.50, key=f"sl_stock_{idx}_{sym}")
+
+                            # Calculate loss estimate at stop price
+                            if is_credit_pos:
+                                max_p_usd = abs(entry_p) * 100.0 * pos_qty if entry_p != 0 else 100.0 * pos_qty
+                                spread_width = abs(sold_k - bought_k) if (sold_k > 0 and bought_k > 0) else 5.0
+                                max_loss_usd = max(100.0, (spread_width * 100.0 * pos_qty) - max_p_usd)
+                                if (is_bullish and sl_stock_p <= bought_k) or (not is_bullish and sl_stock_p >= bought_k):
+                                    est_sl_pnl = -max_loss_usd
+                                else:
+                                    dist_sl = abs(sold_k - sl_stock_p)
+                                    est_sl_pnl = max(-max_loss_usd, max_p_usd - (dist_sl * 100.0 * pos_qty))
+                            else:
+                                est_sl_pnl = -abs(und_p - sl_stock_p) * 100.0 * pos_qty
+
+                            st.error(f"🛑 **Verlies op Koers ${sl_stock_p:.2f}**: **-${abs(est_sl_pnl):,.2f}**")
+                            
+                        st.caption("🔒 *Pas Winstdoel Koers ($X) of Stoploss Koers ($Y) aan om de gestreepte lijnen op de grafiek hieronder direct te laten bewegen.*")
+
+                    with st.expander(f"📈 Bekijk OmniTrader Trapsgewijze Stop Grafiek ({sym})", expanded=True):
+                        fig_omni = create_omnitrader_plotly_chart(
+                            item.get('hist_df'), omni_info, sym, item.get('underlying_price', 0.0),
+                            target_price=tp_stock_p, stop_price=sl_stock_p
+                        )
+                        if fig_omni:
+                            st.plotly_chart(fig_omni, use_container_width=True, key=f"plotly_omni_{idx}_{sym}")
+                        else:
+                            st.caption("ℹ️ Geen historische koersdata beschikbaar voor deze grafiek.")
+            with c2:
+                is_approved = st.checkbox(f" Akkoord per positie (#{idx+1} {sym})", value=(act_code != 'HANDHAVEN'), key=f"chk_app_{idx}_{sym}")
+                
+                selected_alt = st.selectbox(
+                    "Alternatief Exit-Plan:",
+                    options=alternatives,
+                    index=0,
+                    key=f"sel_alt_{idx}_{sym}"
+                )
+                
+                if is_approved:
+                    approved_actions.append({
+                        'symbol': sym,
+                        'strategy': strat,
+                        'selected_action': selected_alt,
+                        'action_code': act_code,
+                        'legs': item['pos_data'].get('legs', []),
+                        'qty': item['pos_data'].get('qty', 1)
+                    })
+
+    st.markdown("---")
+    if approved_actions:
+        st.success(f" Er zijn **{len(approved_actions)} posities** geselecteerd voor uitvoering in TWS.")
+        if st.button("🚀 Voer Geselecteerde Portfolio-Wijzigingen Uit in TWS", type="primary", use_container_width=True, key="btn_exec_port_adj"):
+            exec_ib = IBClient()
+            import random
+            exec_id = random.randint(10000, 99999)
+            s_ok, s_msg = exec_ib.connect(tws_host, tws_port, exec_id)
+            if s_ok:
+                with st.spinner("Bezig met uitvoeren van orders in TWS..."):
+                    res = exec_ib.execute_portfolio_adjustments(approved_actions)
+                    for r in res:
+                        st.write(f"• **{r['symbol']}**: {r['message']}")
+                    st.success("🎉 Alle geselecteerde portfolio-wijzigingen zijn succesvol verzonden naar TWS!")
+                exec_ib.ib.sleep(1.0)
+                exec_ib.disconnect()
+            else:
+                st.error(f"Fout bij verbinden met TWS voor orderuitvoering: {s_msg}")
+
+
+def render_filter_diagnostics_ui(diagnostics, expanded=True):
+
+    """
+    Displays a comprehensive filter rejection report:
+    1. Reason breakdown (count and percentage dropped per filter rule).
+    2. Top 3 primary bottlenecks showing sidebar setting vs average market values.
+    3. Minimum required threshold adjustments (actionable advice for user).
+    """
+    if not diagnostics or diagnostics.get('total_generated', 0) == 0:
+        st.info("ℹ️ Geen diagnostische scangegevens beschikbaar. Voer een scan uit om het uitfilterproces te analyseren.")
+        return
+
+    n_tot = diagnostics.get('total_generated', 0)
+    top_3 = diagnostics.get('top_bottlenecks', [])
+    breakdown = diagnostics.get('breakdown', [])
+
+    with st.expander("🔍 **Uitfilter Analyse & Drempel Advies** (Waarom zijn trades afgekeurd?)", expanded=expanded):
+        st.markdown(
+            f"In totaal zijn er **{n_tot} kandidaten** gegenereerd door de optieketens en geëvalueerd op greeks, winstkans en rendement.\n\n"
+            "Hieronder zie je precies welke filters de trades hebben tegengehouden en wat de werkelijke waarden in de markt waren:"
+        )
+
+        # 1. Top 3 Bottlenecks Highlight Cards
+        if top_3:
+            st.markdown("### 🏆 Top 3 Voornaamste Uitfilter Oorzaken")
+            col_b1, col_b2, col_b3 = st.columns(3)
+            cols = [col_b1, col_b2, col_b3]
+
+            for idx, item in enumerate(top_3):
+                with cols[idx % len(cols)]:
+                    st.markdown(f"#### #{idx+1} {item['name']}")
+                    st.metric(
+                        label="Afgekeurde kandidaten",
+                        value=f"{item['dropped_count']} / {n_tot}",
+                        delta=f"-{item['dropped_pct']}% van totaal",
+                        delta_color="inverse"
+                    )
+                    st.markdown(f"• **Sidebar Instelling**: `{item['setting_str']}`")
+                    st.markdown(f"• **Gemiddelde in Markt**: `{item['actual_avg']}`")
+                    st.markdown(f"• **Minimaal Nodig (Top 5)**: `{item['suggested_min']}`")
+
+            st.divider()
+
+        # 2. Detailed Breakdown Table
+        if breakdown:
+            st.markdown("### 📊 Volledig Uitfilter Overzicht per Filter Criterium")
+            df_diag = pd.DataFrame(breakdown)
+            display_df = df_diag.rename(columns={
+                'name': 'Filter Criterium',
+                'setting_str': 'Huidige Sidebar Instelling',
+                'dropped_count': 'Aantal Afgekeurd',
+                'dropped_pct': 'Afgekeurd (%)',
+                'actual_avg': 'Gemiddelde Waarde in Markt',
+                'suggested_min': 'Minimaal Nodig voor Top 5 Spreads'
+            })[['Filter Criterium', 'Huidige Sidebar Instelling', 'Aantal Afgekeurd', 'Afgekeurd (%)', 'Gemiddelde Waarde in Markt', 'Minimaal Nodig voor Top 5 Spreads']]
+            st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+        st.info(
+            "💡 **Advies voor meer kandidaten**: Als de grafiek mogelijkheden biedt maar er 0 resultaten verschijnen, "
+            "pas dan de top 3 instellingen in de sidebar aan naar de **'Minimaal Nodig'** waarden om potentieel kansrijke trades direct zichtbaar te maken!"
+        )
+
 st.divider()
 
 # Sidebar - Settings
@@ -95,6 +462,8 @@ if st.sidebar.button("Test Verbinding & Opslaan"):
 # Connection Status
 status = "Gereed om te scannen" if st.session_state.tws_configured else "Niet geconfigureerd"
 st.sidebar.markdown(f"**Status:** {status}")
+if st.sidebar.button("🔍 Check Portfolio & Posities", use_container_width=True, key="btn_sb_port_check"):
+    run_portfolio_check_action(tws_host, tws_port)
 
 # Strategy Settings (Marktvisie)
 st.sidebar.title("Strategie Instellingen")
@@ -164,18 +533,33 @@ elif scan_mode == "Batch Scan (Bestand)":
 elif scan_mode == "BarChart Optie Flow (CSV)":
     st.sidebar.info("Importeer Barchart CSV's om 'Smart Money' trade setups te genereren.")
     barchart_files = st.sidebar.file_uploader("Upload Barchart CSV", type=['csv'], accept_multiple_files=True)
+    
+    col_bc1, col_bc2 = st.sidebar.columns(2)
+    with col_bc1:
+        barchart_min_size = st.sidebar.number_input("Min Block Size", value=100, step=50, help="Minimale trade grootte voor Smart Money filter. Zet op 0 voor alle maten.")
+    with col_bc2:
+        barchart_strict_codes = st.sidebar.checkbox("Strikte Codes", value=False, help="Filter op specifieke Barchart codes (MLCT, MLFT, etc.)")
+
+    st.session_state['barchart_min_size'] = barchart_min_size
+    st.session_state['barchart_strict_codes'] = barchart_strict_codes
+
     barchart_dfs = []
     
     if barchart_files:
         for f in barchart_files:
             try:
                 df = pd.read_csv(f)
-                # Normalize columns to uppercase
-                df.columns = df.columns.str.upper().str.strip()
-                if 'SYMBOL' in df.columns:
-                    # Rename back to Symbol for compatibility downstream if necessary, or keep SYMBOL
-                    df = df.rename(columns={'SYMBOL': 'Symbol'})
+                # Find symbol column robustly regardless of casing or name
+                sym_col = None
+                for col in df.columns:
+                    if str(col).strip().upper() in ['SYMBOL', 'TICKER', 'SYM']:
+                        sym_col = col
+                        break
+                if sym_col:
+                    df['Symbol'] = df[sym_col].astype(str).str.strip()
                     barchart_dfs.append(df)
+                else:
+                    st.sidebar.warning(f"Bestand '{f.name}' bevat geen 'Symbol' of 'Ticker' kolom.")
             except Exception as e:
                 st.sidebar.error(f"Fout in {f.name}: {e}")
         
@@ -217,8 +601,25 @@ elif scan_mode == "Super-Fast ATM Long Scan (1% Koop)":
     st.sidebar.info("Super-snel scannen van S&P 500 aandelen en ETF's voor Long Call/Put opties via het 1% koop proces.")
     sec_type = "Aandeel"
 
+# Strategy Baseline Preset Initialization
+if 'preset_min_strike' not in st.session_state:
+    st.session_state['preset_min_strike'] = 8.0  # Spreads baseline: 8.0%
+if 'preset_koopadvies_p' not in st.session_state:
+    st.session_state['preset_koopadvies_p'] = 1.0 # Longs/Spreads baseline: 1.0%
+
 # Filters
 st.sidebar.subheader("Filters & Criteria")
+
+if st.sidebar.button("⚡ Reset Optimale Filters per Strategie", use_container_width=True, help="Reset alle filters naar de optimale basisinstellingen per strategie (8% BEP afstand voor Spreads, 1% voor Longs)"):
+    is_long_only = any(s in active_strategies for s in ["LongCall", "LongPut"]) and not any(s in active_strategies for s in ["BullCall", "BullPut", "BearCall", "BearPut", "IronCondor", "Strangle"])
+    if is_long_only:
+        st.session_state['preset_min_strike'] = 1.0 # 1% voor Longs
+    else:
+        st.session_state['preset_min_strike'] = 8.0 # Minimaal 8% BEP voor Spreads
+    st.session_state['preset_koopadvies_p'] = 1.0
+    st.sidebar.success("✅ Filters gereset naar optimale basiswaarden (8% BEP Spreads / 1% Longs)!")
+    st.rerun()
+
 use_cache_toggle = st.sidebar.checkbox("Gebruik Cache (Indien parameters gelijk blijven)", value=True)
 min_dte = st.sidebar.number_input("Min Dagen tot Expiratie", value=5)
 max_dte = st.sidebar.number_input("Max Dagen tot Expiratie", value=32)
@@ -229,10 +630,10 @@ max_pain_buffer = st.sidebar.number_input("Max Pain Buffer (Punten)", value=5, h
 
 # Koopadvies (Buy Recommendation) Filters
 st.sidebar.subheader("Koopadvies Instellingen")
-koopadvies_p = st.sidebar.slider("Koopadvies Drempel (p %)", -5.0, 10.0, 1.0, step=0.5, help="Aandeel hoeft slechts p% te stijgen/dalen voor winst") / 100.0
+koopadvies_p = st.sidebar.slider("Koopadvies Drempel (p %)", -5.0, 10.0, float(st.session_state.get('preset_koopadvies_p', 1.0)), step=0.5, help="Aandeel hoeft slechts p% te stijgen/dalen voor winst (Basissetting = 1.0%).") / 100.0
 only_koopadvies = st.sidebar.checkbox("Alleen Koopadvies tonen", value=False)
 strike_range_pct = st.sidebar.number_input("Afstand tot Koers % (Strike Range)", min_value=-50.0, max_value=50.0, value=30.0, step=1.0, help="Positief = Bull Spreads ONDER de koers. Negatief = Bull Spreads BOVEN de koers.") / 100.0
-min_strike_pct = st.sidebar.number_input("Min. afstand tot Koers %", min_value=-50.0, max_value=50.0, value=2.0, step=1.0, help="Minimale foutmarge (Positief = extra marge. Negatief = sta In The Money toe).") / 100.0
+min_strike_pct = st.sidebar.number_input("Min. afstand tot Koers % (BEP Afstand)", min_value=-50.0, max_value=50.0, value=float(st.session_state.get('preset_min_strike', 8.0)), step=1.0, help="Minimale foutmarge / BEP Afstand (Basissetting Spreads = 8.0%, Longs = 1.0%).") / 100.0
 itm_support_level = st.sidebar.selectbox(
     "ITM Veiligheidsmarge (Support Niveau)", 
     ["EM85 Optimaal (1.44x Expected Move)", "Standaard (Min. afstand %)", "Niveau 1 (1x Expected Move)", "Niveau 2 (2x Expected Move)", "Niveau 3 (Extreme / 2.5x)"],
@@ -276,15 +677,17 @@ ranking_criteria = st.sidebar.multiselect(
     default=["AG Score"]
 )
 
-# Technical Filters (New)
-st.sidebar.subheader("Technische Filters (EMA)")
+# Technical Filters (EMA & 1-Maands Trend)
+st.sidebar.subheader("Technische Filters (EMA & Trend)")
 use_ema = st.sidebar.checkbox("Filter op EMA Trend (Prijs > EMA)")
 ema_spans = []
 if use_ema:
     if st.sidebar.checkbox("EMA 8"): ema_spans.append(8)
-    if st.sidebar.checkbox("EMA 50"): ema_spans.append(50)
+    if st.sidebar.checkbox("EMA 20 (Maand-trend)"): ema_spans.append(20)
+    if st.sidebar.checkbox("EMA 50 (Kwartaal-trend)"): ema_spans.append(50)
     if st.sidebar.checkbox("EMA 150"): ema_spans.append(150)
-    use_ema_crossover = st.sidebar.checkbox("EMA 8 > EMA 50 (Crossover)", value=False)
+    use_ema_crossover = st.sidebar.checkbox("EMA 8 > EMA 50 (Snel Crossover)", value=False)
+    use_ema20_50_crossover = st.sidebar.checkbox("EMA 20 > EMA 50 (Maand Crossover)", value=False, help="Controleert of het 20-daags gem. boven de 50-daagse trend ligt.")
     
     st.sidebar.markdown("---")
     st.sidebar.markdown("**Stoch RSI (14, 9, 3, 6)**")
@@ -297,8 +700,22 @@ if use_ema:
         stoch_entry_a = stoch_entry_b = stoch_entry_c = False
 else:
     use_ema_crossover = False
+    use_ema20_50_crossover = False
     use_stoch_rsi = False
     stoch_entry_a = stoch_entry_b = stoch_entry_c = False
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("**📈 1-Maands Trend Model (Koersvoorspelling)**")
+use_1m_trend_filter = st.sidebar.checkbox(
+    "Filter op 1-Maands Trend (Stijging/Daling)",
+    value=False,
+    help="Analyseert 30-d Regressie, MACD, DMI en EMA-structuur om een duidelijke stijgings- of dalingsrichting te eisen."
+)
+trend_expected_direction = st.sidebar.selectbox(
+    "Verwachte Koersrichting",
+    ["Automatisch (Matchend met Marktvisie)", "Alleen Stijging (Bullish)", "Alleen Daling (Bearish)"],
+    help="Matcht automatisch met de gekozen marktvisie of filtert strikt op stijgers/dalers."
+)
 
 @st.dialog("🔬 Functie onderzoek Filters & Criteria")
 def run_research_dialog():
@@ -313,8 +730,14 @@ def run_research_dialog():
     
     mode = st.radio(
         "Kies Gegevensbron:",
-        ["Referentie SPY Scan (yfinance - Aanbevolen)", "Huidige Gecachte Scangegevens gebruiken"] if has_cache else ["Referentie SPY Scan (yfinance - Aanbevolen)"]
+        ["Referentie Ticker Scan (yfinance - Aanbevolen)", "Huidige Gecachte Scangegevens gebruiken"] if has_cache else ["Referentie Ticker Scan (yfinance - Aanbevolen)"]
     )
+    
+    target_symbol = "SPY"
+    if "Referentie Ticker Scan" in mode:
+        target_symbol = st.text_input("Symbool voor Parameter Sweep:", value="SPY", help="Voer een ticker in om de sweep specifiek voor dat symbool uit te voeren (bijv. SPY, AAPL, QQQ, TSLA, NVDA)").upper().strip()
+        if not target_symbol:
+            target_symbol = "SPY"
     
     if st.button("Start Onderzoek", type="primary", use_container_width=True):
         progress_bar = st.progress(0.0)
@@ -333,7 +756,7 @@ def run_research_dialog():
         try:
             import os
             downloads_dir = os.path.join(os.path.expanduser('~'), 'Downloads')
-            output_file = os.path.join(downloads_dir, "Functie_onderzoek_filters_criteria.docx")
+            output_file = os.path.join(downloads_dir, f"Functie_onderzoek_filters_criteria_{target_symbol}.docx")
             
             # Check if output_file is writable (if it exists and is open/locked in Word)
             if os.path.exists(output_file):
@@ -342,7 +765,7 @@ def run_research_dialog():
                         pass
                 except PermissionError:
                     # File is locked, find a writable fallback name
-                    base_name = "Functie_onderzoek_filters_criteria"
+                    base_name = f"Functie_onderzoek_filters_criteria_{target_symbol}"
                     ext = ".docx"
                     idx = 1
                     while True:
@@ -356,15 +779,15 @@ def run_research_dialog():
                                 break
                         except PermissionError:
                             idx += 1
-                    log_cb(f"⚠️ Waarschuwing: 'Functie_onderzoek_filters_criteria.docx' is geopend in Word.")
+                    log_cb(f"⚠️ Waarschuwing: Bestand is geopend in Word.")
                     log_cb(f"   Rapport wordt opgeslagen als: {os.path.basename(output_file)}")
 
             from research_runner import FCResearchRunner
             runner = FCResearchRunner()
             
-            # Fetch SPY chain
-            ref_data = runner.fetch_reference_data("SPY", log_callback=log_cb)
-            progress_cb(0.1, "Gegevens geladen. Sweeps starten...")
+            # Fetch target symbol chain
+            ref_data = runner.fetch_reference_data(target_symbol, log_callback=log_cb)
+            progress_cb(0.1, f"Gegevens voor {target_symbol} geladen. Sweeps starten...")
             
             results = runner.run_all_sweeps(ref_data, progress_callback=progress_cb, log_callback=log_cb)
             
@@ -439,7 +862,11 @@ today = datetime.datetime.now().weekday()
 if today >= 5: # 5 = Saturday, 6 = Sunday
     st.warning("⚠️ **Weekend Modus Actief**: TWS levert momenteel beperkte live data. De scanner gebruikt de prijzen van afgelopen vrijdag (sluiting) als fallback voor berekeningen.")
 
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["🚀 Scanner", "📊 Resultaten", "🛒 Orders", "📈 S&P 500 Spreads", "💰 Dividend CC", "🧪 Hit-Rate Test"])
+tab0, tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["🛡️ Portfolio Bewaking", "🚀 Scanner", "📊 Resultaten", "🛒 Orders", "📈 S&P 500 Spreads", "💰 Dividend CC", "🧪 Hit-Rate Test"])
+
+# --- TAB 0: PORTFOLIO BEWAKING ---
+with tab0:
+    render_portfolio_management_dashboard(tws_host, tws_port)
 
 # --- TAB 1: SCANNER ---
 with tab1:
@@ -552,8 +979,9 @@ with tab1:
                                  'symbols': sorted(current_symbols), 'strategies': sorted(active_strategies),
                                  'min_dte': min_dte, 'max_dte': max_dte,
                                  'width': width, 'strike_range_pct': strike_range_pct, 'min_strike_pct': min_strike_pct, 'use_auto_sentiment': use_auto_sentiment,
-                                 'use_ema': use_ema, 'use_ema_crossover': use_ema_crossover, 'use_stoch_rsi': use_stoch_rsi,
-                                 'stoch_entry_a': stoch_entry_a, 'stoch_entry_b': stoch_entry_b, 'stoch_entry_c': stoch_entry_c
+                                 'use_ema': use_ema, 'use_ema_crossover': use_ema_crossover, 'use_ema20_50_crossover': use_ema20_50_crossover,
+                                 'use_1m_trend_filter': use_1m_trend_filter, 'trend_expected_direction': trend_expected_direction,
+                                 'use_stoch_rsi': use_stoch_rsi, 'stoch_entry_a': stoch_entry_a, 'stoch_entry_b': stoch_entry_b, 'stoch_entry_c': stoch_entry_c
                              }
                              core_hash = hashlib.md5(json.dumps(core_config, sort_keys=True).encode()).hexdigest()
                              
@@ -585,20 +1013,27 @@ with tab1:
                                  log("📅 Weekend gedetecteerd: Gebruik 'Close' prijzen als fallback.")
 
                              barchart_df_parsed = pd.DataFrame()
-                             if scan_mode == "BarChart Optie Flow (CSV)" and 'barchart_raw' in st.session_state:
+                             if scan_mode == "BarChart Optie Flow (CSV)" and 'barchart_raw' in st.session_state and not st.session_state['barchart_raw'].empty:
                                  status_text.text("Parsen van Barchart Option Flow CSV via VBA logica...")
-                                 log("📊 Barchart 'Smart Money' filters toepassen...")
-                                 barchart_df_parsed = scanner.parse_barchart_flow(st.session_state['barchart_raw'])
-                                 log(f"   ✅ {len(barchart_df_parsed)} Smart Money Setup(s) succesvol vertaald naar verticals.")
-                                 # Limit current symbols to just the ones that actually passed the flow filters
+                                 log("📊 Barchart 'Smart Money' filters toepassen op CSV data...")
+                                 bc_min_sz = st.session_state.get('barchart_min_size', 100)
+                                 bc_strict_c = st.session_state.get('barchart_strict_codes', False)
+                                 barchart_df_parsed = scanner.parse_barchart_flow(
+                                     st.session_state['barchart_raw'],
+                                     min_size=bc_min_sz,
+                                     strict_codes=bc_strict_c,
+                                     log_func=log
+                                 )
                                  if not barchart_df_parsed.empty:
                                      current_symbols = list(barchart_df_parsed['symbol'].unique())
+                                     log(f"   ✅ {len(barchart_df_parsed)} Smart Money Setup(s) over {len(current_symbols)} unieke symbolen gevonden.")
                                  else:
-                                     current_symbols = []
+                                     log(f"   ℹ️ Geen specifieke Option Flow setups in CSV gedetecteerd (waarschijnlijk een Aandelenlijst CSV of versoepel de block size).")
+                                     log(f"   🔄 Automatische Fallback: Reguliere spread scanner wordt gestart voor alle {len(current_symbols)} symbolen uit de CSV!")
 
                              # 1. Technical Filter (EMA) Batch
                              if use_ema and ema_spans:
-                                 log(f"📈 EMA Filter actief: {ema_spans}")
+                                 log(f"📈 EMA Filter actief: {ema_spans} (Crossover 8/50: {use_ema_crossover}, 20/50: {use_ema20_50_crossover})")
                                  status_text.text("Bezig met ophalen historische data voor EMA filter...")
 
                              is_fast_atm = (scan_mode == "Super-Fast ATM Long Scan (1% Koop)") or (scan_mode == "Auto-Pilot (Downloads map)" and st.session_state.get('auto_pilot_type') == "Super-Fast ATM Long Scan (1% Koop)")
@@ -611,27 +1046,33 @@ with tab1:
                                      if scan_mode == "Super-Fast ATM Long Scan (1% Koop)":
                                          status_text.text("S&P 500 symbolen ophalen via Wikipedia...")
                                          import urllib.request
+                                         sp500_symbols = []
                                          try:
                                              req = urllib.request.Request('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies', headers={'User-Agent': 'Mozilla/5.0'})
                                              html = urllib.request.urlopen(req).read()
                                              df_sp500 = pd.read_html(html)[0]
                                              sp500_symbols = df_sp500['Symbol'].tolist()
-                                             sp500_symbols = [s for s in sp500_symbols if '.' not in s and ' ' not in s]
+                                             sp500_symbols = [s.replace('.', '-') for s in sp500_symbols if ' ' not in s]
                                          except Exception as e:
-                                             log(f"⚠️ Kon S&P 500 niet van Wikipedia ophalen ({e}). Gebruik fallback lijst.")
-                                             sp500_symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "UNH", "JNJ", "XOM", "JPM", "V", "PG", "MA", "AVGO", "HD", "CVX", "MRK", "ABBV"]
+                                             log(f"⚠️ Wikipedia retrieval ({e}): meegenomen standaard S&P 500 top-lijst.")
                                              
+                                         STANDARD_SP500 = [
+                                             "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "UNH", "JNJ", "XOM", "JPM", "V", "PG", "MA", "AVGO", "HD", "CVX", "MRK", "ABBV", "COST",
+                                             "PEP", "ADBE", "WMT", "KO", "BAC", "ACN", "MCD", "CSCO", "TMO", "CRM", "ABT", "LIN", "ORCL", "NFLX", "AMD", "DIS", "PM", "PFE", "TXN", "DHR",
+                                             "INTC", "CAT", "VZ", "AMGN", "IBM", "UNP", "SPGI", "LOW", "NOW", "HON", "BA", "COP", "GE", "AMAT", "GS", "QCOM", "BKNG", "NKE", "SBUX", "ELV",
+                                             "INTU", "PLD", "BLK", "RTX", "ISR", "MDLZ", "TJX", "AXP", "GILD", "DE", "ADI", "ISRG", "MMC", "T", "LRCX", "SCHW", "C", "VRTX", "LMT", "EOG", "PGR"
+                                         ]
                                          OPTIONABLE_ETFS = ["SPY", "QQQ", "IWM", "DIA", "XLF", "XLK", "XLE", "XLV", "XLI", "XLY", "XLP", "XLB", "XLU", "XLRE", "GDX", "GLD", "TLT", "SLV", "USO", "UNG", "KRE", "SMH", "IBB", "XOP", "ARKK", "EEM", "FXI", "EWZ"]
-                                         fast_symbols = sorted(list(set(sp500_symbols + OPTIONABLE_ETFS)))
+                                         fast_symbols = sorted(list(set(sp500_symbols + STANDARD_SP500 + OPTIONABLE_ETFS)))
                                      else:
                                          fast_symbols = current_symbols
                                          
                                      fast_strategies = [s for s in active_strategies if s in ['LongCall', 'LongPut']]
                                      if not fast_strategies:
-                                         log("❌ Geen actieve 'LongCall' of 'LongPut' geselecteerd links in het menu. De Super-Fast scan ondersteunt alleen deze twee strategieën. Vink ten minste 'LongCall' of 'LongPut' aan.")
-                                         progress_bar.progress(100)
-                                         status_text.text("Scan geannuleerd.")
-                                         break
+                                         if "Bullish" in marktvisie: fast_strategies = ["LongCall"]
+                                         elif "Bearish" in marktvisie: fast_strategies = ["LongPut"]
+                                         else: fast_strategies = ["LongCall", "LongPut"]
+                                         log(f"ℹ️ Geen specifieke Long Call/Put aangevinkt: 'Super-Fast ATM Long Scan' activeert automatisch: {', '.join(fast_strategies)}.")
                                          
                                      progress_bar.progress(5)
                                      status_text.text("Starten van de supersnelle TWS scan...")
@@ -708,17 +1149,14 @@ with tab1:
 
                                  try:
                                      # Create contract - Robust classification for ETFs vs Indexes
-                                     is_likely_index = sym.upper() in ['SPX', 'NDX', 'RUT', 'VIX', 'DAX']
-                                     if sec_type == "Index" or is_likely_index:
-                                         if sym.upper() == 'SPY': # SPY is a Stock (ETF), not an Index
-                                             contract = Stock(sym, 'SMART', 'USD')
-                                         else:
-                                             contract = Index(sym, 'SMART', 'USD')
+                                     is_likely_index = sym.upper() in ['SPX', 'NDX', 'RUT', 'VIX', 'DAX', 'DJI']
+                                     if is_likely_index:
+                                         contract = Index(sym, 'SMART', 'USD')
                                      else:
                                          contract = Stock(sym, 'SMART', 'USD')
 
                                      # 1. Get Real-time Price Snapshot
-                                     market_data = scan_ib.get_market_data_snapshot(contract, use_hist_fallback=False, use_yf=use_free_data)
+                                     market_data = scan_ib.get_market_data_snapshot(contract, use_hist_fallback=True, use_yf=use_free_data)
                                      price = market_data.get('price', 0.0)
                                      underlying_iv = market_data.get('iv', 0.0)
                                      data_source = market_data.get('source', 'Unknown')
@@ -781,12 +1219,33 @@ with tab1:
                                                  log(f"   ❌ Geen prijs beschikbaar voor EMA check op {sym}")
                                                  continue
 
+                                             ema_direction = 'bear' if 'Bearish' in marktvisie else 'bull'
                                              sym_data = {sym: {'price': check_price, 'history': hist_data}}
-                                             passed = scanner.filter_symbols_by_ema(sym_data, ema_spans, ema_crossover=use_ema_crossover)
+                                             passed = scanner.filter_symbols_by_ema(
+                                                 sym_data, ema_spans, direction=ema_direction, 
+                                                 ema_crossover=use_ema_crossover, ema20_50_crossover=use_ema20_50_crossover
+                                             )
                                              if not passed:
-                                                 log(f"   ⛔ {sym} gefilterd door EMA check")
+                                                 log(f"   ⛔ {sym} gefilterd door EMA check ({'EMA20>50' if use_ema20_50_crossover else 'EMA trend'})")
                                                  continue # Skip this symbol
                                              log(f"   ✅ {sym} doorstaat EMA filter")
+
+                                     # --- 1-Maands Trend Model (Koersvoorspelling) Check ---
+                                     if use_1m_trend_filter and not hist_data.empty:
+                                         trend_1m = scanner.predict_1month_trend(hist_data)
+                                         log(f"   📈 1-Maands Trend Model: {trend_1m['forecast']} (Score: {trend_1m['score']}/+4)")
+                                         log(f"      Pijlers: Regressie={trend_1m['details'].get('regression', 'N/A')}, MACD={trend_1m['details'].get('macd', 'N/A')}, DMI={trend_1m['details'].get('dmi', 'N/A')}")
+                                         
+                                         req_bull = ("Bullish" in trend_expected_direction) or ("Automatisch" in trend_expected_direction and "Bullish" in marktvisie)
+                                         req_bear = ("Bearish" in trend_expected_direction) or ("Automatisch" in trend_expected_direction and "Bearish" in marktvisie)
+                                         
+                                         if req_bull and not trend_1m['passed_bullish']:
+                                             log(f"   ⛔ {sym} gefilterd door 1-Maands Trend Model (Verwachte Stijging niet overtuigend, Score {trend_1m['score']})")
+                                             continue
+                                         elif req_bear and not trend_1m['passed_bearish']:
+                                             log(f"   ⛔ {sym} gefilterd door 1-Maands Trend Model (Verwachte Daling niet overtuigend, Score {trend_1m['score']})")
+                                             continue
+                                         log(f"   ✅ {sym} doorstaat 1-Maands Trend Model filter")
 
                                      if use_auto_sentiment:
                                          indicators = {'gex': curr_gex, 'dex': curr_dex, 'pc_ratio': curr_pc}
@@ -812,7 +1271,7 @@ with tab1:
 
                                      # --- New Technical Signals Entry Check ---
                                      tech_signals = scanner.get_technical_signals(hist_data, price)
-                                     log(f"   📉 EMA Status: {tech_signals['ema_status']}")
+                                     log(f"   📉 EMA Status: {tech_signals['ema_status']} | EMA20/50: {tech_signals.get('ema20_50_status', 'N/A')}")
                                      log(f"   📊 Stoch RSI: {tech_signals['stoch_rsi_status']}")
 
                                      if use_stoch_rsi:
@@ -850,13 +1309,13 @@ with tab1:
                                      def run_gen(d_max):
                                          res = pd.DataFrame()
                                          
-                                         if scan_mode == "BarChart Optie Flow (CSV)":
-                                             if not barchart_df_parsed.empty:
-                                                 sym_spreads = barchart_df_parsed[barchart_df_parsed['symbol'] == sym].copy()
-                                                 if not sym_spreads.empty:
-                                                     if underlying_iv > 0: sym_spreads['iv'] = underlying_iv
-                                                     res = sym_spreads
-                                         else:
+                                         if scan_mode == "BarChart Optie Flow (CSV)" and not barchart_df_parsed.empty:
+                                             sym_spreads = barchart_df_parsed[barchart_df_parsed['symbol'] == sym].copy()
+                                             if not sym_spreads.empty:
+                                                 if underlying_iv > 0: sym_spreads['iv'] = underlying_iv
+                                                 res = sym_spreads
+                                         
+                                         if res.empty:
                                              widths_to_check = [int(width)]
                                              if price > 0:
                                                  if price < 50 and 5 not in widths_to_check:
@@ -950,7 +1409,7 @@ with tab1:
                                              log_func=log, koopadvies_p=koopadvies_p
                                          )
 
-                                         if scan_mode == "BarChart Optie Flow (CSV)":
+                                         if scan_mode == "BarChart Optie Flow (CSV)" and not barchart_df_parsed.empty:
                                              d_min_dl, d_min_gm, d_max_dt, d_min_dt = -1.0, -1.0, 9999, 0
                                          else:
                                              d_min_dl, d_min_gm, d_max_dt, d_min_dt = min_delta, min_gamma, max_dte, min_dte
@@ -1052,10 +1511,11 @@ with tab1:
                                      elif c == "Delta": criteria.append("delta")
                                      elif c == "Theta": criteria.append("theta")
 
-                                 # Calculate global guidance for Target 10
+                                 # Calculate global guidance for Target 10 & filter diagnostics
                                  if not all_unfiltered_global.empty:
                                      global_guidance = scanner.get_filter_guidance(all_unfiltered_global, target_n=10)
                                      st.session_state['filter_guidance'] = global_guidance
+                                     st.session_state['filter_diagnostics'] = scanner.analyze_filter_bottlenecks(all_unfiltered_global, {'min_pop': min_pop, 'min_profit': min_profit, 'min_delta': min_delta, 'min_gamma': min_gamma, 'max_dte': max_dte, 'min_dte': min_dte, 'only_koopadvies': only_koopadvies}, target_n=5)
 
                                  ranked = scanner.rank_spreads(all_results, sort_criteria=criteria, top_n=100) 
                                  st.session_state['results'] = ranked
@@ -1064,6 +1524,8 @@ with tab1:
                              else:
                                  log(f"⚠️ Geen optie contracten gevonden")
                                  st.warning("Geen optie contracten gevonden. Probeer parameters te verruimen.")
+                                 if not all_unfiltered_global.empty:
+                                     st.session_state['filter_diagnostics'] = scanner.analyze_filter_bottlenecks(all_unfiltered_global, {'min_pop': min_pop, 'min_profit': min_profit, 'min_delta': min_delta, 'min_gamma': min_gamma, 'max_dte': max_dte, 'min_dte': min_dte, 'only_koopadvies': only_koopadvies}, target_n=5)
                              
                              # Update GUI: scan klaar
                              scan_status.success("✅ Scan voltooid!")
@@ -1085,6 +1547,8 @@ with tab1:
                              f"**PoP > {g.get('suggested_pop', '??')}%** | "
                              f"**Winst > ${g.get('suggested_profit', '??')}** | "
                              f"**Delta Sell ~ {g.get('suggested_delta', '??')}**")
+                 if 'filter_diagnostics' in st.session_state:
+                     render_filter_diagnostics_ui(st.session_state['filter_diagnostics'], expanded=False)
 
              st.divider()
              st.subheader("Snel Overzicht")
@@ -1101,9 +1565,15 @@ with tab1:
 
              strategies_found = df_res['strategy'].unique()
              for strat in strategies_found:
-                 st.markdown(f"**Top 5: {strat}**")
-                 df_strat = df_res[df_res['strategy'] == strat].head(5)
+                 st.markdown(f"**Top 5 Unieke Symbolen: {strat}**")
+                 df_strat = df_res[df_res['strategy'] == strat]
+                 if 'symbol' in df_strat.columns:
+                     df_strat = df_strat.drop_duplicates(subset=['symbol'], keep='first')
+                 df_strat = df_strat.head(5)
                  st.dataframe(df_strat[preview_cols], width='content', hide_index=True)
+        else:
+             if 'filter_diagnostics' in st.session_state:
+                 render_filter_diagnostics_ui(st.session_state['filter_diagnostics'], expanded=True)
 
     else:
         st.warning("Configureer en test eerst de TWS verbinding in de Sidebar.")
@@ -1116,17 +1586,33 @@ with tab2:
         # Checkboxes in dezelfde rij
         col_ag, col_dbg = st.columns([2.5, 1])
         with col_ag:
-            only_top_ag = st.checkbox("⭐ Toon alleen hoogste AG Score per symbool", value=False, key="chk_only_top_ag")
+            max_per_sym_selection = st.selectbox(
+                "🎯 Diversificatie: Max. resultaten per symbool",
+                options=["1 per symbool (Maximale variatie - Aanbevolen)", "2 per symbool", "3 per symbool", "Alle opties tonen"],
+                index=0,
+                key="sel_max_per_sym"
+            )
         with col_dbg:
             show_debug = st.checkbox("Debug Columns", False, key="chk_debug_cols")
 
-        # Pas filtering toe op basis van checkbox waarde
-        if only_top_ag and 'symbol' in results.columns:
-            score_col = 'AG_Score' if 'AG_Score' in results.columns else ('ag_score' if 'ag_score' in results.columns else None)
-            if score_col:
-                results['_ag_num'] = pd.to_numeric(results[score_col], errors='coerce').fillna(-999999.0)
-                top_idx = results.sort_values(by='_ag_num', ascending=False).drop_duplicates(subset=['symbol'], keep='first').index
-                results = results.loc[top_idx].drop(columns=['_ag_num'])
+        # Pas filtering toe op basis van diversificatie selectie
+        if 'symbol' in results.columns:
+            score_col = 'AG_Score' if 'AG_Score' in results.columns else ('winst_laat' if 'winst_laat' in results.columns else ('max_profit' if 'max_profit' in results.columns else None))
+            if "1 per symbool" in max_per_sym_selection:
+                max_k = 1
+            elif "2 per symbool" in max_per_sym_selection:
+                max_k = 2
+            elif "3 per symbool" in max_per_sym_selection:
+                max_k = 3
+            else:
+                max_k = None
+                
+            if max_k is not None and not results.empty:
+                if score_col:
+                    results['_rank_num'] = pd.to_numeric(results[score_col], errors='coerce').fillna(-999999.0)
+                    results = results.sort_values(by='_rank_num', ascending=False).groupby('symbol', as_index=False, group_keys=False).head(max_k).drop(columns=['_rank_num'])
+                else:
+                    results = results.groupby('symbol', as_index=False, group_keys=False).head(max_k)
 
         st.subheader(f"Gevonden Resultaten ({len(results)})")
 
@@ -1313,7 +1799,7 @@ with tab2:
             hide_index=False,
             height=550,
             disabled=[c for c in final_cols if c != 'Selecteer'],
-            key=f"results_matrix_editor_{only_top_ag}_{len(results)}"
+            key=f"results_matrix_editor_{max_per_sym_selection}_{len(results)}"
         )
 
         # --- BULK ORDER UTILITIES & BUTTON ---
@@ -1351,7 +1837,13 @@ with tab2:
                             symbol = str(row['symbol']) if pd.notna(row.get('symbol')) else ''
                             strat = str(row['strategy']) if pd.notna(row.get('strategy')) else ''
                             expiry = str(row['expiry']) if pd.notna(row.get('expiry')) else ''
-                            right = str(row.get('right')) if pd.notna(row.get('right')) else 'C'
+                            
+                            right = str(row.get('right')) if pd.notna(row.get('right')) and str(row.get('right')).strip() else ''
+                            if not right or right not in ['C', 'P']:
+                                if any(k in strat for k in ['Put', 'PUT', 'put']):
+                                    right = 'P'
+                                else:
+                                    right = 'C'
                             
                             strikes_dict = {
                                 'strike_buy': float(row.get('strike_buy')) if pd.notna(row.get('strike_buy')) else 0.0,
@@ -1362,13 +1854,12 @@ with tab2:
                                 'strike_c_buy': float(row.get('strike_c_buy')) if pd.notna(row.get('strike_c_buy')) else 0.0
                             }
                             
-                            is_credit = strat not in ['LongCall', 'LongPut', 'BullCall', 'BearPut', 'Strangle']
                             raw_price = row.get('spread_ask_abs', 0)
                             if not raw_price or pd.isna(raw_price) or float(raw_price) <= 0:
                                 raw_price = row.get('spread_mid_abs', 0)
                             if not raw_price or pd.isna(raw_price) or float(raw_price) <= 0:
                                 raw_price = 0.10
-                            limit_price_signed = -float(raw_price) if is_credit else float(raw_price)
+                            limit_price_val = abs(float(raw_price))
                             
                             trade = bulk_ib.place_strategy_order(
                                 symbol=symbol,
@@ -1378,7 +1869,7 @@ with tab2:
                                 strikes_dict=strikes_dict,
                                 action='BUY',
                                 quantity=bulk_qty,
-                                price=limit_price_signed,
+                                price=limit_price_val,
                                 order_type=bulk_order_type,
                                 enable_bracket=True,
                                 tp_pct=0.20,
@@ -1438,7 +1929,9 @@ with tab2:
         file_name = f"{datetime.date.today().strftime('%Y%m%d')} RESULTATEN OPTIE SELECTIE SCAN.csv"
         st.download_button("Download CSV Resultaten (Voor Excel)", csv, file_name, "text/csv")
     else:
-        st.info("Start een scan om resultaten te zien.")
+        st.info("Start een scan of versoepel de filterinstellingen om resultaten te zien.")
+        if 'filter_diagnostics' in st.session_state:
+            render_filter_diagnostics_ui(st.session_state['filter_diagnostics'], expanded=True)
 
 # --- TAB 3: ORDERS ---
 with tab3:
@@ -1538,17 +2031,86 @@ with tab3:
                     help="Kies Adaptive Algo om TWS de beste prijs binnen de spread te laten onderhandelen zonder de max limiet te overschrijden."
                 )
 
-                single_bracket = st.checkbox("🎯 Voeg Take Profit (+20%) & Stop Loss (-20%) Bracket Orders toe", value=True, key="single_bracket")
+                st.markdown("### 🎯 Exit-Plan & Risk Management (Bracket Order)")
+                single_bracket = st.checkbox("Voeg Automatisch Exit-Plan toe (Take Profit & Stop Loss Orders in TWS)", value=True, key="single_bracket")
+
+                calc_tp_price = None
+                calc_sl_price = None
+
+                if single_bracket:
+                    bracket_mode = st.radio("Exit Type", ["Dollar Bedrag ($)", "Percentage (%)", "OmniTrader BarToBar (ATR + Coral)", "Exacte Limietprijs ($)"], index=0, horizontal=True)
+                    p_entry = abs(float(limit_price_signed)) if limit_price_signed else 0.10
+                    qty = int(order_qty)
+
+                    if bracket_mode == "Dollar Bedrag ($)":
+                        c_tp, c_sl = st.columns(2)
+                        with c_tp:
+                            tp_dollar = st.number_input("Winstdoel (Take Profit $)", min_value=5.0, max_value=10000.0, value=200.0, step=10.0, help="Automatisch sluiten bij dit winstbedrag in USD.")
+                        with c_sl:
+                            sl_dollar = st.number_input("Stop Loss (Max. Verlies $)", min_value=5.0, max_value=10000.0, value=100.0, step=10.0, help="Automatisch sluiten bij dit verliesbedrag in USD.")
+
+                        tp_per_share = (tp_dollar / qty) / 100.0
+                        sl_per_share = (sl_dollar / qty) / 100.0
+
+                        if is_credit: # Credit spread: sell to open, buy to close
+                            calc_tp_price = max(0.01, round(p_entry - tp_per_share, 2))
+                            calc_sl_price = round(p_entry + sl_per_share, 2)
+                            st.caption(f"📊 **Exit Plan Preview ({qty}x contract)**:\n- **Take Profit**: Sluit spread zodra prijs $\le$ **${calc_tp_price:.2f}** (+${tp_dollar:.0f} winst)\n- **Stop Loss**: Sluit spread zodra prijs $\ge$ **${calc_sl_price:.2f}** (-${sl_dollar:.0f} verlies)")
+                        else: # Debit / Long: buy to open, sell to close
+                            calc_tp_price = round(p_entry + tp_per_share, 2)
+                            calc_sl_price = max(0.01, round(p_entry - sl_per_share, 2))
+                            st.caption(f"📊 **Exit Plan Preview ({qty}x contract)**:\n- **Take Profit**: Verkoop contract zodra koers $\ge$ **${calc_tp_price:.2f}** (+${tp_dollar:.0f} winst)\n- **Stop Loss**: Verkoop contract zodra koers $\le$ **${calc_sl_price:.2f}** (-${sl_dollar:.0f} verlies)")
+
+                    elif bracket_mode == "Percentage (%)":
+                        c_tp, c_sl = st.columns(2)
+                        with c_tp:
+                            tp_pct_val = st.number_input("Take Profit %", min_value=5.0, max_value=500.0, value=20.0, step=5.0) / 100.0
+                        with c_sl:
+                            sl_pct_val = st.number_input("Stop Loss %", min_value=5.0, max_value=100.0, value=20.0, step=5.0) / 100.0
+
+                        if is_credit:
+                            calc_tp_price = max(0.01, round(p_entry * (1.0 - tp_pct_val), 2))
+                            calc_sl_price = round(p_entry * (1.0 + sl_pct_val), 2)
+                        else:
+                            calc_tp_price = round(p_entry * (1.0 + tp_pct_val), 2)
+                            calc_sl_price = max(0.01, round(p_entry * (1.0 - sl_pct_val), 2))
+                        st.caption(f"📊 **Exit Plan Preview**:\n- **Take Profit Order**: ${calc_tp_price:.2f}\n- **Stop Loss Order**: ${calc_sl_price:.2f}")
+
+                    elif bracket_mode == "OmniTrader BarToBar (ATR + Coral)":
+                        st.markdown("##### 🛡️ OmniTrader BarToBar Instellingen")
+                        c_omni1, c_omni2, c_omni3 = st.columns(3)
+                        with c_omni1:
+                            init_mult_ui = st.number_input("Init Mult (ATR)", min_value=0.5, max_value=15.0, value=7.0, step=0.5)
+                        with c_omni2:
+                            atr_period_ui = st.number_input("ATR Periodes", min_value=3, max_value=30, value=7, step=1)
+                        with c_omni3:
+                            p_factor_ui = st.number_input("P Factor", min_value=0.1, max_value=2.0, value=0.4, step=0.05)
+                        
+                        und_p = selected_row.get('stock_price', selected_row.get('underlying_price', 100.0))
+                        est_atr = und_p * 0.015
+                        stop_dist = init_mult_ui * est_atr
+
+                        if is_credit:
+                            calc_tp_price = max(0.01, round(p_entry * 0.50, 2))
+                            calc_sl_price = round(p_entry + (stop_dist / 100.0), 2)
+                        else:
+                            calc_tp_price = round(p_entry * 1.50, 2)
+                            calc_sl_price = max(0.01, round(p_entry - (stop_dist / 100.0), 2))
+                        
+                        st.caption(f"📊 **OmniTrader BarToBar Preview**:\n- **Take Profit Order**: ${calc_tp_price:.2f}\n- **Dynamic BarToBar Stop**: ${calc_sl_price:.2f} (Startwaarde op {init_mult_ui}x ATR + Coral Trend filter)")
+
+                    else: # Exacte Limietprijs
+                        c_tp, c_sl = st.columns(2)
+                        with c_tp:
+                            calc_tp_price = st.number_input("Take Profit Limietprijs ($)", value=round(p_entry*1.2, 2), step=0.05)
+                        with c_sl:
+                            calc_sl_price = st.number_input("Stop Loss Limietprijs ($)", value=round(p_entry*0.8, 2), step=0.05)
 
                 # Dynamic Profit Projection
                 worst_entry = selected_row.get('worst_entry_signed', 0.0)
                 base_winst = selected_row.get('winst_laat', 0.0)
                 
                 # Difference in price * 100 * contract qty
-                # If we pay less than worst entry (for debit) or receive more credit than worst entry (for credit),
-                # our profit increases.
-                # Both worst_entry and limit_price_signed are negative for credit spreads.
-                # If worst_entry is -9.70 and user sets limit to -10.00 (more credit), -9.70 - (-10.00) = +0.30.
                 winst_verschuiving = (worst_entry - limit_price_signed) * 100
                 verwachte_winst_1pct = (base_winst + winst_verschuiving) * order_qty
                 
@@ -1666,23 +2228,31 @@ with tab3:
                             # Since ib_client.py explicitly defines the legs representing the final position we want,
                             # we must always BUY the combination. Credit spreads will use a negative limit price.
                             strat = selected_row['strategy']
+                            right_val = selected_row.get('right', '')
+                            if not right_val or right_val not in ['C', 'P']:
+                                if any(k in strat for k in ['Put', 'PUT', 'put']):
+                                    right_val = 'P'
+                                else:
+                                    right_val = 'C'
+                                    
                             action = 'BUY'
+                            limit_price_val = abs(float(limit_price_signed)) if limit_price_signed else 0.10
 
-                            st.write(f"Plaatsen order ({strat}) voor {order_qty} stuks. Actie: {action} Combo (Prijs: {limit_price_signed})...")
+                            st.write(f"Plaatsen order ({strat}) voor {order_qty} stuks. Actie: {action} Combo (Prijs: ${limit_price_val:.2f})...")
 
                             trade = order_ib.place_strategy_order(
                                 symbol=selected_row['symbol'],
                                 expiry=selected_row['expiry'],
-                                right=selected_row['right'],
+                                right=right_val,
                                 strategy=strat,
                                 strikes_dict=strikes_dict,
                                 action=action,
                                 quantity=order_qty,
-                                price=limit_price_signed,
+                                price=limit_price_val,
                                 order_type=order_type_ui,
                                 enable_bracket=single_bracket,
-                                tp_pct=0.20,
-                                sl_pct=0.20
+                                custom_tp_price=calc_tp_price,
+                                custom_sl_price=calc_sl_price
                             )
 
                             if trade:
@@ -1827,7 +2397,9 @@ with tab4:
                                 
                                 atm_strike_target = price
                                 itm_call_target = price * 0.85
+                                otm_call_target = price * 1.15
                                 itm_put_target = price * 1.15
+                                otm_put_target = price * 0.85
                                 
                                 # Find Friday expirations roughly 7-30 days out
                                 smart_chains = [c for c in chains if c.exchange == 'SMART']
@@ -1847,7 +2419,9 @@ with tab4:
                                 target_strikes_set = set()
                                 target_strikes_set.update(find_closest_strikes(atm_strike_target))
                                 target_strikes_set.update(find_closest_strikes(itm_call_target))
+                                target_strikes_set.update(find_closest_strikes(otm_call_target))
                                 target_strikes_set.update(find_closest_strikes(itm_put_target))
+                                target_strikes_set.update(find_closest_strikes(otm_put_target))
                                 target_strikes = sorted(list(target_strikes_set))
                                 
                                 chosen_exp = None
@@ -1894,9 +2468,13 @@ with tab4:
                                 atm_c_strk, atm_c_b, atm_c_a, _ = find_spread(chain_data, atm_strike_target, 'C')
                                 atm_p_strk, atm_p_b, atm_p_a, _ = find_spread(chain_data, atm_strike_target, 'P')
                                 
-                                # ITM Call/Put
+                                # Call Spread (Poot 1: ITM Call, Poot 2: OTM Call)
                                 itm_c_strk, itm_c_b, itm_c_a, _ = find_spread(chain_data, itm_call_target, 'C')
+                                otm_c_strk, otm_c_b, otm_c_a, _ = find_spread(chain_data, otm_call_target, 'C')
+                                
+                                # Put Spread (Poot 1: ITM Put, Poot 2: OTM Put)
                                 itm_p_strk, itm_p_b, itm_p_a, _ = find_spread(chain_data, itm_put_target, 'P')
+                                otm_p_strk, otm_p_b, otm_p_a, _ = find_spread(chain_data, otm_put_target, 'P')
                                 
                                 # Excel row index (1-based, +1 for header, dus len + 2)
                                 r = len(results_data) + 2
@@ -1906,7 +2484,11 @@ with tab4:
                                     'ATM_Call_Strike': atm_c_strk, 'ATM_Call_Bid': atm_c_b, 'ATM_Call_Ask': atm_c_a, 'ATM_Call_Spread': f"=MAX(0, F{r}-E{r})",
                                     'ATM_Put_Strike': atm_p_strk, 'ATM_Put_Bid': atm_p_b, 'ATM_Put_Ask': atm_p_a, 'ATM_Put_Spread': f"=MAX(0, J{r}-I{r})",
                                     'ITM_Call_Strike': itm_c_strk, 'ITM_Call_Bid': itm_c_b, 'ITM_Call_Ask': itm_c_a, 'ITM_Call_Spread': f"=MAX(0, N{r}-M{r})",
-                                    'ITM_Put_Strike': itm_p_strk, 'ITM_Put_Bid': itm_p_b, 'ITM_Put_Ask': itm_p_a, 'ITM_Put_Spread': f"=MAX(0, R{r}-Q{r})"
+                                    'OTM_Call_Strike': otm_c_strk, 'OTM_Call_Bid': otm_c_b, 'OTM_Call_Ask': otm_c_a, 'OTM_Call_Spread': f"=MAX(0, R{r}-Q{r})",
+                                    'ITM_Put_Strike': itm_p_strk, 'ITM_Put_Bid': itm_p_b, 'ITM_Put_Ask': itm_p_a, 'ITM_Put_Spread': f"=MAX(0, V{r}-U{r})",
+                                    'OTM_Put_Strike': otm_p_strk, 'OTM_Put_Bid': otm_p_b, 'OTM_Put_Ask': otm_p_a, 'OTM_Put_Spread': f"=MAX(0, Z{r}-Y{r})",
+                                    'Bull_Call_Spread_Prijs': f"=MAX(0, N{r}-Q{r})",
+                                    'Bull_Put_Spread_Credit': f"=MAX(0, U{r}-Z{r})"
                                 })
                             except Exception as e:
                                 # Streamlit needs to be allowed to halt the script if the user stops the app
@@ -2111,66 +2693,133 @@ with tab6:
     
     col_hr1, col_hr2 = st.columns([2, 1])
     with col_hr1:
-        test_symbols = st.multiselect(
-            "Geselecteerde Test-Aandelen / Indices",
-            options=['SPY', 'AAPL', 'MSFT', 'NVDA', 'QQQ', 'IWM', 'AMZN', 'GOOGL', 'META', 'TSLA'],
+        preset_symbols = ['SPY', 'QQQ', 'IWM', 'AAPL', 'MSFT', 'NVDA', 'AMZN', 'GOOGL', 'META', 'TSLA', 'AMD', 'NFLX', 'PLTR', 'XLV', 'XLF', 'XLE', 'SMH', 'GLD', 'SLV', 'JPM', 'BA']
+        selected_presets = st.multiselect(
+            "Selecteer Aandelen / Indices uit de lijst",
+            options=preset_symbols,
             default=['SPY', 'AAPL', 'MSFT', 'NVDA', 'QQQ'],
-            help="Selecteer de 5 aandelen of indices waarop u de 25 spreads wilt testen."
+            help="Kies 1 aandeel (bijv. enkel NVDA), 3, 5, 10 of meer aandelen voor de test."
+        )
+        custom_input = st.text_input(
+            "Of voer extra eigen symbolen in (gescheiden door komma's):",
+            value="",
+            placeholder="bijv. AMD, PLTR, XLV, TSLA",
+            help="Vul eventuele extra symbolen in die niet in de lijst staan."
         )
     with col_hr2:
-        trades_per_sym = st.number_input("Aantal spreads per aandeel", min_value=1, max_value=10, value=5)
-        
-    start_hitrate_btn = st.button("🧪 Start Maandelijkse Hit-Rate Test (25 Spreads / 5 Aandelen)", type="primary")
+        trades_per_sym = st.number_input("Aantal spreads per aandeel", min_value=1, max_value=20, value=5)
+        target_strat_choice = st.selectbox(
+            "🎯 Strategie Validatie Filter:",
+            options=["Automatisch (Trend-afhankelijk)", "Enkel BullCall", "Enkel BullPut", "Enkel BearCall", "Enkel BearPut"],
+            index=0,
+            help="Kies een specifieke strategie om de Hit-Rate test uitsluitend voor die strategie (bijv. enkel BullCall op NVDA) uit te voeren."
+        )
+
+    # Combine selected preset symbols and custom input
+    all_selected = list(selected_presets)
+    if custom_input.strip():
+        extra_syms = [s.strip().upper() for s in custom_input.split(',') if s.strip()]
+        for s in extra_syms:
+            if s not in all_selected:
+                all_selected.append(s)
+
+    test_symbols = all_selected
+    n_syms = len(test_symbols)
+    total_test_trades = n_syms * trades_per_sym
+
+    if n_syms == 0:
+        st.warning("⚠️ Selecteer ten minste 1 aandeel uit de lijst of voer een symbool in om de Hit-Rate test te starten.")
+    else:
+        st.info(f"📊 **Test Configuratie**: {total_test_trades} spreads over **{n_syms} aandeel/aandelen**: `{', '.join(test_symbols)}` ({trades_per_sym} spreads per aandeel) | Strategie: **{target_strat_choice}**")
+
+    start_hitrate_btn = st.button(
+        f"🧪 Start Hit-Rate Test ({total_test_trades} Spreads / {n_syms} Aandeel{'en' if n_syms != 1 else ''})", 
+        type="primary",
+        disabled=(n_syms == 0)
+    )
     
-    if start_hitrate_btn:
-        if not test_symbols:
-            st.error("Selecteer a.u.b. ten minste 1 aandeel voor de test.")
-        else:
-            from hitrate_backtester import SpreadHitRateTester
-            tester = SpreadHitRateTester()
+    if start_hitrate_btn and n_syms > 0:
+        from hitrate_backtester import SpreadHitRateTester
+        tester = SpreadHitRateTester()
+        
+        progress_bar = st.progress(0.0)
+        status_text = st.empty()
+        log_box = st.expander("Bekijk gedetailleerde test-logboeken", expanded=True)
+        log_messages = []
+        
+        def hr_progress(pct, msg):
+            progress_bar.progress(pct)
+            status_text.text(msg)
             
-            progress_bar = st.progress(0.0)
-            status_text = st.empty()
-            log_box = st.expander("Bekijk gedetailleerde test-logboeken", expanded=True)
-            log_messages = []
+        def hr_log(msg):
+            log_messages.append(msg)
+            with log_box:
+                st.text(msg)
+                
+        target_strat_key = 'AUTO' if "Automatisch" in target_strat_choice else target_strat_choice.replace("Enkel ", "").strip()
+        with st.spinner(f"Hit-Rate test wordt uitgevoerd voor {n_syms} aandeel/aandelen op historische marktdata..."):
+            res_dict = tester.run_backtest(
+                symbols=test_symbols,
+                trades_per_symbol=trades_per_sym,
+                target_strategy=target_strat_key,
+                progress_callback=hr_progress,
+                log_callback=hr_log
+            )
             
-            def hr_progress(pct, msg):
-                progress_bar.progress(pct)
-                status_text.text(msg)
-                
-            def hr_log(msg):
-                log_messages.append(msg)
-                with log_box:
-                    st.text(msg)
-                    
-            with st.spinner("Hit-Rate test wordt uitgevoerd op historische marktdata..."):
-                res_dict = tester.run_backtest(
-                    symbols=test_symbols,
-                    trades_per_symbol=trades_per_sym,
-                    progress_callback=hr_progress,
-                    log_callback=hr_log
-                )
-                
-            st.session_state['hitrate_results'] = res_dict
-            st.success("✅ Maandelijkse Hit-Rate test succesvol voltooid!")
+        st.session_state['hitrate_results'] = res_dict
+        st.success(f"✅ Hit-Rate test over {n_syms} aandeel/aandelen ({total_test_trades} spreads) succesvol voltooid!")
             
     if 'hitrate_results' in st.session_state and st.session_state['hitrate_results'].get('summary'):
         res = st.session_state['hitrate_results']
-        summary = res['summary']
         df_details = res['details_df']
         
-        st.subheader("📊 Testresultaten Samenvatting")
+        st.markdown("---")
+        st.subheader("🎯 Interactiviteit: Filter Hit-Rate Specifiek per Aandeel & Strategie")
+        st.caption("Gebruik onderstaande filters om de Hit-Rate, PoP en PnL statistieken uitsluitend te herberekenen voor een gekozen aandeel en strategie (bijv. uitsluitend BullCall op NVDA).")
+
+        f_col1, f_col2, f_col3 = st.columns([1.5, 1.5, 1.2])
+        with f_col1:
+            all_sym_options = ["Alle Symbolen"] + sorted(list(df_details['symbol'].unique()))
+            filter_sym = st.selectbox("Aandeel Filter:", options=all_sym_options, index=0, key="hr_filter_sym")
+        with f_col2:
+            all_strat_options = ["Alle Strategieën"] + sorted(list(df_details['strategy'].unique()))
+            filter_strat = st.selectbox("Strategie Filter:", options=all_strat_options, index=0, key="hr_filter_strat")
+        with f_col3:
+            only_win_chk = st.checkbox("Enkel Gewonnen Trades", value=False, key="hr_only_win")
+
+        # Apply filtering on the result dataframe
+        df_filtered = df_details.copy()
+        if filter_sym != "Alle Symbolen":
+            df_filtered = df_filtered[df_filtered['symbol'] == filter_sym]
+        if filter_strat != "Alle Strategieën":
+            df_filtered = df_filtered[df_filtered['strategy'] == filter_strat]
+        if only_win_chk:
+            df_filtered = df_filtered[df_filtered['win'] == True]
+
+        if not df_filtered.empty:
+            tot_cnt = len(df_filtered)
+            win_cnt = int(df_filtered['win'].sum())
+            hr_pct = round((win_cnt / tot_cnt) * 100.0, 1)
+            pop_avg = round(float(df_filtered['pop'].mean()), 1)
+            safe_cnt = int(df_filtered['em85_safe'].sum())
+            safe_pct = round((safe_cnt / tot_cnt) * 100.0, 1)
+            tot_pnl = round(float(df_filtered['realized_pnl'].sum()), 2)
+            avg_pnl = round(float(df_filtered['realized_pnl'].mean()), 2)
+        else:
+            tot_cnt, win_cnt, hr_pct, pop_avg, safe_pct, tot_pnl, avg_pnl = 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0
+
+        st.subheader(f"📊 Testresultaten Samenvatting ({filter_sym} | {filter_strat})")
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Werkelijke Hit Rate", f"{summary['hit_rate']}%", f"{summary['wins']}/{summary['total_trades']} Gewonnen")
-        m2.metric("Verwachte Kans (PoP)", f"{summary['avg_pop']}%", f"Verschil: {round(summary['hit_rate'] - summary['avg_pop'], 1)}%")
-        m3.metric("EM85 Safe Rate", f"{summary['em85_safe_rate']}%", "Geen BEP Touch")
-        m4.metric("Totale Realiseerde Winst", f"${summary['total_pnl']:,.2f}", f"Gem. ${summary['avg_pnl']:.2f} / trade")
+        m1.metric("Werkelijke Hit Rate", f"{hr_pct}%", f"{win_cnt}/{tot_cnt} Gewonnen")
+        m2.metric("Verwachte Kans (PoP)", f"{pop_avg}%", f"Verschil: {round(hr_pct - pop_avg, 1)}%")
+        m3.metric("EM85 Safe Rate", f"{safe_pct}%", "Geen BEP Touch")
+        m4.metric("Totale Realiseerde Winst", f"${tot_pnl:,.2f}", f"Gem. ${avg_pnl:.2f} / trade")
         
-        st.markdown("### 📋 Overzicht van de Gelopen Spreads")
+        st.markdown("### 📋 Overzicht van de Gelopen Spreads (Gefilterd)")
         
         # Configure columns for display
         st.dataframe(
-            df_details,
+            df_filtered,
             use_container_width=True,
             column_config={
                 "symbol": "Aandeel",

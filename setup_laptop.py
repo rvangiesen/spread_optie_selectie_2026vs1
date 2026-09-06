@@ -57,17 +57,25 @@ def main():
 
     # 4. Generate Launcher Batch Files (.bat) for Windows
     run_bat = project_dir / "run_laptop.bat"
-    run_bat_content = f"""@echo off
-TITLE AntiGravity Project 2 - Spread Selector
+    run_bat_content = """@echo off
+TITLE AntiGravity Project 2 - Spread Selector (Laptop)
 echo ============================================================
 echo   AntiGravity Project 2: Spread Selector (Laptop Mode)
 echo ============================================================
 echo.
-cd /d "{project_dir}"
+cd /d "%~dp0"
+if not exist ".venv\\Scripts\\activate.bat" (
+    echo [EERSTE OPSTART] Virtuele omgeving nog niet gevonden.
+    echo Bezig met eenmalige automatische installatie...
+    call setup_laptop.bat
+)
 if exist ".venv\\Scripts\\activate.bat" (
     call .venv\\Scripts\\activate.bat
 )
+echo.
 echo Bezig met starten van Streamlit Dashboard...
+echo Applicatie opent in uw browser (http://localhost:8501)...
+echo.
 streamlit run app.py
 pause
 """
@@ -76,10 +84,26 @@ pause
     safe_print("✅ Start-script aangemaakt: run_laptop.bat")
 
     setup_bat = project_dir / "setup_laptop.bat"
-    setup_bat_content = f"""@echo off
+    setup_bat_content = """@echo off
 TITLE AntiGravity Project 2 - Laptop Setup
-cd /d "{project_dir}"
-python setup_laptop.py
+echo ============================================================
+echo   AntiGravity Project 2: Spread Selector - Laptop Setup
+echo ============================================================
+echo.
+cd /d "%~dp0"
+echo Bezig met starten van setup_laptop.py...
+where python >nul 2>&1
+if %errorlevel% equ 0 (
+    python setup_laptop.py
+) else (
+    where py >nul 2>&1
+    if %errorlevel% equ 0 (
+        py setup_laptop.py
+    ) else (
+        echo [FOUT] Python is niet gevonden in het Windows PATH.
+        echo Installeer Python 3.10+ via https://www.python.org/ en vink "Add python.exe to PATH" aan!
+    )
+)
 pause
 """
     with open(setup_bat, "w", encoding="utf-8") as f:

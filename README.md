@@ -9,9 +9,9 @@ Wilt u dit project clonen naar een laptop of andere computer?
 Zie de volledige stap-voor-stap handleiding: **[Handleiding_Project2_Laptop_Installatie.md](Handleiding_Project2_Laptop_Installatie.md)**.
 
 **Snelstart op Laptop:**
-1. Kloon het project van GitHub: `git clone https://github.com/rvangiesen/infrasound_lfg_toolkit.git`
-2. Dubbelklik op **`setup_laptop.bat`** (bouwt automatisch een schone `.venv` op en installeert alle vereiste pakketten).
-3. Dubbelklik op **`run_laptop.bat`** om de app direct te starten!
+1. Kloon het project van GitHub: `git clone https://github.com/rvangiesen/spread_optie_selectie_2026vs1.git`
+2. Dubbelklik op **`run_laptop.bat`** (bouwt bij eerste opstart automatisch de `.venv` en start de app direct!).
+   *(Of voer eenmalig handmatig **`setup_laptop.bat`** uit).*
 
 ---
 

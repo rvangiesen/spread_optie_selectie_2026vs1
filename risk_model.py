@@ -40,7 +40,7 @@ def get_bs_risk_metrics(S, K, T, r, q, sigma, atr_10, target_profit_usd, technic
         "exercise_boundary": round(I, 2),
         "days_to_profit": round(ttp_days, 1),
         "tei_score": round(tei, 3),
-        "is_efficient": tei > 0 and ttp_days < (T * 365 * 0.5)
+        "is_efficient": tei > 1.2 and ttp_days < (T * 365 * 0.5)
     }
 
 if __name__ == "__main__":

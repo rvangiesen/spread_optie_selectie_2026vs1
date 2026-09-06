@@ -94,26 +94,46 @@ class IBClient:
             self.ib.reqMarketDataType(type_id)
 
     def connect(self, host='127.0.0.1', port=7497, client_id=1):
-        """Connects to the TWS/Gateway API."""
+        """Connects to the TWS/Gateway API with automatic client ID fallback and clear diagnostic messages."""
         try:
             if not self.ib.isConnected():
                 import asyncio
+                import random
                 loop = util.getLoop()
+                
+                # Primary attempt
+                target_cid = client_id if client_id and client_id > 0 else random.randint(1000, 9999)
+                
                 if loop.is_running():
                     async def _do_connect():
-                        await asyncio.wait_for(self.ib.connectAsync(host, port, clientId=client_id, timeout=0), timeout=10.0)
+                        try:
+                            await asyncio.wait_for(self.ib.connectAsync(host, port, clientId=target_cid, timeout=4.0), timeout=5.0)
+                        except Exception:
+                            # Retry with random fallback client ID if locked/busy
+                            fb_cid = random.randint(10000, 99999)
+                            await asyncio.wait_for(self.ib.connectAsync(host, port, clientId=fb_cid, timeout=4.0), timeout=5.0)
                     task = loop.create_task(_do_connect())
                     util.run(task)
                 else:
-                    self.ib.connect(host, port, clientId=client_id, timeout=0)
+                    try:
+                        self.ib.connect(host, port, clientId=target_cid, timeout=4.0)
+                    except Exception:
+                        fb_cid = random.randint(10000, 99999)
+                        self.ib.connect(host, port, clientId=fb_cid, timeout=4.0)
+                        
                 self.connected = True
                 self.host = host
                 self.port = port
-                self.client_id = client_id
+                self.client_id = target_cid
             return True, "Connected successfully"
         except Exception as e:
             self.connected = False
-            return False, f"Connection failed: {str(e)}"
+            err_msg = str(e)
+            if "TimeoutError" in err_msg or "timed out" in err_msg.lower() or "timeout" in err_msg.lower():
+                return False, f"TWS API time-out op poort {port}. TWS reageert niet. Controleer of er een pop-up in TWS staat of herstart TWS."
+            elif "ConnectionRefusedError" in err_msg or "10061" in err_msg:
+                return False, f"Geen TWS API actief op poort {port}. Controleer of TWS open staat en API is ingeschakeld."
+            return False, f"TWS Verbindingsfout ({host}:{port}): {err_msg}"
 
     def disconnect(self):
         """Disconnects from the TWS/Gateway API."""
@@ -232,6 +252,9 @@ class IBClient:
                 if symbol == 'SPX': symbol = '^SPX'
                 elif symbol == 'NDX': symbol = '^NDX'
                 elif symbol == 'VIX': symbol = '^VIX'
+                elif symbol == 'RUT': symbol = '^RUT'
+                elif symbol == 'DAX': symbol = '^GDAXI'
+                elif symbol == 'DJI': symbol = '^DJI'
                 
                 tk = yf.Ticker(symbol)
                 df = tk.history(period="1d")
@@ -350,6 +373,26 @@ class IBClient:
             except Exception:
                  pass
 
+        # Fallback 2: yfinance (Automatic Fallback if TWS price is missing or 0)
+        if price <= 0:
+            try:
+                symbol = contract.symbol
+                if symbol == 'SPX': symbol = '^SPX'
+                elif symbol == 'NDX': symbol = '^NDX'
+                elif symbol == 'VIX': symbol = '^VIX'
+                elif symbol == 'RUT': symbol = '^RUT'
+                elif symbol == 'DAX': symbol = '^GDAXI'
+                elif symbol == 'DJI': symbol = '^DJI'
+                
+                tk = yf.Ticker(symbol)
+                df = tk.history(period="1d")
+                if not df.empty:
+                    price = float(df['Close'].iloc[-1])
+                    if price > 0:
+                        source = 'yfinance (Fallback)'
+            except Exception:
+                pass
+
         if price <= 0:
              state_msg = f"Last={ticker.last if ticker else 'N/A'} Close={ticker.close if ticker else 'N/A'}"
              source = f"All sources failed ({state_msg})"
@@ -413,113 +456,86 @@ class IBClient:
     def get_historical_data(self, contract, duration='6 M', bar_size='1 day'):
         """
         Fetches historical data for a single contract.
-        Multi-tier fallback: TWS -> yfinance (for STK/IND) -> Price Snapshot.
+        Multi-tier fallback: yfinance (fastest) -> TWS -> Price Snapshot.
         Returns a pandas DataFrame with OHLCV data.
         """
-        import threading
-        import queue
         import time
         import yfinance as yf
         from ib_insync import util
+        import pandas as pd
 
-        # 1. Try TWS (Direct Async with Loop-Pumping)
-        if self.is_connected():
-            import asyncio
-            # Qualify contract first (Crucial for speed/reliability of reqHistoricalData)
-            qualified = self.qualify_contract_safe(contract)
-            working_contract = qualified if qualified else contract
-            
-            # Use Type 3 (Delayed) for historical data on weekends/paper accounts if Type 1 fails
-            self.ib.reqMarketDataType(3) 
-
-            # Determine optimal show_type order based on day of week
-            import datetime
-            is_weekend = datetime.datetime.now().weekday() >= 5
-            show_types = ['MIDPOINT', 'BID_ASK', 'TRADES'] if is_weekend else ['TRADES', 'MIDPOINT', 'BID_ASK']
-
-            # Durations to try
-            durations_to_try = [duration, '30 D'] if duration != '30 D' else [duration]
-
-            for dur in durations_to_try:
-                for show_type in show_types:
-                    try:
-                        print(f"[IBClient] TWS fetch attempt ({show_type}, {dur}) for {working_contract.symbol}")
-                        coro = self.ib.reqHistoricalDataAsync(
-                            working_contract,
-                            endDateTime='', # 'now'
-                            durationStr=dur,
-                            barSizeSetting=bar_size,
-                            whatToShow=show_type,
-                            useRTH=True
-                        )
-                        task = asyncio.ensure_future(coro)
-                        
-                        # Shortened timeout for speed
-                        start_wait = time.time()
-                        while not task.done():
-                            self.ib.sleep(0.1) # Faster pumping
-                            if time.time() - start_wait > 10.0: # 10s limit per attempt
-                                print(f"[IBClient] TWS Timeout (10s) for {working_contract.symbol} {show_type} {dur}")
-                                task.cancel()
-                                # Allow a small breath for cancellation to process
-                                self.ib.sleep(0.05)
-                                break
-                        
-                        if task.done() and not task.cancelled() and not task.exception():
-                            bars = task.result()
-                            if bars:
-                                print(f"[IBClient] TWS success for {working_contract.symbol} ({show_type})")
-                                return util.df(bars)
-                    except Exception as e:
-                        print(f"[IBClient] TWS Error for {working_contract.symbol} {show_type}: {e}")
-
-        # 2. Try yfinance Fallback (ONLY if not in simulated future)
+        # 1. Try yfinance FIRST for STK/IND/IDX (lightning fast ~0.1s, no TWS timeouts)
         if contract.secType in ['STK', 'IND', 'IDX']:
             import datetime
             symbol = contract.symbol
             if symbol == 'SPX': symbol = '^SPX'
             elif symbol == 'NDX': symbol = '^NDX'
             elif symbol == 'VIX': symbol = '^VIX'
+            elif symbol == 'RUT': symbol = '^RUT'
+            elif symbol == 'DAX': symbol = '^GDAXI'
+            elif symbol == 'DJI': symbol = '^DJI'
             
-            for attempt in range(1, 4):
+            try:
+                start_date = (datetime.datetime.now() - datetime.timedelta(days=400)).strftime('%Y-%m-%d')
+                df = yf.download(
+                    symbol, 
+                    start=start_date,
+                    interval='1d', 
+                    progress=False, 
+                    threads=False
+                )
+                
+                if df is not None and not df.empty:
+                    if isinstance(df.columns, pd.MultiIndex):
+                        df.columns = df.columns.get_level_values(0)
+                    
+                    df.columns = [c.lower() for c in df.columns]
+                    
+                    if 'adj close' in df.columns:
+                        df = df.rename(columns={'adj close': 'adj_close'})
+                    
+                    if 'close' in df.columns:
+                        df['close'] = df['close'].astype(float)
+                        df = df.sort_index()
+                        return df
+            except Exception as e:
+                print(f"[IBClient] yf error for {symbol}: {e}")
+
+        # 2. Try TWS (Direct Async with Short Timeout)
+        if self.is_connected():
+            import asyncio
+            qualified = self.qualify_contract_safe(contract)
+            working_contract = qualified if qualified else contract
+            
+            self.ib.reqMarketDataType(3) 
+
+            for show_type in ['TRADES', 'MIDPOINT']:
                 try:
-                    # Use a slightly more generous window for yfinance
-                    start_date = (datetime.datetime.now() - datetime.timedelta(days=400)).strftime('%Y-%m-%d')
-                    
-                    print(f"[IBClient] yf.download attempt {attempt} for {symbol} (from {start_date})...")
-                    df = yf.download(
-                        symbol, 
-                        start=start_date,
-                        interval='1d', 
-                        progress=False, 
-                        threads=False
+                    coro = self.ib.reqHistoricalDataAsync(
+                        working_contract,
+                        endDateTime='',
+                        durationStr=duration,
+                        barSizeSetting=bar_size,
+                        whatToShow=show_type,
+                        useRTH=True
                     )
+                    task = asyncio.ensure_future(coro)
                     
-                    if df is not None and not df.empty:
-                        # CRITICAL: yf 1.2+ often returns MultiIndex even for single symbol
-                        if isinstance(df.columns, pd.MultiIndex):
-                            df.columns = df.columns.get_level_values(0)
-                        
-                        # Normalize column names to lowercase
-                        df.columns = [c.lower() for c in df.columns]
-                        
-                        # Fix for Close vs Adj Close
-                        if 'adj close' in df.columns:
-                            df = df.rename(columns={'adj close': 'adj_close'})
-                        
-                        if 'close' in df.columns:
-                            df['close'] = df['close'].astype(float)
-                            df = df.sort_index()
-                            print(f"[IBClient] yf SUCCESS for {symbol} ({len(df)} rows)")
-                            return df
+                    start_wait = time.time()
+                    while not task.done():
+                        self.ib.sleep(0.05)
+                        if time.time() - start_wait > 2.0: # 2s max timeout
+                            task.cancel()
+                            break
+                    
+                    if task.done() and not task.cancelled() and not task.exception():
+                        bars = task.result()
+                        if bars:
+                            return util.df(bars)
                 except Exception as e:
-                    print(f"[IBClient] yf attempt {attempt} error for {symbol}: {e}")
-                    time.sleep(1.5)
-            
-            print(f"[IBClient] yf TOTAL FAILURE for {symbol}")
+                    print(f"[IBClient] TWS Historical Error for {working_contract.symbol}: {e}")
 
         # 3. Final Fallback: Single Row Snapshot
-        print(f"[IBClient] Final fallback: Creating snapshot row for {contract.symbol}")
         curr_price = self.get_market_price(contract)
         if curr_price and curr_price > 0:
             return pd.DataFrame({'close': [curr_price]}, index=[pd.Timestamp.now()])
@@ -698,6 +714,9 @@ class IBClient:
                 if yf_sym == 'SPX': yf_sym = '^SPX'
                 elif yf_sym == 'NDX': yf_sym = '^NDX'
                 elif yf_sym == 'VIX': yf_sym = '^VIX'
+                elif yf_sym == 'RUT': yf_sym = '^RUT'
+                elif yf_sym == 'DAX': yf_sym = '^GDAXI'
+                elif yf_sym == 'DJI': yf_sym = '^DJI'
                 
                 tk = yf.Ticker(yf_sym)
                 expirations = tk.options
@@ -772,6 +791,7 @@ class IBClient:
     def get_chain_greeks_and_oi(self, symbol, expiration, strikes, multiplier='100', use_yf=False):
         if use_yf:
             import yfinance as yf
+            import pandas as pd
             from datetime import datetime
             import math
             try:
@@ -779,9 +799,17 @@ class IBClient:
                 if yf_sym == 'SPX': yf_sym = '^SPX'
                 elif yf_sym == 'NDX': yf_sym = '^NDX'
                 elif yf_sym == 'VIX': yf_sym = '^VIX'
+                elif yf_sym == 'RUT': yf_sym = '^RUT'
+                elif yf_sym == 'DAX': yf_sym = '^GDAXI'
+                elif yf_sym == 'DJI': yf_sym = '^DJI'
                 
                 tk = yf.Ticker(yf_sym)
                 yf_exp = f"{expiration[:4]}-{expiration[4:6]}-{expiration[6:8]}"
+                exps = tk.options
+                if not exps:
+                    return pd.DataFrame()
+                if yf_exp not in exps:
+                    yf_exp = min(exps, key=lambda d: abs((pd.to_datetime(d) - pd.to_datetime(yf_exp)).days))
                 chain = tk.option_chain(yf_exp)
                 
                 # Fetch underlying price for greeks
@@ -933,27 +961,39 @@ class IBClient:
         yf_lookup = {}
         try:
             import yfinance as yf
+            import pandas as pd
+            yf_sym = symbol
+            if yf_sym == 'SPX': yf_sym = '^SPX'
+            elif yf_sym == 'NDX': yf_sym = '^NDX'
+            elif yf_sym == 'VIX': yf_sym = '^VIX'
+            elif yf_sym == 'RUT': yf_sym = '^RUT'
+            elif yf_sym == 'DAX': yf_sym = '^GDAXI'
+            elif yf_sym == 'DJI': yf_sym = '^DJI'
+            ticker = yf.Ticker(yf_sym)
             yf_exp = f"{expiration[:4]}-{expiration[4:6]}-{expiration[6:8]}"
-            ticker = yf.Ticker(symbol)
-            chain = ticker.option_chain(yf_exp)
-            
-            for _, row in chain.calls.iterrows():
-                strike_val = round(float(row['strike']), 4)
-                yf_lookup[(strike_val, 'C')] = {
-                    'bid': float(row.get('bid', 0.0)),
-                    'ask': float(row.get('ask', 0.0)),
-                    'last': float(row.get('lastPrice', 0.0)),
-                    'close': float(row.get('lastPrice', 0.0))
-                }
-            for _, row in chain.puts.iterrows():
-                strike_val = round(float(row['strike']), 4)
-                yf_lookup[(strike_val, 'P')] = {
-                    'bid': float(row.get('bid', 0.0)),
-                    'ask': float(row.get('ask', 0.0)),
-                    'last': float(row.get('lastPrice', 0.0)),
-                    'close': float(row.get('lastPrice', 0.0))
-                }
-            print(f"DEBUG_LOG: yfinance option price fallback loaded with {len(yf_lookup)} strikes for {symbol} {expiration}.")
+            exps = ticker.options
+            if exps:
+                if yf_exp not in exps:
+                    yf_exp = min(exps, key=lambda d: abs((pd.to_datetime(d) - pd.to_datetime(yf_exp)).days))
+                chain = ticker.option_chain(yf_exp)
+                
+                for _, row in chain.calls.iterrows():
+                    strike_val = round(float(row['strike']), 4)
+                    yf_lookup[(strike_val, 'C')] = {
+                        'bid': float(row.get('bid', 0.0)),
+                        'ask': float(row.get('ask', 0.0)),
+                        'last': float(row.get('lastPrice', 0.0)),
+                        'close': float(row.get('lastPrice', 0.0))
+                    }
+                for _, row in chain.puts.iterrows():
+                    strike_val = round(float(row['strike']), 4)
+                    yf_lookup[(strike_val, 'P')] = {
+                        'bid': float(row.get('bid', 0.0)),
+                        'ask': float(row.get('ask', 0.0)),
+                        'last': float(row.get('lastPrice', 0.0)),
+                        'close': float(row.get('lastPrice', 0.0))
+                    }
+                print(f"DEBUG_LOG: yfinance option price fallback loaded with {len(yf_lookup)} strikes for {symbol} {expiration}.")
         except Exception as e:
             print(f"DEBUG_LOG: yfinance option price fallback unavailable for {symbol} {expiration}: {e}")
 
@@ -1083,10 +1123,10 @@ class IBClient:
             # print(f"[IBClient] Scanner Error: {e}")
             return []
             
-    def place_strategy_order(self, symbol, expiry, right, strategy, strikes_dict, action, quantity, price=None, order_type='LMT', enable_bracket=True, tp_pct=0.20, sl_pct=0.20):
+    def place_strategy_order(self, symbol, expiry, right, strategy, strikes_dict, action, quantity, price=None, order_type='LMT', enable_bracket=True, tp_pct=0.20, sl_pct=0.20, custom_tp_price=None, custom_sl_price=None):
         """
         Intelligently places orders for any supported strategy (single or multi-leg).
-        Supports Take Profit (+20%) and Stop Loss (-20%) attached bracket orders.
+        Supports Take Profit and Stop Loss attached bracket orders (via % or custom $ price).
         """
         self.last_error = ""
         if not self.is_connected():
@@ -1127,93 +1167,105 @@ class IBClient:
                 self.last_error = err_msg
             return qualified
 
-        # 1. Build Legs based on Strategy
+        # 1. Build Legs based on Strategy with explicit Option Right ('P' vs 'C')
         legs_data = [] # List of (contract, action)
         
-        if strategy in ['LongCall', 'LongPut']:
-            c = make_opt(strikes_dict.get('strike_buy', 0))
+        is_credit_strategy = strategy in ['BullPut', 'BearCall', 'IronCondor']
+
+        if strategy == 'LongCall':
+            c = make_opt(strikes_dict.get('strike_buy'), 'C')
             if c: legs_data.append((c, 'BUY'))
-            
-        elif strategy in ['BullCall', 'BullPut', 'BearCall', 'BearPut']:
-            c_buy = make_opt(strikes_dict.get('strike_buy', 0))
-            c_sell = make_opt(strikes_dict.get('strike_sell', 0))
+        elif strategy == 'LongPut':
+            c = make_opt(strikes_dict.get('strike_buy'), 'P')
+            if c: legs_data.append((c, 'BUY'))
+        elif strategy == 'BullCall':
+            c_buy = make_opt(strikes_dict.get('strike_buy'), 'C')
+            c_sell = make_opt(strikes_dict.get('strike_sell'), 'C')
             if c_buy and c_sell:
                 legs_data.append((c_buy, 'BUY'))
                 legs_data.append((c_sell, 'SELL'))
-                
+        elif strategy == 'BearCall':
+            c_sell = make_opt(strikes_dict.get('strike_sell'), 'C')
+            c_buy = make_opt(strikes_dict.get('strike_buy'), 'C')
+            if c_sell and c_buy:
+                # Credit spread leg actions inside BAG:
+                legs_data.append((c_sell, 'SELL'))
+                legs_data.append((c_buy, 'BUY'))
+        elif strategy == 'BullPut':
+            s_sell = strikes_dict.get('strike_sell', 0)
+            s_buy = strikes_dict.get('strike_buy', 0)
+            if s_sell < s_buy: s_sell, s_buy = s_buy, s_sell # Ensure s_sell is higher strike
+            
+            p_sell = make_opt(s_sell, 'P')
+            p_buy = make_opt(s_buy, 'P')
+            if p_sell and p_buy:
+                # Credit spread leg actions inside BAG:
+                legs_data.append((p_sell, 'SELL'))
+                legs_data.append((p_buy, 'BUY'))
+        elif strategy == 'BearPut':
+            p_buy = make_opt(strikes_dict.get('strike_buy'), 'P')
+            p_sell = make_opt(strikes_dict.get('strike_sell'), 'P')
+            if p_buy and p_sell:
+                legs_data.append((p_buy, 'BUY'))
+                legs_data.append((p_sell, 'SELL'))
         elif strategy == 'Strangle':
-            c_p = make_opt(strikes_dict.get('strike_p_buy', 0), 'P')
-            c_c = make_opt(strikes_dict.get('strike_c_buy', 0), 'C')
-            if c_p and c_c:
-                legs_data.append((c_p, 'BUY'))
-                legs_data.append((c_c, 'BUY'))
-                
+            p_buy = make_opt(strikes_dict.get('strike_p_buy'), 'P')
+            c_buy = make_opt(strikes_dict.get('strike_c_buy'), 'C')
+            if p_buy and c_buy:
+                legs_data.append((p_buy, 'BUY'))
+                legs_data.append((c_buy, 'BUY'))
         elif strategy == 'IronCondor':
-            cpb = make_opt(strikes_dict.get('strike_p_buy', 0), 'P')
-            cps = make_opt(strikes_dict.get('strike_p_sell', 0), 'P')
-            ccs = make_opt(strikes_dict.get('strike_c_sell', 0), 'C')
-            ccb = make_opt(strikes_dict.get('strike_c_buy', 0), 'C')
-            if all([cpb, cps, ccs, ccb]):
-                legs_data.append((cpb, 'BUY'))
-                legs_data.append((cps, 'SELL'))
-                legs_data.append((ccs, 'SELL'))
-                legs_data.append((ccb, 'BUY'))
+            p_buy = make_opt(strikes_dict.get('strike_p_buy'), 'P')
+            p_sell = make_opt(strikes_dict.get('strike_p_sell'), 'P')
+            c_sell = make_opt(strikes_dict.get('strike_c_sell'), 'C')
+            c_buy = make_opt(strikes_dict.get('strike_c_buy'), 'C')
+            if p_buy and p_sell and c_sell and c_buy:
+                legs_data.append((p_buy, 'BUY'))
+                legs_data.append((p_sell, 'SELL'))
+                legs_data.append((c_sell, 'SELL'))
+                legs_data.append((c_buy, 'BUY'))
 
         if not legs_data:
-            print(f"DEBUG_LOG: Error building legs for {strategy}")
+            if not self.last_error:
+                self.last_error = f"Kon optiebenen niet opbouwen voor {strategy}"
             return None
 
-        # 2. Construct Order
-        algo_strategy = ""
-        algo_params = []
-        is_lmt = False
-        if 'Adaptive' in order_type:
-            priority = order_type.split('-')[1].strip()
-            algo_strategy = 'Adaptive'
-            algo_params = [TagValue('adaptivePriority', priority)]
-            is_lmt = True
-            order_type_str = 'LMT'
-        elif order_type.startswith('LMT'):
-            is_lmt = True
-            order_type_str = 'LMT'
-        else:
-            order_type_str = order_type
-            is_lmt = (order_type_str == 'LMT')
+        # 2. Determine Order Action and Price Formatting
+        # Standardize outer_action for TWS BAG API:
+        # - Credit spreads: outer action MUST be 'SELL', limit price MUST be POSITIVE.
+        # - Debit spreads & Long options: outer action MUST be 'BUY', limit price MUST be POSITIVE.
+        outer_action = 'SELL' if is_credit_strategy else 'BUY'
+        
+        # Force limit price to positive float as required by TWS for BAG orders
+        if price is not None:
+            price = abs(float(price))
 
-        can_bracket = enable_bracket and price is not None and float(price) != 0.0
-        parent_transmit = not can_bracket
+        can_bracket = enable_bracket and (price is not None and price > 0)
+        parent_transmit = False if can_bracket else True
+
+        # Parse Adaptive Algo parameters
+        order_type_str = 'LMT'
+        algo_strategy = None
+        algo_params = []
+
+        if 'Adaptive' in order_type:
+            order_type_str = 'LMT'
+            algo_strategy = 'Adaptive'
+            priority = 'Normal'
+            if 'Urgent' in order_type: priority = 'Urgent'
+            elif 'Patient' in order_type: priority = 'Patient'
+            algo_params = [TagValue('adaptivePriority', priority)]
+
+        trade = None
 
         if len(legs_data) == 1:
-            # Single Leg
+            # Single Leg Option Order
             contract, leg_action = legs_data[0]
-            target_contract = contract
             order = Order(
-                action=action, 
+                action=leg_action,
                 totalQuantity=quantity,
                 orderType=order_type_str,
-                lmtPrice=price if is_lmt else None,
-                tif='DAY',
-                outsideRth=True,
-                transmit=parent_transmit
-            )
-            if algo_strategy:
-                order.algoStrategy = algo_strategy
-                order.algoParams = algo_params
-            print(f"DEBUG_LOG: Placing single leg order: {action} {quantity} {contract.localSymbol} (Algo: {algo_strategy})")
-            trade = self.ib.placeOrder(contract, order)
-        else:
-            # Multi Leg (BAG)
-            combo_legs = []
-            for c, leg_act in legs_data:
-                combo_legs.append(ComboLeg(conId=c.conId, ratio=1, action=leg_act, exchange='SMART'))
-            
-            bag = Contract(symbol=symbol, secType='BAG', currency='USD', exchange='SMART', comboLegs=combo_legs)
-            target_contract = bag
-            order = Order(
-                action=action,
-                totalQuantity=quantity,
-                orderType=order_type_str,
-                lmtPrice=price if is_lmt else None,
+                lmtPrice=price,
                 transmit=parent_transmit,
                 tif='DAY',
                 outsideRth=True
@@ -1221,25 +1273,56 @@ class IBClient:
             if algo_strategy:
                 order.algoStrategy = algo_strategy
                 order.algoParams = algo_params
-            print(f"DEBUG_LOG: Placing BAG order ({len(legs_data)} legs): {action} {quantity} combo...")
+            print(f"DEBUG_LOG: Placing Single Leg order: {leg_action} {quantity} x {contract.symbol} {contract.strike}{contract.right} @ {price}...")
+            trade = self.ib.placeOrder(contract, order)
+            target_contract = contract
+
+        else:
+            # Multi-Leg Combo Order (BAG)
+            combo_legs = []
+            for c, leg_act in legs_data:
+                combo_legs.append(ComboLeg(
+                    conId=c.conId,
+                    ratio=1,
+                    action=leg_act,
+                    exchange='SMART'
+                ))
+            
+            bag = Contract(symbol=symbol, secType='BAG', currency='USD', exchange='SMART', comboLegs=combo_legs)
+            target_contract = bag
+            order = Order(
+                action=outer_action,
+                totalQuantity=quantity,
+                orderType=order_type_str,
+                lmtPrice=price,
+                transmit=parent_transmit,
+                tif='DAY',
+                outsideRth=True
+            )
+            if algo_strategy:
+                order.algoStrategy = algo_strategy
+                order.algoParams = algo_params
+            print(f"DEBUG_LOG: Placing BAG order ({len(legs_data)} legs): {outer_action} {quantity} combo @ {price}...")
             trade = self.ib.placeOrder(bag, order)
 
-        # Attach Take Profit & Stop Loss Bracket Orders (20% default)
+        # Attach Take Profit & Stop Loss Bracket Orders
         if can_bracket and trade and trade.order.orderId:
             parent_id = trade.order.orderId
             p_val = float(price)
+            exit_action = 'BUY' if outer_action == 'SELL' else 'SELL'
             
-            if p_val > 0: # Debit / Long
-                tp_price = round(p_val * (1.0 + tp_pct), 2)
-                sl_price = round(p_val * (1.0 - sl_pct), 2)
-                exit_action = 'SELL' if action == 'BUY' else 'BUY'
-            else: # Credit (signed negative)
-                abs_p = abs(p_val)
-                tp_price = -round(abs_p * (1.0 - tp_pct), 2)
-                sl_price = -round(abs_p * (1.0 + sl_pct), 2)
-                exit_action = 'BUY' if action == 'BUY' else 'SELL'
+            if custom_tp_price is not None and custom_sl_price is not None:
+                tp_price = round(abs(float(custom_tp_price)), 2)
+                sl_price = round(abs(float(custom_sl_price)), 2)
+            else:
+                if outer_action == 'BUY': # Debit / Long
+                    tp_price = round(p_val * (1.0 + tp_pct), 2)
+                    sl_price = round(p_val * (1.0 - sl_pct), 2)
+                else: # Credit
+                    tp_price = max(0.01, round(p_val * (1.0 - tp_pct), 2))
+                    sl_price = round(p_val * (1.0 + sl_pct), 2)
 
-            # 1. Take Profit Order (+20%)
+            # 1. Take Profit Order
             tp_order = Order(
                 action=exit_action,
                 totalQuantity=quantity,
@@ -1250,10 +1333,10 @@ class IBClient:
                 outsideRth=True,
                 transmit=False
             )
-            print(f"DEBUG_LOG: Attaching Take Profit order (+{tp_pct*100:.0f}%): {exit_action} @ {tp_price} (parentId: {parent_id})")
+            print(f"DEBUG_LOG: Attaching Take Profit order: {exit_action} @ {tp_price} (parentId: {parent_id})")
             self.ib.placeOrder(target_contract, tp_order)
 
-            # 2. Stop Loss Order (-20%) - Transmits full bracket
+            # 2. Stop Loss Order - Transmits full bracket
             sl_order = Order(
                 action=exit_action,
                 totalQuantity=quantity,
@@ -1265,7 +1348,7 @@ class IBClient:
                 outsideRth=True,
                 transmit=True
             )
-            print(f"DEBUG_LOG: Attaching Stop Loss order (-{sl_pct*100:.0f}%): {exit_action} @ {sl_price} (parentId: {parent_id})")
+            print(f"DEBUG_LOG: Attaching Stop Loss order: {exit_action} @ {sl_price} (parentId: {parent_id})")
             self.ib.placeOrder(target_contract, sl_order)
 
         # 3. Wait for Submit
@@ -1367,3 +1450,343 @@ class IBClient:
             pass
             
         return info_dict
+
+    def get_account_portfolio_spreads(self):
+        """
+        Fetches open portfolio items from TWS, groups option contracts into
+        Single Leg Options and Spreads (BullPut, BullCall, BearCall, BearPut, IronCondor),
+        and returns a list of position dictionaries.
+        """
+        if not self.is_connected():
+            return []
+
+        import pandas as pd
+
+        # Combine items from ib.portfolio() and ib.positions() instantly
+        portfolio_items = list(self.ib.portfolio() or [])
+        
+        try:
+            raw_positions = self.ib.positions()
+            if raw_positions:
+                existing_con_ids = {p.contract.conId for p in portfolio_items if p.contract and getattr(p.contract, 'conId', None)}
+                for pos in raw_positions:
+                    if pos.contract and pos.position != 0:
+                        c_id = getattr(pos.contract, 'conId', 0)
+                        if not c_id or c_id not in existing_con_ids:
+                            class PosWrapper:
+                                def __init__(self, p):
+                                    self.contract = p.contract
+                                    self.position = p.position
+                                    self.marketPrice = 0.0
+                                    self.marketValue = 0.0
+                                    self.averageCost = getattr(p, 'avgCost', 0.0)
+                                    self.unrealizedPNL = 0.0
+                                    self.realizedPNL = 0.0
+                                    self.account = getattr(p, 'account', '')
+                            portfolio_items.append(PosWrapper(pos))
+        except Exception as e:
+            print(f"DEBUG_LOG: ib.positions() fetch error: {e}")
+
+        if not portfolio_items:
+            portfolio_items = []
+
+        # Filter for option contracts (OPT and FOP) with non-zero position
+        opt_items = [p for p in portfolio_items if p.contract and p.contract.secType in ['OPT', 'FOP'] and p.position != 0]
+
+        if not opt_items:
+            print(f"DEBUG_LOG: Total portfolio items: {len(portfolio_items)}, Option items: 0")
+            return []
+
+        # Group by (symbol, expiration)
+        grouped = {}
+        for item in opt_items:
+            key = (item.contract.symbol, item.contract.lastTradeDateOrContractMonth)
+            if key not in grouped:
+                grouped[key] = []
+            grouped[key].append(item)
+
+        positions_list = []
+
+        for (sym, expiry), items in grouped.items():
+            # Calculate DTE
+            try:
+                exp_dt = pd.to_datetime(expiry)
+                now_dt = pd.Timestamp.now().normalize()
+                dte = (exp_dt - now_dt).days
+            except Exception:
+                dte = 30
+
+            # Get underlying price
+            from ib_insync import Stock
+            und_price = self.get_market_price(Stock(symbol=sym, exchange='SMART', currency='USD'))
+            if not und_price or und_price <= 0:
+                snap = self.get_market_data_snapshot(Stock(symbol=sym, exchange='SMART', currency='USD'), use_yf=True)
+                und_price = snap.get('price', 0.0)
+
+            if len(items) == 1:
+                # Single Leg Option (Long Call, Short Call, Long Put, Short Put)
+                item = items[0]
+                c = item.contract
+                pos_qty = item.position
+                right = c.right.upper()
+                strike = float(c.strike)
+                pnl_usd = float(item.unrealizedPNL or 0.0)
+                avg_cost = float(item.averageCost or 0.0)
+                mkt_price = float(item.marketPrice or 0.0)
+                
+                if right == 'C':
+                    strat = "LongCall" if pos_qty > 0 else "ShortCall"
+                else:
+                    strat = "LongPut" if pos_qty > 0 else "ShortPut"
+                
+                total_cost = abs(avg_cost * pos_qty)
+                pnl_pct = (pnl_usd / total_cost * 100.0) if total_cost > 0 else 0.0
+
+                positions_list.append({
+                    'symbol': sym,
+                    'strategy': strat,
+                    'expiry': expiry,
+                    'dte': dte,
+                    'qty': int(abs(pos_qty)),
+                    'is_long': pos_qty > 0,
+                    'strikes_str': f"{strike} {right}",
+                    'sold_strike': strike if pos_qty < 0 else 0.0,
+                    'bought_strike': strike if pos_qty > 0 else 0.0,
+                    'right': right,
+                    'market_price': mkt_price,
+                    'entry_price': avg_cost / 100.0 if avg_cost > 0 else mkt_price,
+                    'unrealized_pnl': pnl_usd,
+                    'pnl_pct': pnl_pct,
+                    'underlying_price': und_price,
+                    'legs': [item]
+                })
+
+            elif len(items) == 2:
+                # Vertical Spread (2 legs)
+                p1, p2 = items[0], items[1]
+                c1, c2 = p1.contract, p2.contract
+                
+                rights = {c1.right.upper(), c2.right.upper()}
+                pnl_usd = float(p1.unrealizedPNL or 0.0) + float(p2.unrealizedPNL or 0.0)
+                
+                total_cost = abs(float(p1.averageCost or 0.0) * float(p1.position)) + abs(float(p2.averageCost or 0.0) * float(p2.position))
+                pnl_pct = (pnl_usd / (total_cost / 2.0) * 100.0) if total_cost > 0 else 0.0
+                
+                qty = int(abs(p1.position))
+
+                if len(rights) == 1 and 'P' in rights:
+                    sell_item = p1 if p1.position < 0 else (p2 if p2.position < 0 else None)
+                    buy_item = p1 if p1.position > 0 else (p2 if p2.position > 0 else None)
+                    
+                    sold_strike = float(sell_item.contract.strike) if sell_item else 0.0
+                    bought_strike = float(buy_item.contract.strike) if buy_item else 0.0
+                    
+                    strat = "BullPut" if sold_strike > bought_strike else "BearPut"
+                    strikes_str = f"{sold_strike}/{bought_strike} P"
+                elif len(rights) == 1 and 'C' in rights:
+                    sell_item = p1 if p1.position < 0 else (p2 if p2.position < 0 else None)
+                    buy_item = p1 if p1.position > 0 else (p2 if p2.position > 0 else None)
+                    
+                    sold_strike = float(sell_item.contract.strike) if sell_item else 0.0
+                    bought_strike = float(buy_item.contract.strike) if buy_item else 0.0
+                    
+                    strat = "BearCall" if sold_strike < bought_strike else "BullCall"
+                    strikes_str = f"{sold_strike}/{bought_strike} C"
+                else:
+                    strat = "Strangle"
+                    sold_strike = float(c1.strike)
+                    bought_strike = float(c2.strike)
+                    strikes_str = f"{c1.strike}/{c2.strike}"
+
+                positions_list.append({
+                    'symbol': sym,
+                    'strategy': strat,
+                    'expiry': expiry,
+                    'dte': dte,
+                    'qty': qty,
+                    'is_long': False,
+                    'strikes_str': strikes_str,
+                    'sold_strike': sold_strike,
+                    'bought_strike': bought_strike,
+                    'right': list(rights)[0] if len(rights) == 1 else 'COMBO',
+                    'market_price': (float(p1.marketPrice or 0) + float(p2.marketPrice or 0)) / 2.0,
+                    'entry_price': (float(p1.averageCost or 0) + float(p2.averageCost or 0)) / 200.0,
+                    'unrealized_pnl': pnl_usd,
+                    'pnl_pct': pnl_pct,
+                    'underlying_price': und_price,
+                    'legs': [p1, p2]
+                })
+
+            else:
+                pnl_usd = sum([float(i.unrealizedPNL or 0.0) for i in items])
+                qty = int(abs(items[0].position))
+                positions_list.append({
+                    'symbol': sym,
+                    'strategy': 'IronCondor',
+                    'expiry': expiry,
+                    'dte': dte,
+                    'qty': qty,
+                    'is_long': False,
+                    'strikes_str': f"Multi-Leg ({len(items)} legs)",
+                    'sold_strike': 0.0,
+                    'bought_strike': 0.0,
+                    'right': 'COMBO',
+                    'market_price': 0.0,
+                    'entry_price': 0.0,
+                    'unrealized_pnl': pnl_usd,
+                    'pnl_pct': 0.0,
+                    'underlying_price': und_price,
+                    'legs': items
+                })
+
+        return positions_list
+
+    def execute_portfolio_adjustments(self, approved_actions):
+        """
+        Executes approved exit/management actions in TWS for portfolio positions.
+        Generates and places real orders in TWS for closing, rolling, or iron condor expansion.
+        """
+        if not self.is_connected() or not approved_actions:
+            return []
+
+        from ib_insync import Option, MarketOrder, LimitOrder, Contract, ComboLeg
+        import pandas as pd
+
+        results = []
+
+        for action in approved_actions:
+            sym = action.get('symbol')
+            code = action.get('selected_action', action.get('action_code', ''))
+            legs = action.get('legs', [])
+            qty = action.get('qty', 1)
+
+            if not legs:
+                results.append({'symbol': sym, 'status': 'SKIPPED', 'message': f"Geen optiebenen gevonden voor {sym}."})
+                continue
+
+            # --- CASE 1: SLUITEN / WINST BORGEN / STOP LOSS ---
+            if any(k in code for k in ['TIJDIG_SLUITEN', 'WINST_BORGEN', 'Direct Sluiten', 'Winst Borgen', 'Stop-Loss']):
+                closed_count = 0
+                for item in legs:
+                    c = item.contract
+                    pos_qty = item.position
+                    if pos_qty == 0:
+                        continue
+                    
+                    q_contract = self.qualify_contract_safe(c) or c
+                    close_action = 'BUY' if pos_qty < 0 else 'SELL'
+                    close_qty = int(abs(pos_qty))
+                    
+                    order = MarketOrder(action=close_action, totalQuantity=close_qty)
+                    trade = self.ib.placeOrder(q_contract, order)
+                    closed_count += 1
+                
+                results.append({
+                    'symbol': sym,
+                    'status': 'SUCCESS',
+                    'message': f"Sluitingsorder verstuurd naar TWS ({closed_count} leg(s) gesloten)."
+                })
+
+            # --- CASE 2: DOORROLLEN (ROLLING) ---
+            elif any(k in code for k in ['Doorrollen', 'DOORROLLEN', 'roll']):
+                placed_orders = 0
+                
+                # 1. Close current legs
+                for item in legs:
+                    c = item.contract
+                    pos_qty = item.position
+                    if pos_qty == 0: continue
+                    q_c = self.qualify_contract_safe(c) or c
+                    close_act = 'BUY' if pos_qty < 0 else 'SELL'
+                    order = MarketOrder(action=close_act, totalQuantity=int(abs(pos_qty)))
+                    self.ib.placeOrder(q_c, order)
+                    placed_orders += 1
+
+                # 2. Open new legs in next month (+30 days DTE)
+                curr_exp = legs[0].contract.lastTradeDateOrContractMonth
+                try:
+                    exp_dt = pd.to_datetime(curr_exp)
+                    next_exp_target = (exp_dt + pd.Timedelta(days=30)).strftime("%Y%m%d")
+                except Exception:
+                    next_exp_target = (pd.Timestamp.now() + pd.Timedelta(days=60)).strftime("%Y%m%d")
+
+                # Get available expirations for symbol
+                chains = self.get_option_chains_params(sym)
+                next_exp = None
+                if chains and hasattr(chains, 'expirations') and chains.expirations:
+                    exps = sorted([e for e in chains.expirations if e > curr_exp])
+                    if exps:
+                        next_exp = exps[0]
+                
+                if not next_exp:
+                    next_exp = next_exp_target
+
+                # Open new legs for next expiration
+                for item in legs:
+                    c = item.contract
+                    pos_qty = item.position
+                    if pos_qty == 0: continue
+                    
+                    new_opt = Option(
+                        symbol=sym,
+                        lastTradeDateOrContractMonth=str(next_exp),
+                        strike=float(c.strike),
+                        right=str(c.right),
+                        exchange=c.exchange or 'SMART',
+                        currency=c.currency or 'USD',
+                        multiplier=c.multiplier or '100'
+                    )
+                    q_new_opt = self.qualify_contract_safe(new_opt) or new_opt
+                    open_act = 'SELL' if pos_qty < 0 else 'BUY'
+                    order = MarketOrder(action=open_act, totalQuantity=int(abs(pos_qty)))
+                    self.ib.placeOrder(q_new_opt, order)
+                    placed_orders += 1
+
+                results.append({
+                    'symbol': sym,
+                    'status': 'SUCCESS',
+                    'message': f"Doorrol-orders verstuurd naar TWS ({placed_orders} benen: oude gesloten, nieuwe geopend op {next_exp})."
+                })
+
+            # --- CASE 3: OMZETTEN NAAR IRON CONDOR ---
+            elif any(k in code for k in ['Iron Condor', 'OMZETTEN']):
+                placed_orders = 0
+                curr_exp = legs[0].contract.lastTradeDateOrContractMonth
+                
+                rights = {item.contract.right.upper() for item in legs}
+                
+                if 'P' in rights:
+                    sold_put = max([float(i.contract.strike) for i in legs])
+                    call_sold_strike = round(sold_put * 1.05, 1)
+                    call_bought_strike = round(sold_put * 1.075, 1)
+                    
+                    c_short = Option(symbol=sym, lastTradeDateOrContractMonth=str(curr_exp), strike=call_sold_strike, right='C', exchange='SMART', currency='USD', multiplier='100')
+                    c_long = Option(symbol=sym, lastTradeDateOrContractMonth=str(curr_exp), strike=call_bought_strike, right='C', exchange='SMART', currency='USD', multiplier='100')
+                    
+                    q_short = self.qualify_contract_safe(c_short) or c_short
+                    q_long = self.qualify_contract_safe(c_long) or c_long
+                    
+                    self.ib.placeOrder(q_short, MarketOrder(action='SELL', totalQuantity=qty))
+                    self.ib.placeOrder(q_long, MarketOrder(action='BUY', totalQuantity=qty))
+                    placed_orders += 2
+
+                results.append({
+                    'symbol': sym,
+                    'status': 'SUCCESS' if placed_orders > 0 else 'WARNING',
+                    'message': f"Iron Condor uitbreidingsorders ({placed_orders} benen) verstuurd naar TWS."
+                })
+
+            else:
+                results.append({
+                    'symbol': sym,
+                    'status': 'SKIPPED',
+                    'message': f"Positie gehandhaafd (Geen actie vereist)."
+                })
+
+        # Ensure event loop flushes all placed orders over the socket to TWS
+        if self.is_connected():
+            self.ib.sleep(1.5)
+
+        return results
+
+
