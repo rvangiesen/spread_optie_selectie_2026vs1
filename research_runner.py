@@ -138,6 +138,7 @@ class FCResearchRunner:
         dummy_chains = [DummyChain(target_exp.replace('-', ''), strikes_list)]
         
         return {
+            'symbol': symbol,
             'price': price,
             'underlying_iv': underlying_iv,
             'dte': target_dte,
@@ -152,6 +153,7 @@ class FCResearchRunner:
         """
         strategies = ['BullPut', 'BullCall', 'BearPut', 'BearCall']
         all_spreads = []
+        sym = ref_data.get('symbol', 'SPY')
         
         params = {
             'width': width,
@@ -161,7 +163,7 @@ class FCResearchRunner:
             'min_strike_pct': min_strike,
             'itm_support_level': itm_support,
             'iv': ref_data['underlying_iv'],
-            'symbol': 'SPY'
+            'symbol': sym
         }
         
         for strat in strategies:
@@ -183,7 +185,7 @@ class FCResearchRunner:
         enriched = self.scanner.calculate_metrics(
             combined_df,
             ib_client=None, # will use theoretical calculations locally since chain_data is populated
-            symbol='SPY',
+            symbol=sym,
             underlying_price=ref_data['price'],
             chain_data=ref_data['chain_data'],
             underlying_iv=ref_data['underlying_iv'],
@@ -542,7 +544,8 @@ class FCResearchRunner:
         details_p = doc.add_paragraph()
         details_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
         now_str = datetime.date.today().strftime('%d-%m-%Y')
-        det_run = details_p.add_run(f"Datum: {now_str}  |  Onderzochte Index: {ref_data['chain_data']['und_price'].iloc[0] if not ref_data['chain_data'].empty else 'SPY'} (${ref_data['price']:.2f})  |  IV: {ref_data['underlying_iv']*100:.1f}%")
+        doc_sym = ref_data.get('symbol', 'SPY')
+        det_run = details_p.add_run(f"Datum: {now_str}  |  Onderzochte Waarde: {doc_sym} (${ref_data['price']:.2f})  |  IV: {ref_data['underlying_iv']*100:.1f}%")
         det_run.font.name = 'Segoe UI'
         det_run.font.size = Pt(10)
         det_run.font.color.rgb = charcoal_color

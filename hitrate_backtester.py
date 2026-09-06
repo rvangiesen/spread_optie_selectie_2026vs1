@@ -12,7 +12,7 @@ class SpreadHitRateTester:
     def __init__(self):
         pass
 
-    def run_backtest(self, symbols=['SPY', 'AAPL', 'MSFT', 'NVDA', 'QQQ'], trades_per_symbol=5, em_multiplier=1.439535, progress_callback=None, log_callback=None):
+    def run_backtest(self, symbols=['SPY', 'AAPL', 'MSFT', 'NVDA', 'QQQ'], trades_per_symbol=5, em_multiplier=1.439535, target_strategy='AUTO', progress_callback=None, log_callback=None):
         def log(msg):
             if log_callback:
                 log_callback(msg)
@@ -42,9 +42,28 @@ class SpreadHitRateTester:
             df_hist['hv30'] = df_hist['returns'].rolling(window=30).std() * np.sqrt(252)
 
             total_bars = len(df_hist)
-            step_size = max(1, (total_bars - 95) // trades_per_symbol)
-            entry_indices = [60 + i * step_size for i in range(trades_per_symbol)]
-            entry_indices = [idx for idx in entry_indices if idx < total_bars - 30]
+            
+            # Start 14 calendar days back from the latest available date in dataset
+            latest_date = df_hist.index[-1]
+            target_start_date = latest_date - pd.Timedelta(days=14)
+            
+            try:
+                start_entry_idx = df_hist.index.get_indexer([target_start_date], method='nearest')[0]
+            except Exception:
+                start_entry_idx = total_bars - 15
+
+            start_entry_idx = min(total_bars - 1, max(60, start_entry_idx))
+
+            # Step backward in time (~21 trading days = 1 month per trade)
+            step_size = 21
+            entry_indices = []
+            for i in range(trades_per_symbol):
+                idx = start_entry_idx - (i * step_size)
+                if idx >= 60:
+                    entry_indices.append(idx)
+
+            # Sort chronologically so report flows naturally from past to present
+            entry_indices.sort()
 
             for idx_entry in entry_indices:
                 current_step += 1
@@ -70,7 +89,17 @@ class SpreadHitRateTester:
                 ema50 = sub_close.ewm(span=50).mean().iloc[-1]
 
                 is_bullish = price_entry >= ema50
-                strat = 'BullPut' if is_bullish else 'BearCall'
+                
+                # Determine strategy: AUTO or user-selected target_strategy
+                if target_strategy and str(target_strategy).upper() in ['BULLPUT', 'BEARCALL', 'BULLCALL', 'BEARPUT']:
+                    st_clean = str(target_strategy).upper()
+                    if st_clean == 'BULLPUT': strat = 'BullPut'
+                    elif st_clean == 'BEARCALL': strat = 'BearCall'
+                    elif st_clean == 'BULLCALL': strat = 'BullCall'
+                    elif st_clean == 'BEARPUT': strat = 'BearPut'
+                    else: strat = 'BullPut'
+                else:
+                    strat = 'BullPut' if is_bullish else 'BearCall'
 
                 dte = 30
                 em68 = price_entry * hv_val * np.sqrt(dte / 365.0)
@@ -82,18 +111,37 @@ class SpreadHitRateTester:
                 if strat == 'BullPut':
                     short_strike = round(price_entry - em_safety_dist, 1)
                     long_strike = short_strike - 5.0
-                    # Theoretical credit model: higher multiplier -> further OTM -> lower credit
                     dist_factor = max(0.4, 2.0 - (em_multiplier * 0.75))
                     credit = round(min(1.80, max(0.15, (em68 * 0.22) * dist_factor)), 2)
                     bep = short_strike - credit
                     bep_dist = price_entry - bep
-                else: # BearCall
+                    max_profit = credit * 100.0
+                    max_loss = (5.0 - credit) * 100.0
+                elif strat == 'BearCall':
                     short_strike = round(price_entry + em_safety_dist, 1)
                     long_strike = short_strike + 5.0
                     dist_factor = max(0.4, 2.0 - (em_multiplier * 0.75))
                     credit = round(min(1.80, max(0.15, (em68 * 0.22) * dist_factor)), 2)
                     bep = short_strike + credit
                     bep_dist = bep - price_entry
+                    max_profit = credit * 100.0
+                    max_loss = (5.0 - credit) * 100.0
+                elif strat == 'BullCall':
+                    long_strike = round(price_entry - (em_safety_dist * 0.2), 1)
+                    short_strike = round(long_strike + 5.0, 1)
+                    credit = round(min(2.80, max(0.50, (em68 * 0.35))), 2)
+                    bep = long_strike + credit
+                    bep_dist = max(0.1, bep - price_entry)
+                    max_profit = (5.0 - credit) * 100.0
+                    max_loss = credit * 100.0
+                else: # BearPut
+                    long_strike = round(price_entry + (em_safety_dist * 0.2), 1)
+                    short_strike = round(long_strike - 5.0, 1)
+                    credit = round(min(2.80, max(0.50, (em68 * 0.35))), 2)
+                    bep = long_strike - credit
+                    bep_dist = max(0.1, price_entry - bep)
+                    max_profit = (5.0 - credit) * 100.0
+                    max_loss = credit * 100.0
 
                 em85_dekking = (bep_dist / max(0.01, em85)) * 100.0
                 pop_est = min(96.0, max(60.0, 50.0 + (bep_dist / price_entry) * 350.0))
@@ -110,13 +158,18 @@ class SpreadHitRateTester:
                     touched_bep = min_price_during <= bep
                     breached_short = min_price_during <= short_strike
                     win = price_exp > short_strike
-                else: # BearCall
+                elif strat == 'BearCall':
                     touched_bep = max_price_during >= bep
                     breached_short = max_price_during >= short_strike
                     win = price_exp < short_strike
-
-                max_profit = credit * 100.0
-                max_loss = (5.0 - credit) * 100.0
+                elif strat == 'BullCall':
+                    touched_bep = min_price_during <= bep
+                    breached_short = min_price_during <= long_strike
+                    win = price_exp >= bep
+                else: # BearPut
+                    touched_bep = max_price_during >= bep
+                    breached_short = max_price_during >= long_strike
+                    win = price_exp <= bep
 
                 if win:
                     realized_pnl = max_profit

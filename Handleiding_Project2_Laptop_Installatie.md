@@ -27,7 +27,7 @@ Wij hebben een geautomatiseerd setup-script ontwikkeld (`setup_laptop.py` & `set
 Open een terminal/command prompt op uw laptop in de gewenste map (bijv. `C:\Users\Laptop\Documents\Python_Projecten`) en voer uit:
 
 ```bash
-git clone https://github.com/rvangiesen/infrasound_lfg_toolkit.git "AntiGravity Project 2_ spreadselectie_ setup via AG"
+git clone https://github.com/rvangiesen/spread_optie_selectie_2026vs1.git "AntiGravity Project 2_ spreadselectie_ setup via AG"
 ```
 *(Of gebruik uw GitHub Desktop applicatie om de repository naar de laptop te clonen).*
 
