@@ -137,11 +137,27 @@ In de Spread Selector worden verschillende optievormen gebruikt. Elk contract he
 
 ---
 
-### 🎯 7. Single Leg: Long Call & Long Put (Losse contracten)
-* **Marktvisie**: **Zeer sterk stijgend** (Long Call) of **zeer sterk dalend** (Long Put).
-* **Type**: **Debit** (Aankoop van één los contract).
-* **Max Winst**: Theoretisch onbeperkt (bij Call) of zeer hoog (bij Put tot koers $0).
-* **Max Verlies**: 100% beperkt tot de betaalde optiepremie.
+### 🎯 7. Single Leg: Long Call, Long Put & Short Put (Losse Contracten)
+* **Long Call**:
+  * **Marktvisie**: **Sterk stijgend** (Bullish momentum).
+  * **Type**: **Debit** (Aankoop van één At-The-Money / Out-of-the-Money call).
+  * **Max Winst**: Onbeperkt naar boven zolang het aandeel blijft stijgen.
+  * **Max Verlies**: 100% beperkt tot de betaalde optiepremie.
+  * **Break-Even**: Strike + betaalde premie.
+
+* **Long Put**:
+  * **Marktvisie**: **Sterk dalend** (Bearish bescherming of short-speculatie).
+  * **Type**: **Debit** (Aankoop van één At-The-Money / Out-of-the-Money put).
+  * **Max Winst**: Zeer hoog (tot koers $0 van het onderliggende aandeel).
+  * **Max Verlies**: 100% beperkt tot de betaalde optiepremie.
+  * **Break-Even**: Strike - betaalde premie.
+
+* **Short Put (Cash Secured Put)**:
+  * **Marktvisie**: **Neutraal tot gematigd stijgend** (Bullish / Zijwaarts).
+  * **Type**: **Credit** (Verkoop van één Out-of-the-Money put op de EM85-veiligheidsmarge).
+  * **Max Winst**: 100% van de ontvangen premie (zolang koers op expiratie $\ge$ Strike blijft).
+  * **Max Verlies**: Aanzienlijk indien het aandeel hard daalt (beschermd via de 2x credit stoploss of doorrollen).
+  * **Break-Even**: Strike - ontvangen premie.
 
 ---
 
@@ -377,24 +393,65 @@ Bij elke positie kun je de interactieve koersgrafiek openen:
 - Met de knop **`🚀 VOER GEACCORDEERDE ACTIES UIT VIA TWS`** worden alle geaccordeerde opdrachten in één keer naar TWS gestuurd.
 ---
 
-## 12. Hit-Rate Validatietest & Strategie-Filtering per Aandeel (Tab 6)
+## 12. Anti-Assignment Bescherming & Verdedigingsroutine (TWS Protocol)
 
-Om de wiskundige betrouwbaarheid van gekozen optiestrategieën vooraf te toetsen, beschikt het systeem in **Tab 6** over een **Hit-Rate Validatie & Backtest Engine**.
+Om te voorkomen dat je ongewild aandelen aangewezen krijgt (*assignment*) bij een short optiepoot die In-the-Money (ITM) dreigt te raken, hanteert het systeem een geautomatiseerde **Anti-Assignment Verdedigingsroutine**:
 
-### 🎯 Specifieke Strategie Validatie (bijv. Enkel BullCall op NVDA):
-1. **Vooraf Instellen (Vóór de Test)**:
-   - Selecteer 1 of meer aandelen (bijv. uitsluitend `NVDA`).
-   - Kies bij **`🎯 Strategie Validatie Filter`** de gewenste specifieke optievorm:
-     * **`Enkel BullCall`** (Debit Call Spread)
-     * **`Enkel BullPut`** (Credit Put Spread)
-     * **`Enkel BearCall`** (Credit Call Spread)
-     * **`Enkel BearPut`** (Debit Put Spread)
-     * **`Automatisch (Trend-afhankelijk)`**
-   - De test berekent nu uitsluitend het wiskundige rendement en de hit-rate voor díe specifieke combinatie.
+1. **3-Traps Risicosignalering**:
+   - 🟢 **Veilig (Groen)**: De koers ligt comfortabel buiten de Break-Even / EM85 marge en $\text{DTE} > 21$.
+   - 🟡 **Alert (Geel)**: $\text{DTE} \le 21$ dagen OF de koers nadert het Break-Even niveau binnen $1 \times \text{EM68}$. Tijdswaardeverval versnelt en het assignment-risico stijgt.
+   - 🔴 **Gevaar / Toewijzingsrisico (Rood)**: De short leg is In-The-Money (ITM) geraakt of het stoploss-criterium ($2\times$ ontvangen credit) is bereikt. Direct ingrijpen is vereist!
 
-2. **Interacteren & Dynamisch Filteren (Na afloop van de Test)**:
-   - Na het draaien van de test kun je via het interactieve filterblok direct filteren op **Aandeel** (bijv. `NVDA`) én **Strategie** (bijv. `BullCall`).
-   - De statistieken (**Werkelijke Hit Rate %**, **PoP %**, **EM85 Dekking %** en **Totale Winst $**) worden **direct in real-time herberekend** voor jouw gekozen aandeel en strategie.
+2. **Geautomatiseerde Verdedigingsacties**:
+   - **Actie A: Doorrollen voor Netto Credit (+30 DTE)**:
+     * Bij een tijdelijke tegenbeweging sluit het systeem de huidige spread en opent een nieuwe spread 30 dagen verder in de toekomst op een veiligere uitoefenprijs.
+     * **Strikte regel**: Het doorrollen mag alleen plaatsvinden voor een **netto credit** (ontvangst van extra premie), zodat het totale risico niet toeneemt.
+   - **Actie B: Harde Stop-Loss Sluiting (2x Credit)**:
+     * Indien doorrollen voor credit niet meer mogelijk is of de markt te hard doorbreekt, genereert het systeem direct een sluitingsorder.
+     * Het verlies wordt strikt afgekapt op $2\times$ de oorspronkelijk ontvangen premie, waardoor het account beschermd blijft tegen grote uitschieters en ongewenste aandelenlevering.
+
+3. **1-Klik Uitvoering via TWS Combo Orders**:
+   - Spreads worden altijd als één ondeelbare **Combo / Bag Order** gesloten of doorgerold. Hierdoor loop je geen risico dat slechts één been wordt uitgevoerd (*leg risk*).
+
+---
+
+## 13. Hit-Rate Validatietest, 1-Klik Vergelijking & Optimalisatie (Tab 6)
+
+In **Tab 6 ("🧪 Hit-Rate Test")** beschikt het systeem over een krachtige backtest- en optimalisatie-engine die historische marktdata analyseert om de winstgevendheid van verschillende configuraties te valideren.
+
+### 🎯 1. Strategie Validatie Filter
+Je kunt de historische prestaties testen over alle gangbare optiestrategieën:
+* **`Automatisch (Trend-afhankelijk)`**: Kiest automatisch de beste strategie per marktfase.
+* **`Enkel BullPut`** (Credit Put Spread)
+* **`Enkel BearCall`** (Credit Call Spread)
+* **`Enkel BullCall`** (Debit Call Spread)
+* **`Enkel BearPut`** (Debit Put Spread)
+* **`Enkel LongCall`** (At-The-Money losse Call koop)
+* **`Enkel LongPut`** (At-The-Money losse Put koop)
+* **`Enkel ShortPut`** (Losse Cash-Secured Put op de EM-veiligheidsmarge)
+
+### 📊 2. Reële Amerikaanse Beursstrike Afronding
+Om te garanderen dat de backtest 100% overeenkomt met de werkelijkheid, berekent het model uitoefenprijzen volgens de officiële Amerikaanse beursgrids:
+* Koersen onder \$25: stappen van **\$0.50** (bijv. \$10.50, \$11.00)
+* Koersen \$25 – \$100: stappen van **\$1.00** (bijv. \$51.00)
+* Koersen \$100 – \$250: stappen van **\$2.50** (bijv. \$152.50)
+* Koersen boven \$250: stappen van **\$5.00** (bijv. \$410.00)
+* Bij single-leg contracten (zoals Long Calls) toont de niet-bestaande poot netjes een `-` in plaats van verwarrende `$0.00` waarden.
+
+### 🔀 3. Drie Invoermodi voor Symbolen
+* **Standaard Benchmark Pool**: Test direct op de meest liquide benchmarks (SPY, QQQ, AAPL, MSFT, etc.).
+* **Top 5 Kandidaten uit Tab 1**: Neemt automatisch de beste actuele scans over.
+* **Aangepaste Symbolen Invoeren**: Typ eenvoudig eigen tickers in (bijv. `ACNB, DRTS, MRK, NESR, RVMD, WELL`). Het systeem valideert en telt de tickers live.
+
+### ⚖️ 4. 1-Klik Vergelijkingstest (Sidebar vs. Standaard Benchmark)
+Met de knop **"🔬 Vergelijk Huidige Sidebar vs. Standaard Benchmark"** test het systeem twee varianten gelijktijdig naast elkaar:
+1. Jouw **huidige sidebar-instellingen** (jouw gekozen DTE, breedte, ITM support).
+2. De **Standaard Benchmark** (Breedte: \$5.00, DTE: 20–35, EM85 support).
+
+Het dashboard toont direct:
+* Welke instelling globaal het meest winstgevend is (**Winst/Trade**, **Hit Rate %**, **Totale Portfoliowinst** en **Geen-BEP-Touch Rate**).
+* **1-Klik Synchronisatie**: Met de knop **"⚡ Pas Beste Instellingen Toe op de Linker Sidebar"** worden alle filters in de linker sidebar met één klik veilig overgezet naar de winnende instelling.
+* **Aandeel-Specifieke Optimalisatie**: Als bepaalde aandelen beter presteren met specifieke instellingen, worden deze profielen opgeslagen (`optimal_stock_configs`). De scanner in Tab 1 past deze instellingen dan automatisch toe per aandeel!
 
 ---
 

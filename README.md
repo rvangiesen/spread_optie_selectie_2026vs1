@@ -15,6 +15,14 @@ Zie de volledige stap-voor-stap handleiding: **[Handleiding_Project2_Laptop_Inst
 
 ---
 
+## 🌟 Nieuwste Functies & Validaties
+* **🛡️ Anti-Assignment Verdedigingsroutine (TWS Protocol)**: 3-traps risicosignalering (Groen/Geel/Rood) met geautomatiseerde combo-verdediging (doorrollen voor credit of $2\times$ credit stoploss) om toewijzing van aandelen te voorkomen.
+* **⚡ 1-Klik Optimalisatie (Sidebar vs. Standaard Benchmark)**: Evalueer sidebar-instellingen direct tegen de gevalideerde EM85 benchmark en synchroniseer met 1 klik.
+* **🧪 Uitgebreid Strategie Validatie Filter**: Backtest moeiteloos BullPut, BearCall, BullCall, BearPut, én losse contracten (Long Call, Long Put, Cash-Secured Short Put) op echte Amerikaanse beursstrikes ($0.50, $1.00, $2.50, $5.00).
+* **🎯 Aangepaste Symbolen Invoer**: Eenvoudig eigen lijstjes tickers testen met live validatie.
+
+---
+
 ## 📖 Gebruikershandleidingen
 * **Laptop Installatie**: [Handleiding_Project2_Laptop_Installatie.md](Handleiding_Project2_Laptop_Installatie.md) (1-klik setup, `.venv` herstel & agent instructies).
 * **Gebruik van de App**: [Handleiding_Optie_Contract_Selectie.md](Handleiding_Optie_Contract_Selectie.md) (uitleg van knoppen, EM85, filters, sentimentmodel, ranking en orderplaatsing).
