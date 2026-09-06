@@ -739,6 +739,12 @@ elif scan_mode == "Super-Fast ATM Long Scan (1% Koop)":
     st.sidebar.info("Super-snel scannen van S&P 500 aandelen en ETF's voor Long Call/Put opties via het 1% koop proces.")
     sec_type = "Aandeel"
 
+# Process any pending sidebar updates (safe from StreamlitAPIException)
+if 'pending_sidebar_updates' in st.session_state:
+    for k, v in st.session_state['pending_sidebar_updates'].items():
+        st.session_state[k] = v
+    del st.session_state['pending_sidebar_updates']
+
 # Strategy Baseline Preset Initialization
 if 'preset_min_strike' not in st.session_state:
     st.session_state['preset_min_strike'] = 8.0  # Spreads baseline: 8.0%
@@ -760,21 +766,27 @@ if 'optimal_stock_configs' not in st.session_state:
 # Filters
 st.sidebar.subheader("Filters & Criteria")
 
+if 'sidebar_reset_feedback' in st.session_state:
+    st.sidebar.success(st.session_state.pop('sidebar_reset_feedback'))
+
 col_sb_res1, col_sb_res2 = st.sidebar.columns(2)
 with col_sb_res1:
     if st.button("⚡ Reset Filters", use_container_width=True, help="Reset alle filters naar de optimale basisinstellingen per strategie (8% BEP afstand voor Spreads, 1% voor Longs)"):
         is_long_only = any(s in active_strategies for s in ["LongCall", "LongPut"]) and not any(s in active_strategies for s in ["BullCall", "BullPut", "BearCall", "BearPut", "IronCondor", "Strangle"])
+        reset_dict = {
+            'preset_koopadvies_p': 1.0,
+            'sb_min_dte': 5,
+            'sb_max_dte': 32,
+            'sb_itm_support': "EM85 Optimaal (1.44x Expected Move)"
+        }
         if is_long_only:
-            st.session_state['preset_min_strike'] = 1.0 # 1% voor Longs
-            st.session_state['sb_width'] = 5
+            reset_dict['preset_min_strike'] = 1.0 # 1% voor Longs
+            reset_dict['sb_width'] = 5
         else:
-            st.session_state['preset_min_strike'] = 8.0 # Minimaal 8% BEP voor Spreads
-            st.session_state['sb_width'] = 10
-        st.session_state['preset_koopadvies_p'] = 1.0
-        st.session_state['sb_min_dte'] = 5
-        st.session_state['sb_max_dte'] = 32
-        st.session_state['sb_itm_support'] = "EM85 Optimaal (1.44x Expected Move)"
-        st.sidebar.success("✅ Filters gereset!")
+            reset_dict['preset_min_strike'] = 8.0 # Minimaal 8% BEP voor Spreads
+            reset_dict['sb_width'] = 10
+        st.session_state['pending_sidebar_updates'] = reset_dict
+        st.session_state['sidebar_reset_feedback'] = "✅ Filters gereset!"
         st.rerun()
 
 with col_sb_res2:
@@ -794,10 +806,10 @@ max_pain_buffer = st.sidebar.number_input("Max Pain Buffer (Punten)", value=5, h
 
 # Koopadvies (Buy Recommendation) Filters
 st.sidebar.subheader("Koopadvies Instellingen")
-koopadvies_p = st.sidebar.slider("Koopadvies Drempel (p %)", -5.0, 10.0, float(st.session_state.get('preset_koopadvies_p', 1.0)), step=0.5, help="Aandeel hoeft slechts p% te stijgen/dalen voor winst (Basissetting = 1.0%).") / 100.0
+koopadvies_p = st.sidebar.slider("Koopadvies Drempel (p %)", -5.0, 10.0, float(st.session_state.get('preset_koopadvies_p', 1.0)), step=0.5, key='preset_koopadvies_p', help="Aandeel hoeft slechts p% te stijgen/dalen voor winst (Basissetting = 1.0%).") / 100.0
 only_koopadvies = st.sidebar.checkbox("Alleen Koopadvies tonen", value=False)
 strike_range_pct = st.sidebar.number_input("Afstand tot Koers % (Strike Range)", min_value=-50.0, max_value=50.0, value=30.0, step=1.0, help="Positief = Bull Spreads ONDER de koers. Negatief = Bull Spreads BOVEN de koers.") / 100.0
-min_strike_pct = st.sidebar.number_input("Min. afstand tot Koers % (BEP Afstand)", min_value=-50.0, max_value=50.0, value=float(st.session_state.get('preset_min_strike', 8.0)), step=1.0, help="Minimale foutmarge / BEP Afstand (Basissetting Spreads = 8.0%, Longs = 1.0%).") / 100.0
+min_strike_pct = st.sidebar.number_input("Min. afstand tot Koers % (BEP Afstand)", min_value=-50.0, max_value=50.0, value=float(st.session_state.get('preset_min_strike', 8.0)), step=1.0, key='preset_min_strike', help="Minimale foutmarge / BEP Afstand (Basissetting Spreads = 8.0%, Longs = 1.0%).") / 100.0
 
 itm_options = ["EM85 Optimaal (1.44x Expected Move)", "Standaard (Min. afstand %)", "Niveau 1 (1x Expected Move)", "Niveau 2 (2x Expected Move)", "Niveau 3 (Extreme / 2.5x)"]
 curr_itm_val = st.session_state.get('sb_itm_support', "EM85 Optimaal (1.44x Expected Move)")
@@ -3116,18 +3128,29 @@ with tab6:
         )
 
         st.markdown("### 🔄 1-Klik Synchronisatie & Optimalisatie")
+
+        if 'sidebar_update_feedback' in st.session_state:
+            fb_type, fb_msg = st.session_state.pop('sidebar_update_feedback')
+            if fb_type == "success":
+                st.success(fb_msg)
+            else:
+                st.info(fb_msg)
+
         act_col1, act_col2 = st.columns(2)
         with act_col1:
-            if st.button("⚡ Pas Beste Globale Instellingen Toe op de Linker Sidebar", type="primary", use_container_width=True, key="btn_apply_best_global"):
+            btn_label = "⚡ Pas Standaard Benchmark Toe op de Linker Sidebar" if glob_best == "Standaard" else "⚡ Pas Beste Instellingen Toe op de Linker Sidebar"
+            if st.button(btn_label, type="primary", use_container_width=True, key="btn_apply_best_global"):
+                st.session_state['pending_sidebar_updates'] = {
+                    'sb_width': 5,
+                    'sb_min_dte': 20,
+                    'sb_max_dte': 35,
+                    'sb_itm_support': "EM85 Optimaal (1.44x Expected Move)",
+                    'preset_min_strike': 8.0
+                }
                 if glob_best == "Standaard":
-                    st.session_state['sb_width'] = 5
-                    st.session_state['sb_min_dte'] = 20
-                    st.session_state['sb_max_dte'] = 35
-                    st.session_state['sb_itm_support'] = "EM85 Optimaal (1.44x Expected Move)"
-                    st.session_state['preset_min_strike'] = 8.0
-                    st.success("✅ Sidebar filters direct bijgewerkt naar Standaard Benchmark waarden (Breedte: $5.00, DTE: 20-35, EM85)!")
+                    st.session_state['sidebar_update_feedback'] = ("success", "✅ Sidebar filters direct bijgewerkt naar Standaard Benchmark waarden (Breedte: $5.00, DTE: 20-35, EM85)!")
                 else:
-                    st.info("✅ Uw huidige sidebar instellingen presteren al optimaal! Geen wijziging nodig.")
+                    st.session_state['sidebar_update_feedback'] = ("info", "ℹ️ Sidebar filters bijgewerkt naar Standaard Benchmark waarden (Breedte: $5.00, DTE: 20-35, EM85).")
                 st.rerun()
 
         with act_col2:
