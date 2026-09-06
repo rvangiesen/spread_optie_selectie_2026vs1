@@ -2880,21 +2880,67 @@ with tab6:
     Dit geeft u hard wiskundig en statistisch bewijs van de **werkelijke winstratio (Hit Rate %)**, de **EM85 veiligheidsscore** en de **totale winstgevendheid**.
     """)
     
-    col_hr1, col_hr2 = st.columns([2, 1])
+    col_hr1, col_hr2 = st.columns([2.2, 1])
     with col_hr1:
         preset_symbols = ['SPY', 'QQQ', 'IWM', 'AAPL', 'MSFT', 'NVDA', 'AMZN', 'GOOGL', 'META', 'TSLA', 'AMD', 'NFLX', 'PLTR', 'XLV', 'XLF', 'XLE', 'SMH', 'GLD', 'SLV', 'JPM', 'BA']
-        selected_presets = st.multiselect(
-            "Selecteer Aandelen / Indices uit de lijst",
-            options=preset_symbols,
-            default=['SPY', 'AAPL', 'MSFT', 'NVDA', 'QQQ'],
-            help="Kies 1 aandeel (bijv. enkel NVDA), 3, 5, 10 of meer aandelen voor de test."
+        
+        sym_input_mode = st.radio(
+            "Kies Invoermethode voor Symbolen:",
+            ["✍️ Eigen Symbolen (Direct typen/plakken)", "📋 Kiezen uit Benchmark Lijst", "📡 Overnemen uit Scanner (Tab 1)"],
+            index=0,
+            horizontal=True
         )
-        custom_input = st.text_input(
-            "Of voer extra eigen symbolen in (gescheiden door komma's):",
-            value="",
-            placeholder="bijv. AMD, PLTR, XLV, TSLA",
-            help="Vul eventuele extra symbolen in die niet in de lijst staan."
-        )
+
+        if sym_input_mode == "✍️ Eigen Symbolen (Direct typen/plakken)":
+            c_text_col1, c_text_col2 = st.columns([3.5, 1.2])
+            with c_text_col1:
+                custom_input = st.text_input(
+                    "Voer eigen symbolen in (gescheiden door komma's of spaties):",
+                    value=st.session_state.get('custom_symbols_text', "ACNB, DRTS, MRK, NESR, RVMD, WELL"),
+                    placeholder="bijv. ACNB, DRTS, MRK, NESR, RVMD, WELL",
+                    key="hr_custom_input_field"
+                )
+                st.session_state['custom_symbols_text'] = custom_input
+            with c_text_col2:
+                st.write("")
+                st.write("")
+                if st.button("➕ Laad Symbolen", use_container_width=True, key="btn_reload_syms"):
+                    st.rerun()
+
+            import re
+            raw_tokens = re.split(r'[\s,;]+', custom_input.strip().upper()) if custom_input else []
+            test_symbols = [t.strip() for t in raw_tokens if t.strip()]
+
+        elif sym_input_mode == "📋 Kiezen uit Benchmark Lijst":
+            dynamic_options = list(preset_symbols)
+            if 'custom_symbols_text' in st.session_state and st.session_state['custom_symbols_text']:
+                import re
+                for t in re.split(r'[\s,;]+', st.session_state['custom_symbols_text'].strip().upper()):
+                    if t and t not in dynamic_options:
+                        dynamic_options.append(t)
+
+            selected_presets = st.multiselect(
+                "Selecteer Aandelen / Indices uit de lijst:",
+                options=dynamic_options,
+                default=['SPY', 'AAPL', 'MSFT', 'NVDA', 'QQQ'],
+                help="Kies 1 aandeel (bijv. enkel NVDA), 3, 5, 10 of meer aandelen voor de test."
+            )
+            test_symbols = list(selected_presets)
+
+        else: # Overnemen uit Scanner
+            scanner_syms = []
+            if 'results' in st.session_state and not st.session_state['results'].empty and 'symbol' in st.session_state['results'].columns:
+                scanner_syms = list(st.session_state['results']['symbol'].unique())
+            elif 'symbols_to_scan' in locals() and symbols_to_scan:
+                scanner_syms = list(symbols_to_scan)
+
+            if scanner_syms:
+                st.success(f"📡 {len(scanner_syms)} symbolen overgenomen uit Scanner: `{', '.join(scanner_syms[:8])}`...")
+                test_symbols = scanner_syms
+            else:
+                st.info("ℹ️ Nog geen scanresultaten in Tab 1. Standaard selectie geladen.")
+                test_symbols = ['SPY', 'QQQ', 'AAPL', 'MSFT', 'NVDA']
+
     with col_hr2:
         trades_per_sym = st.number_input("Aantal spreads per aandeel", min_value=1, max_value=20, value=5)
         target_strat_choice = st.selectbox(
@@ -2913,20 +2959,11 @@ with tab6:
             help="Kies een specifieke strategie om de test uitsluitend voor die strategie (bijv. enkel BullCall, LongCall of losse ShortPut) uit te voeren."
         )
 
-    # Combine selected preset symbols and custom input
-    all_selected = list(selected_presets)
-    if custom_input.strip():
-        extra_syms = [s.strip().upper() for s in custom_input.split(',') if s.strip()]
-        for s in extra_syms:
-            if s not in all_selected:
-                all_selected.append(s)
-
-    test_symbols = all_selected
     n_syms = len(test_symbols)
     total_test_trades = n_syms * trades_per_sym
 
     if n_syms == 0:
-        st.warning("⚠️ Selecteer ten minste 1 aandeel uit de lijst of voer een symbool in om de Hit-Rate test te starten.")
+        st.warning("⚠️ Voer ten minste 1 aandeel in (bijv. ACNB, MRK of SPY) of selecteer uit de lijst om de test te starten.")
     else:
         st.info(f"📊 **Test Configuratie**: {total_test_trades} spreads over **{n_syms} aandeel/aandelen**: `{', '.join(test_symbols)}` ({trades_per_sym} spreads per aandeel) | Strategie: **{target_strat_choice}**")
 
@@ -2936,14 +2973,14 @@ with tab6:
             f"🧪 Start Standaard Hit-Rate Test ({total_test_trades} Spreads)", 
             type="secondary",
             use_container_width=True,
-            disabled=(n_syms == 0)
+            disabled=False
         )
     with col_act2:
         start_comp_btn = st.button(
             f"⚖️ Test & Optimaliseer: Sidebar vs. Standaard ({total_test_trades} Spreads)", 
             type="primary",
             use_container_width=True,
-            disabled=(n_syms == 0),
+            disabled=False,
             help="Test uw huidige sidebar-instellingen (DTE, breedte, EM) tegen de standaard benchmark over dezelfde aandelen en optimaliseer direct."
         )
 
