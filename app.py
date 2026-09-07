@@ -2256,11 +2256,11 @@ with tab3:
                         if is_credit: # Credit spread: sell to open, buy to close
                             calc_tp_price = max(0.01, round(p_entry - tp_per_share, 2))
                             calc_sl_price = round(p_entry + sl_per_share, 2)
-                            st.caption(f"📊 **Exit Plan Preview ({qty}x contract)**:\n- **Take Profit**: Sluit spread zodra prijs $\le$ **${calc_tp_price:.2f}** (+${tp_dollar:.0f} winst)\n- **Stop Loss**: Sluit spread zodra prijs $\ge$ **${calc_sl_price:.2f}** (-${sl_dollar:.0f} verlies)")
+                            st.caption(f"📊 **Exit Plan Preview ({qty}x contract)**:\n- **Take Profit**: Sluit spread zodra prijs $\\le$ **${calc_tp_price:.2f}** (+${tp_dollar:.0f} winst)\n- **Stop Loss**: Sluit spread zodra prijs $\\ge$ **${calc_sl_price:.2f}** (-${sl_dollar:.0f} verlies)")
                         else: # Debit / Long: buy to open, sell to close
                             calc_tp_price = round(p_entry + tp_per_share, 2)
                             calc_sl_price = max(0.01, round(p_entry - sl_per_share, 2))
-                            st.caption(f"📊 **Exit Plan Preview ({qty}x contract)**:\n- **Take Profit**: Verkoop contract zodra koers $\ge$ **${calc_tp_price:.2f}** (+${tp_dollar:.0f} winst)\n- **Stop Loss**: Verkoop contract zodra koers $\le$ **${calc_sl_price:.2f}** (-${sl_dollar:.0f} verlies)")
+                            st.caption(f"📊 **Exit Plan Preview ({qty}x contract)**:\n- **Take Profit**: Verkoop contract zodra koers $\\ge$ **${calc_tp_price:.2f}** (+${tp_dollar:.0f} winst)\n- **Stop Loss**: Verkoop contract zodra koers $\\le$ **${calc_sl_price:.2f}** (-${sl_dollar:.0f} verlies)")
 
                     elif bracket_mode == "Percentage (%)":
                         c_tp, c_sl = st.columns(2)
