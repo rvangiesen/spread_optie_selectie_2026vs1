@@ -220,7 +220,7 @@ def render_portfolio_management_dashboard(tws_host, tws_port):
             "Conform de richtlijnen uit het document (*'Bull Put- en Bear Call spread en TWS'*) dreigt voor deze posities ongewenste automatische uitoefening (verdampte extrinsieke waarde < $0.10, pin risk tussen strikes, of naderende broker-liquidatiedeadline).\n\n"
             "**Gevaar bij niets doen**: Automatische uitoefening leidt tot verplichte afname/levering van 100 aandelen per contract ($10.000+ marginbeslag), weekend gap-risico en geforceerde broker-liquidaties tegen slechte prijzen!"
         )
-        if st.button(f"🛡️ Actie Uitvoeren: Sluit Alle {n_threatened} Bedreigde Posities Direct (TWS Combo Orders)", type="primary", use_container_width=True, key="btn_close_all_threatened"):
+        if st.button(f"🛡️ Actie Uitvoeren: Sluit Alle {n_threatened} Bedreigde Posities Direct (TWS Combo Orders)", type="primary", width='stretch', key="btn_close_all_threatened"):
             exec_ib = IBClient()
             import random
             exec_id = random.randint(10000, 99999)
@@ -374,7 +374,7 @@ def render_portfolio_management_dashboard(tws_host, tws_port):
                             target_price=tp_stock_p, stop_price=sl_stock_p
                         )
                         if fig_omni:
-                            st.plotly_chart(fig_omni, use_container_width=True, key=f"plotly_omni_{idx}_{sym}")
+                            st.plotly_chart(fig_omni, width='stretch', key=f"plotly_omni_{idx}_{sym}")
                         else:
                             st.caption("ℹ️ Geen historische koersdata beschikbaar voor deze grafiek.")
             with c2:
@@ -475,7 +475,7 @@ def render_portfolio_management_dashboard(tws_host, tws_port):
     st.markdown("---")
     if approved_actions:
         st.success(f" Er zijn **{len(approved_actions)} posities** geselecteerd voor uitvoering in TWS.")
-        if st.button("🚀 Voer Geselecteerde Portfolio-Wijzigingen Uit in TWS", type="primary", use_container_width=True, key="btn_exec_port_adj"):
+        if st.button("🚀 Voer Geselecteerde Portfolio-Wijzigingen Uit in TWS", type="primary", width='stretch', key="btn_exec_port_adj"):
             exec_ib = IBClient()
             import random
             exec_id = random.randint(10000, 99999)
@@ -547,7 +547,7 @@ def render_filter_diagnostics_ui(diagnostics, expanded=True):
                 'actual_avg': 'Gemiddelde Waarde in Markt',
                 'suggested_min': 'Minimaal Nodig voor Top 5 Spreads'
             })[['Filter Criterium', 'Min delta shortleg', 'Aantal Afgekeurd', 'Afgekeurd (%)', 'Gemiddelde Waarde in Markt', 'Minimaal Nodig voor Top 5 Spreads']]
-            st.dataframe(display_df, use_container_width=True, hide_index=True)
+            st.dataframe(display_df, width='stretch', hide_index=True)
 
         st.info(
             "💡 **Advies voor meer kandidaten**: Als de grafiek mogelijkheden biedt maar er 0 resultaten verschijnen, "
@@ -600,7 +600,7 @@ if st.sidebar.button("Test Verbinding & Opslaan"):
 # Connection Status
 status = "Gereed om te scannen" if st.session_state.tws_configured else "Niet geconfigureerd"
 st.sidebar.markdown(f"**Status:** {status}")
-if st.sidebar.button("🔍 Check Portfolio & Posities", use_container_width=True, key="btn_sb_port_check"):
+if st.sidebar.button("🔍 Check Portfolio & Posities", width='stretch', key="btn_sb_port_check"):
     run_portfolio_check_action(tws_host, tws_port)
 
 # Strategy Settings (Marktvisie)
@@ -771,7 +771,7 @@ if 'sidebar_reset_feedback' in st.session_state:
 
 col_sb_res1, col_sb_res2 = st.sidebar.columns(2)
 with col_sb_res1:
-    if st.button("⚡ Reset Filters", use_container_width=True, help="Reset alle filters naar de optimale basisinstellingen per strategie (8% BEP afstand voor Spreads, 1% voor Longs)"):
+    if st.button("⚡ Reset Filters", width='stretch', help="Reset alle filters naar de optimale basisinstellingen per strategie (8% BEP afstand voor Spreads, 1% voor Longs)"):
         is_long_only = any(s in active_strategies for s in ["LongCall", "LongPut"]) and not any(s in active_strategies for s in ["BullCall", "BullPut", "BearCall", "BearPut", "IronCondor", "Strangle"])
         reset_dict = {
             'preset_koopadvies_p': 1.0,
@@ -790,7 +790,7 @@ with col_sb_res1:
         st.rerun()
 
 with col_sb_res2:
-    if st.button("🔬 Optimaliseer", use_container_width=True, help="Test huidige sidebar instellingen tegen de standaard EM85 benchmark en optimaliseer"):
+    if st.button("🔬 Optimaliseer", width='stretch', help="Test huidige sidebar instellingen tegen de standaard EM85 benchmark en optimaliseer"):
         st.session_state['run_comparison_test_trigger'] = True
 
 if st.session_state.get('optimal_stock_configs'):
@@ -920,7 +920,7 @@ def run_research_dialog():
         if not target_symbol:
             target_symbol = "SPY"
     
-    if st.button("Start Onderzoek", type="primary", use_container_width=True):
+    if st.button("Start Onderzoek", type="primary", width='stretch'):
         progress_bar = st.progress(0.0)
         status_text = st.empty()
         log_ph = st.expander("Gedetailleerde Logboeken", expanded=True)
@@ -986,7 +986,7 @@ def run_research_dialog():
             st.success(f"✅ Winst-onderzoek succesvol voltooid!\n\nHebt rapport is automatisch opgeslagen in je Downloads map:\n`{output_file}`")
             
             # Button to open file directly in Microsoft Word
-            if st.button("📖 Open Rapport direct in Word", type="primary", use_container_width=True):
+            if st.button("📖 Open Rapport direct in Word", type="primary", width='stretch'):
                 try:
                     os.startfile(output_file)
                     st.success("Word wordt gestart...")
@@ -999,7 +999,7 @@ def run_research_dialog():
                     data=f,
                     file_name=os.path.basename(output_file),
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    use_container_width=True
+                    width='stretch'
                 )
         except Exception as e:
             st.error(f"Er is een fout opgetreden: {e}")
@@ -1025,10 +1025,10 @@ if st.session_state.get('research_completed'):
                     data=f,
                     file_name=os.path.basename(local_output_file),
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    use_container_width=True
+                    width='stretch'
                 )
         with col_dl2:
-            if st.sidebar.button("📖 Open Word", use_container_width=True):
+            if st.sidebar.button("📖 Open Word", width='stretch'):
                 try:
                     os.startfile(local_output_file)
                 except Exception:
@@ -2002,7 +2002,7 @@ with tab2:
         with col_b3:
             st.write("")
             st.write("")
-            btn_place_bulk = st.button("🚀 PLAATS ORDERS (Geselecteerde regels)", type="primary", use_container_width=True)
+            btn_place_bulk = st.button("🚀 PLAATS ORDERS (Geselecteerde regels)", type="primary", width='stretch')
 
         if btn_place_bulk:
             # Selected rows from data editor
@@ -2863,7 +2863,7 @@ with tab5:
                     df_div = df_div.sort_values(by='Dagen tot Ex-Div')
                     st.session_state['dividend_results'] = df_div
                     st.success(f"{len(dividend_results)} aandelen gevonden die dividend uitkeren!")
-                    st.dataframe(df_div, use_container_width=True, hide_index=True)
+                    st.dataframe(df_div, width='stretch', hide_index=True)
                 else:
                     st.warning("Geen dividenden gevonden voor de geselecteerde aandelen in deze periode.")
             else:
@@ -2916,7 +2916,7 @@ with tab6:
             with c_text_col2:
                 st.write("")
                 st.write("")
-                if st.button("➕ Laad Symbolen", use_container_width=True, key="btn_reload_syms"):
+                if st.button("➕ Laad Symbolen", width='stretch', key="btn_reload_syms"):
                     st.rerun()
 
             import re
@@ -2984,14 +2984,14 @@ with tab6:
         start_hitrate_btn = st.button(
             f"🧪 Start Standaard Hit-Rate Test ({total_test_trades} Spreads)", 
             type="secondary",
-            use_container_width=True,
+            width='stretch',
             disabled=False
         )
     with col_act2:
         start_comp_btn = st.button(
             f"⚖️ Test & Optimaliseer: Sidebar vs. Standaard ({total_test_trades} Spreads)", 
             type="primary",
-            use_container_width=True,
+            width='stretch',
             disabled=False,
             help="Test uw huidige sidebar-instellingen (DTE, breedte, EM) tegen de standaard benchmark over dezelfde aandelen en optimaliseer direct."
         )
@@ -3139,7 +3139,7 @@ with tab6:
         act_col1, act_col2 = st.columns(2)
         with act_col1:
             btn_label = "⚡ Pas Standaard Benchmark Toe op de Linker Sidebar" if glob_best == "Standaard" else "⚡ Pas Beste Instellingen Toe op de Linker Sidebar"
-            if st.button(btn_label, type="primary", use_container_width=True, key="btn_apply_best_global"):
+            if st.button(btn_label, type="primary", width='stretch', key="btn_apply_best_global"):
                 st.session_state['pending_sidebar_updates'] = {
                     'sb_width': 5,
                     'sb_min_dte': 20,
@@ -3167,7 +3167,7 @@ with tab6:
         st.markdown("### 📋 Resultaten & Advies per Aandeel")
         st.dataframe(
             df_comp,
-            use_container_width=True,
+            width='stretch',
             column_config={
                 "symbol": "Aandeel",
                 "sb_avg_pnl": st.column_config.NumberColumn("Sidebar Winst/Trade", format="$%.2f"),
@@ -3249,7 +3249,7 @@ with tab6:
         # Configure columns for display
         st.dataframe(
             df_filtered,
-            use_container_width=True,
+            width='stretch',
             column_config={
                 "symbol": "Aandeel",
                 "entry_date": "Entry Datum",
@@ -3359,12 +3359,12 @@ with tab6:
         fig.update_yaxes(title_text="<b>Gemiddelde Winst ($)</b>", secondary_y=False)
         fig.update_yaxes(title_text="<b>Hit Rate (%)</b>", secondary_y=True)
 
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
         st.markdown("#### 📊 Overzichtstabel per Multipliersweep")
         st.dataframe(
             df_sweep[['multiplier_name', 'hit_rate', 'avg_pop', 'avg_credit', 'avg_pnl', 'total_pnl', 'em85_safe_rate']],
-            use_container_width=True,
+            width='stretch',
             column_config={
                 "multiplier_name": "EM Multiplier",
                 "hit_rate": st.column_config.NumberColumn("Hit Rate", format="%.1f%%"),
