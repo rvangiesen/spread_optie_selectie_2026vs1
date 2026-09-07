@@ -529,7 +529,7 @@ def render_filter_diagnostics_ui(diagnostics, expanded=True):
                         delta=f"-{item['dropped_pct']}% van totaal",
                         delta_color="inverse"
                     )
-                    st.markdown(f"• **Sidebar Instelling**: `{item['setting_str']}`")
+                    st.markdown(f"• **Min delta shortleg**: `{item['setting_str']}`")
                     st.markdown(f"• **Gemiddelde in Markt**: `{item['actual_avg']}`")
                     st.markdown(f"• **Minimaal Nodig (Top 5)**: `{item['suggested_min']}`")
 
@@ -541,12 +541,12 @@ def render_filter_diagnostics_ui(diagnostics, expanded=True):
             df_diag = pd.DataFrame(breakdown)
             display_df = df_diag.rename(columns={
                 'name': 'Filter Criterium',
-                'setting_str': 'Huidige Sidebar Instelling',
+                'setting_str': 'Min delta shortleg',
                 'dropped_count': 'Aantal Afgekeurd',
                 'dropped_pct': 'Afgekeurd (%)',
                 'actual_avg': 'Gemiddelde Waarde in Markt',
                 'suggested_min': 'Minimaal Nodig voor Top 5 Spreads'
-            })[['Filter Criterium', 'Huidige Sidebar Instelling', 'Aantal Afgekeurd', 'Afgekeurd (%)', 'Gemiddelde Waarde in Markt', 'Minimaal Nodig voor Top 5 Spreads']]
+            })[['Filter Criterium', 'Min delta shortleg', 'Aantal Afgekeurd', 'Afgekeurd (%)', 'Gemiddelde Waarde in Markt', 'Minimaal Nodig voor Top 5 Spreads']]
             st.dataframe(display_df, use_container_width=True, hide_index=True)
 
         st.info(
