@@ -84,7 +84,7 @@ class BjerksundStensland2002:
         return S * math.exp(-q * T) * BjerksundStensland2002.norm_cdf(d1) - K * math.exp(-r * T) * BjerksundStensland2002.norm_cdf(d2)
 
 class SpreadScanner:
-    def __init__(self, ib_client):
+    def __init__(self, ib_client=None):
         self.ib_client = ib_client
         self.log_func = None
 
@@ -614,19 +614,37 @@ class SpreadScanner:
             # 1. Handle Long Strategies
             if strategy in ['LongCall', 'LongPut']:
                 right = 'C' if strategy == 'LongCall' else 'P'
+                long_focus = params.get('long_focus', 'Beide / Vergelijking')
                 for s in strikes:
                     if s < lower_bound or s > upper_bound:
                         skips['strike_range'] += 1
                         continue
-                        
-                    if strategy == 'LongCall':
-                        if s > component_price * (1 + min_strike_raw):
+                    
+                    # Focus filtering: Deep ITM vs ATM vs Beide
+                    dist_from_spot = abs(s - component_price) / max(0.01, component_price)
+                    if "Deep ITM" in long_focus:
+                        # Deep ITM: Calls strikes under spot (delta ~0.80-0.95), Puts strikes above spot
+                        if strategy == 'LongCall' and (s > component_price * 0.98 or s < component_price * 0.70):
                             skips['strategy'] += 1
                             continue
-                    elif strategy == 'LongPut':
-                        if s < component_price * (1 - min_strike_raw):
+                        elif strategy == 'LongPut' and (s < component_price * 1.02 or s > component_price * 1.30):
                             skips['strategy'] += 1
                             continue
+                    elif "ATM" in long_focus:
+                        # ATM: Near spot (within 5% distance)
+                        if dist_from_spot > 0.05:
+                            skips['strategy'] += 1
+                            continue
+                    else:
+                        # Beide / Vergelijking: Allow both ITM and ATM strikes
+                        if strategy == 'LongCall':
+                            if s > component_price * (1 + min_strike_raw):
+                                skips['strategy'] += 1
+                                continue
+                        elif strategy == 'LongPut':
+                            if s < component_price * (1 - min_strike_raw):
+                                skips['strategy'] += 1
+                                continue
                         
                     # In Long strategies, we don't have a width, but we might filter by distance from spot
                     spreads.append({
@@ -1348,11 +1366,15 @@ class SpreadScanner:
         is_credit_strat = spreads_df['strategy'].isin(['BearCall', 'BullPut', 'IronCondor'])
         is_stale_direction = (is_debit_strat & (spreads_df['net_price'] < -0.10)) | (is_credit_strat & (spreads_df['net_price'] > 0.10))
         
-        invalid_mask = is_invalid_premium | is_stale_direction
+        # Credit spreads moeten een positieve natuurlijke ontvangst hebben (geen debit op Bied/Laat)
+        # Bij illiquide fantoom-trades is Bied(verkoop) < Laat(koop) waardoor er bij de marktprijs geld bijbetaald moet worden.
+        is_negative_natural_credit = is_credit_strat & (spreads_df['worst_entry_signed'] > 0.0)
+        
+        invalid_mask = is_invalid_premium | is_stale_direction | is_negative_natural_credit
         
         removed_invalid = invalid_mask.sum()
         if removed_invalid > 0 and self.log_func:
-            self.log_func(f"      🚫 {removed_invalid} trades met ongeldige/stale premies (bijv. Middenprijs > Breedte) verwijderd.")
+            self.log_func(f"      🚫 {removed_invalid} trades met ongeldige/illiquide premies (bijv. Midden > Breedte of negatieve Bied/Laat credit) verwijderd.")
             
         spreads_df = spreads_df[~invalid_mask].copy()
 
@@ -1648,9 +1670,16 @@ class SpreadScanner:
                     bep[idx] = 0.0 # IC/Strangle have two BEPs or are too complex to display in 1 num
             spreads_df['BEP'] = bep
             
-            # Calculate distance to BEP in percentage (positive = safe buffer, negative = deficit)
+            # Calculate distance to BEP in percentage
+            # For Spreads: positive cushion_pct = safe buffer away from spot
+            # For Long Single Legs: req_bep_move_pct = required underlying move to reach BEP
             st_vals = strat.values
             cushion_pct = np.zeros_like(bep)
+            req_bep_move_pct = np.zeros_like(bep)
+            extrinsic_pct = np.zeros_like(bep)
+            capital_risk_flat_pct = np.zeros_like(bep)
+            capital_risk_dip5_pct = np.zeros_like(bep)
+
             for idx, st_val in enumerate(st_vals):
                 b = bep[idx]
                 if b <= 0 or u_price <= 0:
@@ -1658,11 +1687,37 @@ class SpreadScanner:
                     continue
                 if st_val in ['BullCall', 'BullPut', 'LongCall']:
                     cushion_pct[idx] = ((u_price - b) / u_price) * 100.0
+                    req_bep_move_pct[idx] = max(0.0, ((b - u_price) / u_price) * 100.0)
                 elif st_val in ['BearCall', 'BearPut', 'LongPut']:
                     cushion_pct[idx] = ((b - u_price) / u_price) * 100.0
+                    req_bep_move_pct[idx] = max(0.0, ((u_price - b) / u_price) * 100.0)
                 else:
                     cushion_pct[idx] = 0.0
+
+                # Single-leg specific risk & capital retention metrics (LongCall / LongPut)
+                if st_val in ['LongCall', 'LongPut']:
+                    cost = max(0.01, float(n_price_worst[idx]))
+                    sb = float(s_buy[idx])
+                    if st_val == 'LongCall':
+                        val_flat = max(0.0, u_price - sb)
+                        capital_risk_flat_pct[idx] = max(0.0, min(100.0, ((cost - val_flat) / cost) * 100.0))
+                        val_dip5 = max(0.0, (u_price * 0.95) - sb)
+                        capital_risk_dip5_pct[idx] = max(0.0, min(100.0, ((cost - val_dip5) / cost) * 100.0))
+                        extr_val = max(0.0, cost - max(0.0, u_price - sb))
+                        extrinsic_pct[idx] = (extr_val / u_price) * 100.0
+                    else:
+                        val_flat = max(0.0, sb - u_price)
+                        capital_risk_flat_pct[idx] = max(0.0, min(100.0, ((cost - val_flat) / cost) * 100.0))
+                        val_dip5 = max(0.0, sb - (u_price * 1.05))
+                        capital_risk_dip5_pct[idx] = max(0.0, min(100.0, ((cost - val_dip5) / cost) * 100.0))
+                        extr_val = max(0.0, cost - max(0.0, sb - u_price))
+                        extrinsic_pct[idx] = (extr_val / u_price) * 100.0
+
             spreads_df['bep_afstand_pct'] = cushion_pct
+            spreads_df['req_bep_move_pct'] = np.round(req_bep_move_pct, 2)
+            spreads_df['extrinsic_pct'] = np.round(extrinsic_pct, 2)
+            spreads_df['capital_risk_flat_pct'] = np.round(capital_risk_flat_pct, 1)
+            spreads_df['capital_risk_dip5_pct'] = np.round(capital_risk_dip5_pct, 1)
 
         # --- Part 6: Risk Metrics (Bjerksund-Stensland 2002) ---
         n = len(spreads_df)
@@ -1838,31 +1893,67 @@ class SpreadScanner:
                 drop_stats['PoP'] = dropped
                 if log_func: log_func(f"   🔻 Filter PoP < {filters['min_pop']}: {dropped} dropped")
             
+        # Isolated failure rate tracking for true bottleneck visibility
+        isolated_drops = {}
+        if 'min_profit' in filters and filters['min_profit'] > 0:
+            eff_p = np.minimum(filters['min_profit'], spreads_df['width'] * 100 * 0.08) if 'width' in spreads_df.columns else filters['min_profit']
+            fp = int((spreads_df['max_profit'] < eff_p).sum())
+            if fp > 0: isolated_drops['Winst'] = f"{fp}/{initial_count} ({fp/initial_count*100:.0f}%)"
+        if 'min_pop' in filters and filters['min_pop'] > 0:
+            fpop = int((spreads_df['pop'] < filters['min_pop']).sum())
+            if fpop > 0: isolated_drops['PoP'] = f"{fpop}/{initial_count} ({fpop/initial_count*100:.0f}%)"
+        if 'delta_sell' in spreads_df.columns and ('min_delta' in filters or 'max_delta' in filters):
+            min_d, max_d = filters.get('min_delta', 0.0), filters.get('max_delta', 1.0)
+            fd = int(((spreads_df['delta_sell'].abs() < min_d) | (spreads_df['delta_sell'].abs() > max_d)).sum())
+            if fd > 0: isolated_drops['Delta'] = f"{fd}/{initial_count} ({fd/initial_count*100:.0f}%)"
+        if 'bep_afstand_pct' in spreads_df.columns and 'min_bep_dist_pct' in filters and filters['min_bep_dist_pct'] > 0:
+            is_credit_spread = spreads_df['strategy'].isin(['BullPut', 'BearCall', 'BullCall', 'BearPut'])
+            fbep = int(((spreads_df['bep_afstand_pct'] < filters['min_bep_dist_pct']) & is_credit_spread).sum())
+            if fbep > 0: isolated_drops['BEP Buffer'] = f"{fbep}/{initial_count} ({fbep/initial_count*100:.0f}%)"
+
         if 'min_profit' in filters and filters['min_profit'] > 0:
             before = len(df)
-            df = df[df['max_profit'] >= filters['min_profit']]
+            min_p = filters['min_profit']
+            if 'width' in df.columns:
+                # Scale profit requirement for narrow spreads ($2.5 width needs $20, not $40-$50)
+                eff_thresh = np.minimum(min_p, df['width'] * 100 * 0.08)
+                df = df[df['max_profit'] >= eff_thresh]
+            else:
+                df = df[df['max_profit'] >= min_p]
             dropped = before - len(df)
             if dropped > 0:
                 drop_stats['Profit'] = dropped
                 if log_func: log_func(f"   🔻 Filter Profit < {filters['min_profit']}: {dropped} dropped")
             
-        if 'min_delta' in filters:
+        if 'min_delta' in filters or 'max_delta' in filters:
             # For Iron Condors and Strangles, delta_sell might be different or multiple.
-            # For now, skip min_delta filter if it's a multi-leg complex strategy OR a single long.
-            # Or handle it specifically.
+            # For now, skip delta filter if it's a multi-leg complex strategy OR a single long.
             before = len(df)
             mask = pd.Series([True]*len(df), index=df.index)
             
             if 'delta_sell' in df.columns:
-                # Vertical Spreads: Filter by Delta Sell
+                # Vertical Spreads: Filter by Delta Sell within range [min_delta, max_delta]
                 vertical_mask = df['strategy'].isin(['BullCall', 'BullPut', 'BearCall', 'BearPut'])
-                mask &= ~vertical_mask | (df['delta_sell'].abs() >= filters['min_delta'])
+                min_d = filters.get('min_delta', 0.0)
+                max_d = filters.get('max_delta', 1.0)
+                mask &= ~vertical_mask | ((df['delta_sell'].abs() >= min_d) & (df['delta_sell'].abs() <= max_d))
                 
             df = df[mask]
             dropped = before - len(df)
             if dropped > 0:
                 drop_stats['Delta'] = dropped
-                if log_func: log_func(f"   🔻 Filter Delta Sell < {filters['min_delta']}: {dropped} dropped")
+                if log_func: log_func(f"   🔻 Filter Delta Sell [{filters.get('min_delta', 0.0):.2f} - {filters.get('max_delta', 1.0):.2f}]: {dropped} dropped")
+
+        # Filter Minimale BEP Afstand (Geldt voor spreads als veiligheidsbuffer; Longs worden beschermd)
+        if 'min_bep_dist_pct' in filters and filters['min_bep_dist_pct'] > 0:
+            before = len(df)
+            if 'bep_afstand_pct' in df.columns:
+                is_long = df['strategy'].isin(['LongCall', 'LongPut'])
+                df = df[is_long | (df['bep_afstand_pct'] >= filters['min_bep_dist_pct'])]
+                dropped = before - len(df)
+                if dropped > 0:
+                    drop_stats['BEP Afstand'] = dropped
+                    if log_func: log_func(f"   🔻 Filter BEP Afstand < {filters['min_bep_dist_pct']:.1f}%: {dropped} dropped")
                     
         # Filter Min Gamma
         if 'min_gamma' in filters and filters['min_gamma'] != 0: 
@@ -1910,11 +2001,33 @@ class SpreadScanner:
             
         if log_func:
             if df.empty and drop_stats:
-                # Provide a consolidated reason if all were dropped
+                iso_str = ", ".join([f"{k} ({v})" for k, v in isolated_drops.items()])
+                log_func(f"   ⚠️ Alle {initial_count} kandidaten gefilterd!")
+                if iso_str:
+                    log_func(f"   📊 Zelfstandige uitval per regel: {iso_str}")
                 sorted_drops = sorted(drop_stats.items(), key=lambda x: x[1], reverse=True)
                 drop_str = ", ".join([f"{k} ({v})" for k, v in sorted_drops])
-                log_func(f"   ⚠️ Alle {initial_count} kandidaten gefilterd! Meeste dalingen door: {drop_str}")
-                log_func(f"   💡 Tip: Probeer in het weekend de filters (Profit of PoP) te verlagen of de breedte te veranderen.")
+                log_func(f"   📉 Sequentiële volgorde uitval: {drop_str}")
+                
+                # Near-Miss / Runner-up detectie
+                try:
+                    cands = spreads_df.copy()
+                    min_p_val = filters.get('min_profit', 40.0)
+                    min_pop_val = filters.get('min_pop', 60.0)
+                    min_bep_val = filters.get('min_bep_dist_pct', 6.0)
+                    min_d_val = filters.get('min_delta', 0.10)
+                    
+                    p_sc = (cands['max_profit'] / max(1.0, min_p_val)).clip(upper=1.0)
+                    pop_sc = (cands['pop'] / max(1.0, min_pop_val)).clip(upper=1.0)
+                    bep_sc = (cands['bep_afstand_pct'] / max(1.0, min_bep_val)).clip(upper=1.0) if 'bep_afstand_pct' in cands.columns else 1.0
+                    d_sc = (cands['delta_sell'].abs() / max(0.01, min_d_val)).clip(upper=1.0) if 'delta_sell' in cands.columns else 1.0
+                    
+                    cands['match_pct'] = p_sc * 0.35 + pop_sc * 0.25 + bep_sc * 0.25 + d_sc * 0.15
+                    runners = cands.sort_values('match_pct', ascending=False).head(2)
+                    for _, r_miss in runners.iterrows():
+                        log_func(f"   💡 Runner-up (Near-miss): Strike {r_miss['strike_buy']:.0f}/{r_miss['strike_sell']:.0f} | Winst: ${r_miss['max_profit']:.1f} | BEP: {r_miss.get('bep_afstand_pct', 0.0):.1f}% | Delta: {r_miss.get('delta_sell', 0.0):.3f} | PoP: {r_miss['pop']:.1f}% ({r_miss['match_pct']*100:.0f}% match)")
+                except Exception:
+                    pass
             else:
                 log_func(f"✅ Filtered down to {len(df)} spreads")
             
@@ -1951,6 +2064,96 @@ class SpreadScanner:
             guidance['suggested_delta'] = round(top_by_profit['delta_sell'].abs().median(), 3)
             
         return guidance
+
+    def build_long_comparison_matrix(self, spreads_df, underlying_price):
+        """
+        Berekent een side-by-side vergelijkingsmatrix tussen 1x Deep ITM (1% koopdrempel)
+        en Nx ATM (meervoudig) op basis van een gelijk investeringsbudget.
+        """
+        if spreads_df is None or spreads_df.empty or underlying_price <= 0:
+            return None
+        
+        long_df = spreads_df[spreads_df['strategy'].isin(['LongCall', 'LongPut'])].copy()
+        if long_df.empty:
+            return None
+
+        strat = long_df['strategy'].iloc[0]
+        u_price = float(underlying_price)
+
+        # Separate candidates into Deep ITM and ATM
+        if strat == 'LongCall':
+            itm_pool = long_df[(long_df['strike_buy'] < u_price) & (long_df['delta_buy'] >= 0.70)]
+            atm_pool = long_df[(abs(long_df['strike_buy'] - u_price) / u_price <= 0.05) & (long_df['delta_buy'] >= 0.35) & (long_df['delta_buy'] <= 0.65)]
+        else:
+            itm_pool = long_df[(long_df['strike_buy'] > u_price) & (long_df['delta_buy'].abs() >= 0.70)]
+            atm_pool = long_df[(abs(long_df['strike_buy'] - u_price) / u_price <= 0.05) & (long_df['delta_buy'].abs() >= 0.35) & (long_df['delta_buy'].abs() <= 0.65)]
+
+        if itm_pool.empty:
+            itm_pool = long_df.sort_values('strike_buy', ascending=(strat == 'LongCall')).head(3)
+        if atm_pool.empty:
+            dist = (long_df['strike_buy'] - u_price).abs()
+            atm_pool = long_df.loc[[dist.idxmin()]]
+
+        # Best ITM (highest AG_Score or lowest req_bep_move)
+        best_itm = itm_pool.sort_values('AG_Score', ascending=False).iloc[0]
+        
+        # Best ATM with matching expiry if possible
+        atm_same_exp = atm_pool[atm_pool['expiry'] == best_itm['expiry']]
+        best_atm = atm_same_exp.sort_values('AG_Score', ascending=False).iloc[0] if not atm_same_exp.empty else atm_pool.sort_values('AG_Score', ascending=False).iloc[0]
+
+        itm_cost = float(best_itm['worst_entry_signed']) * 100.0
+        atm_cost_single = float(best_atm['worst_entry_signed']) * 100.0
+        n_atm = max(1, int(itm_cost // max(1.0, atm_cost_single)))
+        atm_total_cost = n_atm * atm_cost_single
+
+        # Scenarios: Dip -5%, Vlak 0%, Winst +3%, Winst +5%, Uitbraak +10%
+        scenarios = [-0.05, 0.0, 0.03, 0.05, 0.10] if strat == 'LongCall' else [0.05, 0.0, -0.03, -0.05, -0.10]
+        labels = ['Dip -5%', 'Vlak 0%', 'Winst +3%', 'Winst +5%', 'Uitbraak +10%']
+
+        scenario_rows = []
+        for sc, lab in zip(scenarios, labels):
+            s_end = u_price * (1.0 + sc)
+            if strat == 'LongCall':
+                val_itm = max(0.0, s_end - float(best_itm['strike_buy'])) * 100.0
+                val_atm = max(0.0, s_end - float(best_atm['strike_buy'])) * 100.0 * n_atm
+            else:
+                val_itm = max(0.0, float(best_itm['strike_buy']) - s_end) * 100.0
+                val_atm = max(0.0, float(best_atm['strike_buy']) - s_end) * 100.0 * n_atm
+
+            pnl_itm = val_itm - itm_cost
+            pnl_atm = val_atm - atm_total_cost
+            pct_itm = (pnl_itm / itm_cost) * 100.0
+            pct_atm = (pnl_atm / atm_total_cost) * 100.0
+
+            scenario_rows.append({
+                'Scenario': lab,
+                'Eindkoers': f"${s_end:.2f}",
+                '1x Deep ITM ($)': f"{pnl_itm:+.2f}",
+                '1x Deep ITM (%)': f"{pct_itm:+.1f}%",
+                f'{n_atm}x ATM ($)': f"{pnl_atm:+.2f}",
+                f'{n_atm}x ATM (%)': f"{pct_atm:+.1f}%",
+                'Voordeel': '🛡️ ITM Veiliger' if pnl_itm > pnl_atm else '⚡ ATM Rendement'
+            })
+
+        return {
+            'strategy': strat,
+            'underlying_price': u_price,
+            'itm_contract': best_itm,
+            'atm_contract': best_atm,
+            'itm_cost': itm_cost,
+            'atm_single_cost': atm_cost_single,
+            'atm_multiplier': n_atm,
+            'atm_total_cost': atm_total_cost,
+            'itm_bep_move_pct': float(best_itm.get('req_bep_move_pct', 0.0)),
+            'atm_bep_move_pct': float(best_atm.get('req_bep_move_pct', 0.0)),
+            'itm_pop': float(best_itm.get('pop', 0.0)),
+            'atm_pop': float(best_atm.get('pop', 0.0)),
+            'itm_delta_total': float(best_itm.get('delta_buy', 0.0)),
+            'atm_delta_total': float(best_atm.get('delta_buy', 0.0)) * n_atm,
+            'itm_capital_risk_dip5': float(best_itm.get('capital_risk_dip5_pct', 0.0)),
+            'atm_capital_risk_dip5': float(best_atm.get('capital_risk_dip5_pct', 100.0)),
+            'scenario_df': pd.DataFrame(scenario_rows)
+        }
 
     def analyze_filter_bottlenecks(self, unfiltered_df, filters, target_n=5):
         """
@@ -1996,12 +2199,20 @@ class SpreadScanner:
                 'active': filters.get('min_pop', 0) > 0
             },
             {
-                'key': 'min_delta',
+                'key': 'min_bep_dist_pct',
+                'name': 'Min. BEP Buffer Afstand %',
+                'col': 'bep_afstand_pct',
+                'type': 'min',
+                'setting_str': f">= {filters.get('min_bep_dist_pct', 0):.1f}%",
+                'active': filters.get('min_bep_dist_pct', 0) > 0
+            },
+            {
+                'key': 'delta_range',
                 'name': 'Delta Sell Bereik',
                 'col': 'delta_sell',
-                'type': 'min_abs',
-                'setting_str': f">= {filters.get('min_delta', 0):.2f}",
-                'active': filters.get('min_delta', 0) > 0
+                'type': 'range_abs',
+                'setting_str': f"[{filters.get('min_delta', 0.10):.2f} - {filters.get('max_delta', 0.30):.2f}]",
+                'active': filters.get('min_delta', 0) > 0 or filters.get('max_delta', 1) < 1
             },
             {
                 'key': 'max_pain_dist',
@@ -2055,6 +2266,16 @@ class SpreadScanner:
                     avg_val = f"${mean_val:.2f}" if 'profit' in col else f"{mean_val:.1f}%"
                     q_val = float(vals.quantile(q_target))
                     suggested_val = f"${q_val:.2f}" if 'profit' in col else f"{q_val:.1f}%"
+            elif spec['type'] == 'range_abs' and col in df.columns:
+                min_d = float(filters.get('min_delta', 0.0))
+                max_d = float(filters.get('max_delta', 1.0))
+                abs_vals = df[col].abs().dropna()
+                if not abs_vals.empty:
+                    isolated_fails = int(((abs_vals < min_d) | (abs_vals > max_d)).sum())
+                    avg_val = f"{abs_vals.mean():.3f}"
+                    q_low = float(abs_vals.quantile(0.1))
+                    q_high = float(abs_vals.quantile(0.9))
+                    suggested_val = f"[{q_low:.2f} - {q_high:.2f}]"
             elif spec['type'] == 'min_abs' and col in df.columns:
                 thresh = float(filters.get(spec['key'], 0))
                 abs_vals = df[col].abs().dropna()
@@ -2616,6 +2837,9 @@ class PortfolioAnalyzer:
     """
     _dividend_cache = {}
 
+    def __init__(self, ib_client=None):
+        self.ib_client = ib_client
+
     def get_dividend_info(self, symbol):
         if not symbol or symbol in ['N/A', '']:
             return {'div_date': None, 'div_amount': 0.0}
@@ -2643,6 +2867,281 @@ class PortfolioAnalyzer:
             self._dividend_cache[symbol] = res
             return res
 
+    def calculate_position_financials(self, pos):
+        """
+        Berekent diepgaande financiële metrics voor de portfolio check:
+        - Koers van de onderliggende waarde (aandeel)
+        - Koers / instapwaarde van het contract (of spread / aandeel)
+        - Aparte specificatie van elke afzonderlijke optiepoot (voor multi-leg spreads)
+        - Huidige winst/verlies ($ en %)
+        - Break-Even Point (BEP) van de onderliggende waarde + afstand tot BEP ($ en %)
+        - Koersdoelen van het aandeel voor 1% en 5% winst + benodigde afstand ($ en %)
+        """
+        sym = pos.get('symbol', 'N/A')
+        strat = pos.get('strategy', 'Spread')
+        und_p = float(pos.get('underlying_price', 0.0) or 0.0)
+        entry_p = float(pos.get('entry_price', 0.0) or 0.0)
+        mkt_p = float(pos.get('market_price', 0.0) or 0.0)
+        qty = int(pos.get('qty', 1) or 1)
+        pnl_usd = float(pos.get('unrealized_pnl', 0.0) or 0.0)
+        pnl_pct = float(pos.get('pnl_pct', 0.0) or 0.0)
+        is_long = pos.get('is_long', True)
+        sold_k = float(pos.get('sold_strike', 0.0) or 0.0)
+        bought_k = float(pos.get('bought_strike', 0.0) or 0.0)
+        spread_w = abs(sold_k - bought_k) if (sold_k > 0 and bought_k > 0) else 5.0
+        legs = pos.get('legs', [])
+
+        legs_breakdown = []
+        for l in legs:
+            c = getattr(l, 'contract', None)
+            if not c:
+                continue
+            sec_type = getattr(c, 'secType', 'OPT')
+            right = getattr(c, 'right', '')
+            strike = float(getattr(c, 'strike', 0.0) or 0.0)
+            pos_qty = float(getattr(l, 'position', 0.0) or 0.0)
+            is_leg_long = pos_qty > 0
+            leg_act = "LONG" if is_leg_long else "SHORT"
+            
+            raw_cost = float(getattr(l, 'averageCost', 0.0) or 0.0)
+            leg_cost = (raw_cost / 100.0) if (sec_type in ['OPT', 'FOP'] and raw_cost > 0) else raw_cost
+            leg_mkt = float(getattr(l, 'marketPrice', 0.0) or 0.0)
+            leg_pnl = float(getattr(l, 'unrealizedPNL', 0.0) or 0.0)
+            
+            leg_desc = f"{strike:.1f} {right}" if sec_type in ['OPT', 'FOP'] else f"Aandeel {sym}"
+            legs_breakdown.append({
+                'desc': leg_desc,
+                'sec_type': sec_type,
+                'right': right,
+                'strike': strike,
+                'action': leg_act,
+                'position': int(pos_qty),
+                'entry_price': round(leg_cost, 2),
+                'market_price': round(leg_mkt, 2),
+                'pnl_usd': round(leg_pnl, 2),
+                'pnl_pct': round((leg_pnl / (leg_cost * abs(pos_qty) * (100.0 if sec_type in ['OPT', 'FOP'] else 1.0)) * 100.0), 1) if leg_cost > 0 else 0.0
+            })
+
+        contract_label = "Contractwaarde"
+        entry_label = "Instapprijs"
+        mkt_label = "Huidige Koers"
+
+        bep_price = 0.0
+        bep_dist_usd = 0.0
+        bep_dist_pct = 0.0
+        bep_status = ""
+        is_in_profit = pnl_usd > 0
+
+        t1_stock = 0.0
+        t1_dist_usd = 0.0
+        t1_dist_pct = 0.0
+        t1_status = ""
+
+        t5_stock = 0.0
+        t5_dist_usd = 0.0
+        t5_dist_pct = 0.0
+        t5_status = ""
+
+        if strat == 'Stock':
+            contract_label = "Aandeelwaarde"
+            entry_label = "Gem. Aankoopkoers"
+            mkt_label = "Huidige Aandeelkoers"
+            bep_price = round(entry_p, 2)
+
+            if is_long:
+                bep_dist_usd = round(bep_price - und_p, 2)
+                bep_dist_pct = round((bep_dist_usd / und_p * 100.0), 1) if und_p > 0 else 0.0
+                if und_p >= bep_price:
+                    bep_status = f"✅ In winstzone (+${und_p - bep_price:.2f} / +{((und_p - bep_price)/bep_price)*100:.1f}% boven BEP)"
+                else:
+                    bep_status = f"⚠️ Nog +${bep_dist_usd:.2f} (+{abs(bep_dist_pct):.1f}%) stijging nodig voor BEP (${bep_price:.2f})"
+                
+                t1_stock = round(entry_p * 1.01, 2)
+                t5_stock = round(entry_p * 1.05, 2)
+                t1_dist_usd = round(t1_stock - und_p, 2)
+                t1_dist_pct = round((t1_dist_usd / und_p * 100.0), 1) if und_p > 0 else 0.0
+                t5_dist_usd = round(t5_stock - und_p, 2)
+                t5_dist_pct = round((t5_dist_usd / und_p * 100.0), 1) if und_p > 0 else 0.0
+                
+                t1_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 1.0 else f"Nog +${t1_dist_usd:.2f} (+{t1_dist_pct:.1f}%) stijging nodig tot ${t1_stock:.2f}"
+                t5_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 5.0 else f"Nog +${t5_dist_usd:.2f} (+{t5_dist_pct:.1f}%) stijging nodig tot ${t5_stock:.2f}"
+            else:
+                bep_dist_usd = round(und_p - bep_price, 2)
+                bep_dist_pct = round((bep_dist_usd / und_p * 100.0), 1) if und_p > 0 else 0.0
+                if und_p <= bep_price:
+                    bep_status = f"✅ In winstzone (+${bep_price - und_p:.2f} / +{((bep_price - und_p)/bep_price)*100:.1f}% onder BEP)"
+                else:
+                    bep_status = f"⚠️ Nog -${bep_dist_usd:.2f} (-{abs(bep_dist_pct):.1f}%) daling nodig voor BEP (${bep_price:.2f})"
+                
+                t1_stock = round(entry_p * 0.99, 2)
+                t5_stock = round(entry_p * 0.95, 2)
+                t1_dist_usd = round(und_p - t1_stock, 2)
+                t1_dist_pct = round((t1_dist_usd / und_p * 100.0), 1) if und_p > 0 else 0.0
+                t5_dist_usd = round(und_p - t5_stock, 2)
+                t5_dist_pct = round((t5_dist_usd / und_p * 100.0), 1) if und_p > 0 else 0.0
+                
+                t1_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 1.0 else f"Nog -${t1_dist_usd:.2f} (-{t1_dist_pct:.1f}%) daling nodig tot ${t1_stock:.2f}"
+                t5_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 5.0 else f"Nog -${t5_dist_usd:.2f} (-{t5_dist_pct:.1f}%) daling nodig tot ${t5_stock:.2f}"
+
+        elif strat in ['LongCall', 'LongPut']:
+            is_call = strat == 'LongCall'
+            contract_label = f"Optiepremie ({'Call' if is_call else 'Put'})"
+            entry_label = "Betaalde Optiepremie"
+            mkt_label = "Huidige Optiewaarde"
+            strike = bought_k if bought_k > 0 else float(pos.get('strike', 0.0) or 0.0)
+            
+            bep_price = round((strike + entry_p) if is_call else (strike - entry_p), 2)
+            if is_call:
+                bep_dist_usd = round(bep_price - und_p, 2)
+                bep_dist_pct = round((bep_dist_usd / und_p * 100.0), 1) if und_p > 0 else 0.0
+                if und_p >= bep_price:
+                    bep_status = f"✅ In winstzone (+${und_p - bep_price:.2f} / +{((und_p - bep_price)/bep_price)*100:.1f}% boven BEP van ${bep_price:.2f})"
+                else:
+                    bep_status = f"⚠️ Nog +${bep_dist_usd:.2f} (+{abs(bep_dist_pct):.1f}%) stijging nodig voor BEP op expiratie (${bep_price:.2f})"
+                
+                t1_opt = entry_p * 1.01
+                t5_opt = entry_p * 1.05
+                t1_stock = round(strike + t1_opt, 2)
+                t5_stock = round(strike + t5_opt, 2)
+                t1_dist_usd = round(t1_stock - und_p, 2)
+                t1_dist_pct = round((t1_dist_usd / und_p * 100.0), 1) if und_p > 0 else 0.0
+                t5_dist_usd = round(t5_stock - und_p, 2)
+                t5_dist_pct = round((t5_dist_usd / und_p * 100.0), 1) if und_p > 0 else 0.0
+                
+                t1_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 1.0 else f"Nog +${t1_dist_usd:.2f} (+{t1_dist_pct:.1f}%) stijging nodig tot ${t1_stock:.2f}"
+                t5_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 5.0 else f"Nog +${t5_dist_usd:.2f} (+{t5_dist_pct:.1f}%) stijging nodig tot ${t5_stock:.2f}"
+            else:
+                bep_dist_usd = round(und_p - bep_price, 2)
+                bep_dist_pct = round((bep_dist_usd / und_p * 100.0), 1) if und_p > 0 else 0.0
+                if und_p <= bep_price:
+                    bep_status = f"✅ In winstzone (+${bep_price - und_p:.2f} / +{((bep_price - und_p)/bep_price)*100:.1f}% onder BEP van ${bep_price:.2f})"
+                else:
+                    bep_status = f"⚠️ Nog -${bep_dist_usd:.2f} (-{abs(bep_dist_pct):.1f}%) daling nodig voor BEP op expiratie (${bep_price:.2f})"
+                
+                t1_opt = entry_p * 1.01
+                t5_opt = entry_p * 1.05
+                t1_stock = round(strike - t1_opt, 2)
+                t5_stock = round(strike - t5_opt, 2)
+                t1_dist_usd = round(und_p - t1_stock, 2)
+                t1_dist_pct = round((t1_dist_usd / und_p * 100.0), 1) if und_p > 0 else 0.0
+                t5_dist_usd = round(und_p - t5_stock, 2)
+                t5_dist_pct = round((t5_dist_usd / und_p * 100.0), 1) if und_p > 0 else 0.0
+                
+                t1_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 1.0 else f"Nog -${t1_dist_usd:.2f} (-{t1_dist_pct:.1f}%) daling nodig tot ${t1_stock:.2f}"
+                t5_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 5.0 else f"Nog -${t5_dist_usd:.2f} (-{t5_dist_pct:.1f}%) daling nodig tot ${t5_stock:.2f}"
+
+        elif strat in ['BullPut', 'BearCall', 'BullCall', 'BearPut']:
+            is_credit = strat in ['BullPut', 'BearCall']
+            contract_label = "Netto Spreadwaarde"
+            entry_label = "Ontvangen Net Credit" if is_credit else "Betaalde Net Debit"
+            mkt_label = "Huidige Sluitprijs (Debit)" if is_credit else "Huidige Sluitprijs (Credit)"
+            margin_risk = max(1.0, (spread_w - entry_p) if is_credit else entry_p)
+
+            if strat == 'BullPut':
+                bep_price = round(sold_k - entry_p, 2)
+                buffer_usd = round(und_p - bep_price, 2)
+                buffer_pct = round((buffer_usd / und_p * 100.0), 1) if und_p > 0 else 0.0
+                bep_dist_usd = buffer_usd
+                bep_dist_pct = buffer_pct
+                if und_p >= bep_price:
+                    bep_status = f"🛡️ Veiligheidsbuffer: Koers ligt ${buffer_usd:+.2f} ({buffer_pct:+.1f}%) boven BEP van ${bep_price:.2f}"
+                else:
+                    bep_status = f"⚠️ Onder BEP: Koers moet nog +${abs(buffer_usd):.2f} (+{abs(buffer_pct):.1f}%) stijgen tot BEP (${bep_price:.2f})"
+                
+                t1_stock = round(bep_price + (0.01 * margin_risk), 2)
+                t5_stock = round(bep_price + (0.05 * margin_risk), 2)
+                t1_dist_usd = round(t1_stock - und_p, 2)
+                t1_dist_pct = round((t1_dist_usd / und_p * 100.0), 1) if und_p > 0 else 0.0
+                t5_dist_usd = round(t5_stock - und_p, 2)
+                t5_dist_pct = round((t5_dist_usd / und_p * 100.0), 1) if und_p > 0 else 0.0
+                
+                t1_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 1.0 else f"Nog +${t1_dist_usd:.2f} (+{t1_dist_pct:.1f}%) stijging nodig tot ${t1_stock:.2f}"
+                t5_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 5.0 else f"Nog +${t5_dist_usd:.2f} (+{t5_dist_pct:.1f}%) stijging nodig tot ${t5_stock:.2f}"
+
+            elif strat == 'BearCall':
+                bep_price = round(sold_k + entry_p, 2)
+                buffer_usd = round(bep_price - und_p, 2)
+                buffer_pct = round((buffer_usd / und_p * 100.0), 1) if und_p > 0 else 0.0
+                bep_dist_usd = buffer_usd
+                bep_dist_pct = buffer_pct
+                if und_p <= bep_price:
+                    bep_status = f"🛡️ Veiligheidsbuffer: Koers ligt ${buffer_usd:+.2f} ({buffer_pct:+.1f}%) onder BEP van ${bep_price:.2f}"
+                else:
+                    bep_status = f"⚠️ Boven BEP: Koers moet nog -${abs(buffer_usd):.2f} (-{abs(buffer_pct):.1f}%) dalen tot BEP (${bep_price:.2f})"
+                
+                t1_stock = round(bep_price - (0.01 * margin_risk), 2)
+                t5_stock = round(bep_price - (0.05 * margin_risk), 2)
+                t1_dist_usd = round(und_p - t1_stock, 2)
+                t1_dist_pct = round((t1_dist_usd / und_p * 100.0), 1) if und_p > 0 else 0.0
+                t5_dist_usd = round(und_p - t5_stock, 2)
+                t5_dist_pct = round((t5_dist_usd / und_p * 100.0), 1) if und_p > 0 else 0.0
+                
+                t1_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 1.0 else f"Nog -${t1_dist_usd:.2f} (-{t1_dist_pct:.1f}%) daling nodig tot ${t1_stock:.2f}"
+                t5_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 5.0 else f"Nog -${t5_dist_usd:.2f} (-{t5_dist_pct:.1f}%) daling nodig tot ${t5_stock:.2f}"
+
+            elif strat == 'BullCall':
+                bep_price = round(bought_k + entry_p, 2)
+                bep_dist_usd = round(bep_price - und_p, 2)
+                bep_dist_pct = round((bep_dist_usd / und_p * 100.0), 1) if und_p > 0 else 0.0
+                if und_p >= bep_price:
+                    bep_status = f"✅ In winstzone (+${und_p - bep_price:.2f} / +{((und_p - bep_price)/bep_price)*100:.1f}% boven BEP van ${bep_price:.2f})"
+                else:
+                    bep_status = f"⚠️ Nog +${bep_dist_usd:.2f} (+{abs(bep_dist_pct):.1f}%) stijging nodig voor BEP op expiratie (${bep_price:.2f})"
+                
+                t1_stock = round(bep_price + (0.01 * entry_p), 2)
+                t5_stock = round(bep_price + (0.05 * entry_p), 2)
+                t1_dist_usd = round(t1_stock - und_p, 2)
+                t1_dist_pct = round((t1_dist_usd / und_p * 100.0), 1) if und_p > 0 else 0.0
+                t5_dist_usd = round(t5_stock - und_p, 2)
+                t5_dist_pct = round((t5_dist_usd / und_p * 100.0), 1) if und_p > 0 else 0.0
+                
+                t1_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 1.0 else f"Nog +${t1_dist_usd:.2f} (+{t1_dist_pct:.1f}%) nodig tot ${t1_stock:.2f}"
+                t5_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 5.0 else f"Nog +${t5_dist_usd:.2f} (+{t5_dist_pct:.1f}%) nodig tot ${t5_stock:.2f}"
+
+            elif strat == 'BearPut':
+                bep_price = round(bought_k - entry_p, 2)
+                bep_dist_usd = round(und_p - bep_price, 2)
+                bep_dist_pct = round((bep_dist_usd / und_p * 100.0), 1) if und_p > 0 else 0.0
+                if und_p <= bep_price:
+                    bep_status = f"✅ In winstzone (+${bep_price - und_p:.2f} / +{((bep_price - und_p)/bep_price)*100:.1f}% onder BEP van ${bep_price:.2f})"
+                else:
+                    bep_status = f"⚠️ Nog -${bep_dist_usd:.2f} (-{abs(bep_dist_pct):.1f}%) daling nodig voor BEP op expiratie (${bep_price:.2f})"
+                
+                t1_stock = round(bep_price - (0.01 * entry_p), 2)
+                t5_stock = round(bep_price - (0.05 * entry_p), 2)
+                t1_dist_usd = round(und_p - t1_stock, 2)
+                t1_dist_pct = round((t1_dist_usd / und_p * 100.0), 1) if und_p > 0 else 0.0
+                t5_dist_usd = round(und_p - t5_stock, 2)
+                t5_dist_pct = round((t5_dist_usd / und_p * 100.0), 1) if und_p > 0 else 0.0
+                
+                t1_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 1.0 else f"Nog -${t1_dist_usd:.2f} (-{t1_dist_pct:.1f}%) nodig tot ${t1_stock:.2f}"
+                t5_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 5.0 else f"Nog -${t5_dist_usd:.2f} (-{t5_dist_pct:.1f}%) nodig tot ${t5_stock:.2f}"
+
+        return {
+            'contract_label': contract_label,
+            'entry_label': entry_label,
+            'mkt_label': mkt_label,
+            'underlying_price': und_p,
+            'entry_price': entry_p,
+            'market_price': mkt_p,
+            'pnl_usd': pnl_usd,
+            'pnl_pct': pnl_pct,
+            'is_in_profit': is_in_profit,
+            'bep_price': bep_price,
+            'bep_dist_usd': bep_dist_usd,
+            'bep_dist_pct': bep_dist_pct,
+            'bep_status': bep_status,
+            't1_stock': t1_stock,
+            't1_dist_usd': t1_dist_usd,
+            't1_dist_pct': t1_dist_pct,
+            't1_status': t1_status,
+            't5_stock': t5_stock,
+            't5_dist_usd': t5_dist_usd,
+            't5_dist_pct': t5_dist_pct,
+            't5_status': t5_status,
+            'legs_breakdown': legs_breakdown
+        }
+
     def evaluate_anti_assignment_routine(self, pos, underlying_p, dte, pnl_usd, pnl_pct):
         """
         Anti-Assignment Risico Evaluatieroutine gebaseerd op het 21-pagina document:
@@ -2666,24 +3165,16 @@ class PortfolioAnalyzer:
         recommended_action = "Geen actie vereist: positie ligt in de veilige zone."
         execution_type = "HANDHAVEN"
 
-        # 1. SCENARIO B: Reeds Aangewezen (Aandelen in account na expiratie of early assignment)
+        # 1. Reguliere Aandelenpositie in de Portefeuille (Geen Optie / Geen Aanwijzingsrisico)
         if strat == 'Stock' or right == 'STK':
             is_long = pos.get('is_long', True)
-            risk_level = "CRITICAL"
-            if is_long:
-                triggers.append(f"🚨 AANDELEN TOEGEWEZEN: Account bevat +{qty} long aandelen {sym} (Bull Put toewijzing).")
-                consequences = f"Account staat long {qty} aandelen {sym} (waarde ca. ${underlying_p * qty:,.0f}). Dit leidt tot marginbeslag, liquidatierisico door IBKR en koersvalrisico over het weekend."
-                action_code = "HERSTEL_AANDELEN_VERKOOP"
-                action_title = f"Direct Verkoop {qty}x Aandelen {sym} (Marge Herstellen)"
-                recommended_action = f"Verkoop direct de {qty} aandelen via Market/Limit order om kastekort aan te vullen en verdere koersschade te stoppen."
-                execution_type = "STOCK_CLOSE"
-            else:
-                triggers.append(f"🚨 SHORT AANDELEN: Account bevat -{qty} short aandelen {sym} (Bear Call toewijzing).")
-                consequences = f"Account staat short {qty} aandelen {sym}. Er is oneindig opwaarts koersrisico en acute margin call dreiging."
-                action_code = "HERSTEL_AANDELEN_AANKOOP"
-                action_title = f"Direct Terugkopen {qty}x Short Aandelen {sym}"
-                recommended_action = f"Koop direct {qty} aandelen terug om de shortpositie op te heffen en het opwaartse risico af te kappen."
-                execution_type = "STOCK_CLOSE"
+            risk_level = "SAFE"
+            triggers.append(f"📦 AANDELENPOSITIE: Account bezit {'+' if is_long else '-'}{qty} {'long' if is_long else 'short'} aandelen {sym}.")
+            consequences = f"Account bezit {qty} aandelen {sym} (totale marktwaarde: ${underlying_p * qty:,.2f}, ongerealiseerde P&L: ${pnl_usd:+,.2f} / {pnl_pct:+.1f}%). Er is geen optie-aanwijzingsrisico. Het positierisico wordt bewaakt via technische trendindicatoren en het OmniTrader BarToBar stopniveau."
+            action_code = "HANDHAVEN"
+            action_title = f"Aandelen {sym} Handhaven ({'Long' if is_long else 'Short'})"
+            recommended_action = f"Geen actie vereist. De positie wordt bewaakt via het OmniTrader BarToBar dynamische trailing stop-niveau."
+            execution_type = "STOCK_MONITOR"
             return {
                 'risk_level': risk_level,
                 'triggers': triggers,
@@ -2694,11 +3185,11 @@ class PortfolioAnalyzer:
                 'execution_type': execution_type,
                 'extrinsic_val': 0.0,
                 'intrinsic_val': 0.0,
-                'is_itm': True,
+                'is_itm': False,
                 'is_pin_risk': False,
                 'is_between_strikes': False,
                 'ex_dividend_risk': False,
-                'deadline_status': 'REEDS_AANGEWEZEN'
+                'deadline_status': 'AANDELEN_PORTFOLIO'
             }
 
         # Bereken intrinsieke en extrinsieke waarde van de geschreven optie
@@ -2993,13 +3484,16 @@ class PortfolioAnalyzer:
             macd_df = self.calculate_macd(hist_df)
 
         # Build decision logic
-        is_bullish_strat = strat in ['BullPut', 'BullCall', 'LongCall', 'ShortPut']
-        is_bearish_strat = strat in ['BearCall', 'BearPut', 'LongPut', 'ShortCall']
+        is_long_stock = (strat == 'Stock' and pos.get('is_long', True))
+        is_short_stock = (strat == 'Stock' and not pos.get('is_long', True))
+        is_bullish_strat = is_long_stock or strat in ['BullPut', 'BullCall', 'LongCall', 'ShortPut']
+        is_bearish_strat = is_short_stock or strat in ['BearCall', 'BearPut', 'LongPut', 'ShortCall']
 
         # Calculate OmniTrader BarToBar Advanced Exit Plan (Template STPB2BADV2CT)
+        omni_ref_price = entry_price if (entry_price > 0 and abs(entry_price - underlying_p) / underlying_p < 0.25) else underlying_p
         omni_res = self.calculate_omnitrader_b2b_exit_plan(
             hist_df, 
-            entry_price=underlying_p, 
+            entry_price=omni_ref_price, 
             signal_type="Long" if is_bullish_strat else "Short",
             init_mult=7.0,
             atr_periods=7,
@@ -3020,8 +3514,12 @@ class PortfolioAnalyzer:
         action_code = "HANDHAVEN"
         action_title = "Handhaven (Positie Gezond)"
         old_to_new = f"Lopende positie ({expiry})" + " → " + "Handhaven (Geen actie vereist)"
-        reasoning = f"Positie ligt in veilige zone (DTE={dte}d). Trend is stabiel."
-        result_desc = "Laat het tijdswaardeverval (Theta) in jouw voordeel werken."
+        if strat == 'Stock':
+            reasoning = f"Aandelen {sym} liggen in de veilige zone. Technische trend is stabiel (OmniStop: ${omni_res['stop_price']:.2f})."
+            result_desc = "OmniTrader BarToBar dynamische stop bewaakt het kapitaal."
+        else:
+            reasoning = f"Positie ligt in veilige zone (DTE={dte}d). Trend is stabiel."
+            result_desc = "Laat het tijdswaardeverval (Theta) in jouw voordeel werken."
         urgency = "LOW"
 
         # Evalueer eerst Anti-Assignment Risico conform het 21-pagina document
@@ -3037,19 +3535,27 @@ class PortfolioAnalyzer:
 
         # Check OmniTrader Exit Trigger condition
         elif omni_res['exit_signal']:
-            action_code = "TIJDIG_SLUITEN"
-            action_title = "Direct Sluiten (OmniTrader BarToBar Stop)"
-            old_to_new = "Openstaande Positie Handhaven" + " → " + f"Direct Sluiten op Marktprijs (OmniTrader Stop op ${omni_res['stop_price']:.2f})"
-            reasoning = f"OmniTrader BarToBar stopniveau van ${omni_res['stop_price']:.2f} is doorbroken met Coral Trend = {omni_res['marketstate']}."
-            result_desc = "Volgt de OmniTrader BarToBar dynamische risicobewaking."
-            urgency = "CRITICAL"
+            if strat == 'Stock':
+                action_code = "VERKOOP_STOPLOSS" if is_long_stock else "COVER_STOPLOSS"
+                action_title = f"Aandelen {sym} Sluiten (OmniTrader BarToBar Stop)"
+                old_to_new = f"Aandelen {sym} Handhaven" + " → " + f"Aandelen Sluiten op Marktprijs (Stop geraakt op ${omni_res['stop_price']:.2f})"
+                reasoning = f"OmniTrader BarToBar stopniveau van ${omni_res['stop_price']:.2f} is doorbroken met Coral Trend = {omni_res['marketstate']}."
+                result_desc = f"Beperk verlies of borg winst op de {pos.get('qty', 100)} aandelen {sym}."
+                urgency = "HIGH"
+            else:
+                action_code = "TIJDIG_SLUITEN"
+                action_title = "Direct Sluiten (OmniTrader BarToBar Stop)"
+                old_to_new = "Openstaande Positie Handhaven" + " → " + f"Direct Sluiten op Marktprijs (OmniTrader Stop op ${omni_res['stop_price']:.2f})"
+                reasoning = f"OmniTrader BarToBar stopniveau van ${omni_res['stop_price']:.2f} is doorbroken met Coral Trend = {omni_res['marketstate']}."
+                result_desc = "Volgt de OmniTrader BarToBar dynamische risicobewaking."
+                urgency = "CRITICAL"
 
         # Check standard conditions
-        elif pnl_pct >= 60.0 or (pnl_pct >= 40.0 and dte <= 7):
+        elif (strat != 'Stock' and (pnl_pct >= 60.0 or (pnl_pct >= 40.0 and dte <= 7))) or (strat == 'Stock' and pnl_pct >= 40.0):
             action_code = "WINST_BORGEN"
             action_title = "Winst Borgen & Positie Sluiten"
             old_to_new = f"Lopende Winstpositie ({pnl_pct:.0f}% winst)" + " → " + "Winst Borgen & Positie Sluiten op Marktprijs"
-            reasoning = f"Ruim {pnl_pct:.0f}% winst behaald of DTE ({dte}d) is kort. Voorkom expiratierisico."
+            reasoning = f"Ruim {pnl_pct:.0f}% winst behaald. Borg het behaalde rendement."
             result_desc = f"Borg de winst van ${pnl_usd:.2f} direct en maak kapitaal vrij."
             urgency = "HIGH"
 
@@ -3069,7 +3575,7 @@ class PortfolioAnalyzer:
             result_desc = "Beperkt verlies en voorkomt max verlies bij verdere uitbraak omhoog."
             urgency = "CRITICAL"
 
-        elif dte <= 21 or sold_strike_threatened or pnl_pct < -15.0:
+        elif strat != 'Stock' and (dte <= 21 or sold_strike_threatened or pnl_pct < -15.0):
             if stoch_oversold or cci_oversold or dte <= 21:
                 action_code = "DOORROLLEN_CREDIT"
                 action_title = "Doorrollen naar Volgende Maand (+30 DTE voor Credit)"
@@ -3085,18 +3591,34 @@ class PortfolioAnalyzer:
                 result_desc = "Ontvang extra premie zonder het maximale risico op de positie te verhogen."
                 urgency = "MEDIUM"
 
-        alternatives = [
-            f"[Aanbevolen] {action_title}",
-            "Direct Sluiten als Combo Order (Mid-price / Market)",
-            "Doorrollen naar Volgende Maand (+30 DTE voor Credit)",
-            "Omzetten naar Iron Condor (Verkoop tegendraadse zijde)",
-            "Winst Borgen & Positie Sluiten",
-            "Handhaven (Geen Actie)"
-        ]
-        if anti_assign['execution_type'] == 'STOCK_CLOSE':
+        elif strat == 'Stock' and pnl_pct < -15.0:
+            action_code = "VERKOOP_STOPLOSS" if is_long_stock else "COVER_STOPLOSS"
+            action_title = f"Aandelen {sym} Sluiten (Verlies > 15%)"
+            old_to_new = f"Aandelen {sym} Handhaven" + " → " + "Aandelen Sluiten op Marktprijs (Stop-Loss)"
+            reasoning = f"Verlies op aandelenpositie ({pnl_pct:.1f}%) overschrijdt de risicodrempel van -15%."
+            result_desc = "Beperk verder koersverlies conform strikt risicobeheer."
+            urgency = "HIGH"
+
+        if strat == 'Stock':
+            alternatives = [
+                f"[Aanbevolen] {action_title}",
+                "Verkoop Aandelen via Limit Order",
+                "Verkoop Aandelen via Market Order",
+                "Handhaven (Geen Actie)"
+            ]
+        elif anti_assign['execution_type'] == 'STOCK_CLOSE':
             alternatives = [
                 f"[Aanbevolen] {action_title}",
                 "Verkoop Aandelen via Market Order",
+                "Handhaven (Geen Actie)"
+            ]
+        else:
+            alternatives = [
+                f"[Aanbevolen] {action_title}",
+                "Direct Sluiten als Combo Order (Mid-price / Market)",
+                "Doorrollen naar Volgende Maand (+30 DTE voor Credit)",
+                "Omzetten naar Iron Condor (Verkoop tegendraadse zijde)",
+                "Winst Borgen & Positie Sluiten",
                 "Handhaven (Geen Actie)"
             ]
 
@@ -3121,6 +3643,7 @@ class PortfolioAnalyzer:
             'alternatives': alternatives,
             'anti_assignment': anti_assign,
             'omnitrader_b2b': omni_res,
+            'financials': self.calculate_position_financials(pos),
             'technical_summary': f"OmniStop=${omni_res['stop_price']:.2f}, Coral={'Bull' if omni_res['marketstate']==1 else 'Bear'}, EMA8/20={'Bull' if ema_bullish else 'Bear'}, StochRSI={stoch_k_val:.1f}"
         }
 
@@ -3228,8 +3751,16 @@ class PortfolioAnalyzer:
             if curr_high > prev_drempel_val and prev_drempel_val > 0:
                 exit_triggered = True
 
+        display_stop = current_drempel
+        if not exit_triggered:
+            if signal_type == "Long" and current_drempel >= curr_close:
+                display_stop = round(min(current_drempel, curr_close * 0.95), 2)
+            elif signal_type == "Short" and current_drempel <= curr_close:
+                display_stop = round(max(current_drempel, curr_close * 1.05), 2)
+
         return {
-            'stop_price': current_drempel,
+            'stop_price': display_stop,
+            'drempel_raw': current_drempel,
             'exit_signal': exit_triggered,
             'marketstate': curr_mstate,
             'drempel_history': drempel_list,

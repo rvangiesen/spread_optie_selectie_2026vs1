@@ -153,4 +153,6 @@ cython_debug/
 !walkthrough.md
 debug_log.txt
 *.docx
+*.wbk
+~$*
 Opnemen youtube (achtigen) met geluid/

@@ -1123,7 +1123,7 @@ class IBClient:
             # print(f"[IBClient] Scanner Error: {e}")
             return []
             
-    def place_strategy_order(self, symbol, expiry, right, strategy, strikes_dict, action, quantity, price=None, order_type='LMT', enable_bracket=True, tp_pct=0.20, sl_pct=0.20, custom_tp_price=None, custom_sl_price=None):
+    def place_strategy_order(self, symbol, expiry, right, strategy, strikes_dict, action, quantity, price=None, order_type='LMT', enable_bracket=True, tp_pct=0.20, sl_pct=0.20, custom_tp_price=None, custom_sl_price=None, tif='DAY', bracket_tif='GTC'):
         """
         Intelligently places orders for any supported strategy (single or multi-leg).
         Supports Take Profit and Stop Loss attached bracket orders (via % or custom $ price).
@@ -1267,13 +1267,13 @@ class IBClient:
                 orderType=order_type_str,
                 lmtPrice=price,
                 transmit=parent_transmit,
-                tif='DAY',
+                tif=tif,
                 outsideRth=True
             )
             if algo_strategy:
                 order.algoStrategy = algo_strategy
                 order.algoParams = algo_params
-            print(f"DEBUG_LOG: Placing Single Leg order: {leg_action} {quantity} x {contract.symbol} {contract.strike}{contract.right} @ {price}...")
+            print(f"DEBUG_LOG: Placing Single Leg order: {leg_action} {quantity} x {contract.symbol} {contract.strike}{contract.right} @ {price} (tif={tif})...")
             trade = self.ib.placeOrder(contract, order)
             target_contract = contract
 
@@ -1296,13 +1296,13 @@ class IBClient:
                 orderType=order_type_str,
                 lmtPrice=price,
                 transmit=parent_transmit,
-                tif='DAY',
+                tif=tif,
                 outsideRth=True
             )
             if algo_strategy:
                 order.algoStrategy = algo_strategy
                 order.algoParams = algo_params
-            print(f"DEBUG_LOG: Placing BAG order ({len(legs_data)} legs): {outer_action} {quantity} combo @ {price}...")
+            print(f"DEBUG_LOG: Placing BAG order ({len(legs_data)} legs): {outer_action} {quantity} combo @ {price} (tif={tif})...")
             trade = self.ib.placeOrder(bag, order)
 
         # Attach Take Profit & Stop Loss Bracket Orders
@@ -1329,11 +1329,11 @@ class IBClient:
                 orderType='LMT',
                 lmtPrice=tp_price,
                 parentId=parent_id,
-                tif='DAY',
+                tif=bracket_tif,
                 outsideRth=True,
                 transmit=False
             )
-            print(f"DEBUG_LOG: Attaching Take Profit order: {exit_action} @ {tp_price} (parentId: {parent_id})")
+            print(f"DEBUG_LOG: Attaching Take Profit order: {exit_action} @ {tp_price} (parentId: {parent_id}, tif={bracket_tif})")
             self.ib.placeOrder(target_contract, tp_order)
 
             # 2. Stop Loss Order - Transmits full bracket
@@ -1344,20 +1344,23 @@ class IBClient:
                 auxPrice=sl_price if len(legs_data) == 1 else None,
                 lmtPrice=sl_price if len(legs_data) > 1 else None,
                 parentId=parent_id,
-                tif='DAY',
+                tif=bracket_tif,
                 outsideRth=True,
                 transmit=True
             )
-            print(f"DEBUG_LOG: Attaching Stop Loss order: {exit_action} @ {sl_price} (parentId: {parent_id})")
+            print(f"DEBUG_LOG: Attaching Stop Loss order: {exit_action} @ {sl_price} (parentId: {parent_id}, tif={bracket_tif})")
             self.ib.placeOrder(target_contract, sl_order)
 
-        # 3. Wait for Submit
+        # 3. Wait for Submit - Wacht specifiek totdat TWS de order verwerkt en PendingSubmit verlaat
         import time
         start_wait = time.time()
-        while trade.orderStatus.status in ('PendingSubmit', 'PreSubmitted') and not trade.isDone():
+        while trade.orderStatus.status == 'PendingSubmit' and not trade.isDone():
             self.ib.sleep(0.2)
-            if time.time() - start_wait > 3.0: break
+            if time.time() - start_wait > 5.0:
+                break
                 
+        # Korte extra cyclus om bracket child-orders (winstnemer/stoploss) te registreren
+        self.ib.sleep(0.3)
         return trade
 
     def get_open_orders(self):
@@ -1516,11 +1519,11 @@ class IBClient:
             positions_list.append({
                 'symbol': s_sym,
                 'strategy': 'Stock',
-                'expiry': 'Aandelen (Assignment)',
+                'expiry': 'Aandelen',
                 'dte': 0,
                 'qty': s_qty,
                 'is_long': s_is_long,
-                'strikes_str': f"{'+' if s_is_long else '-'}{s_qty} aandelen ({'Bull Put' if s_is_long else 'Bear Call'} toewijzing)",
+                'strikes_str': f"{'+' if s_is_long else '-'}{s_qty} aandelen ({'Long' if s_is_long else 'Short'})",
                 'sold_strike': 0.0,
                 'bought_strike': 0.0,
                 'right': 'STK',
@@ -1631,7 +1634,19 @@ class IBClient:
                     bought_strike = float(c2.strike)
                     strikes_str = f"{c1.strike}/{c2.strike}"
 
-                short_p = float(sell_item.marketPrice or 0.0) if sell_item else 0.0
+                sell_cost = (float(sell_item.averageCost or 0.0) / 100.0) if sell_item else 0.0
+                buy_cost = (float(buy_item.averageCost or 0.0) / 100.0) if buy_item else 0.0
+                sell_mkt = float(sell_item.marketPrice or 0.0) if sell_item else 0.0
+                buy_mkt = float(buy_item.marketPrice or 0.0) if buy_item else 0.0
+                is_credit = strat in ['BullPut', 'BearCall']
+                net_entry = abs(sell_cost - buy_cost) if is_credit else abs(buy_cost - sell_cost)
+                net_mkt = (sell_mkt - buy_mkt) if is_credit else (buy_mkt - sell_mkt)
+                if net_entry == 0.0:
+                    net_entry = (float(p1.averageCost or 0) + float(p2.averageCost or 0)) / 200.0
+                if net_mkt == 0.0:
+                    net_mkt = (float(p1.marketPrice or 0) + float(p2.marketPrice or 0)) / 2.0
+
+                short_p = sell_mkt
                 short_delta = 0.0
                 if sell_item and hasattr(sell_item, 'modelGreeks') and sell_item.modelGreeks:
                     short_delta = float(getattr(sell_item.modelGreeks, 'delta', 0.0) or 0.0)
@@ -1647,8 +1662,8 @@ class IBClient:
                     'sold_strike': sold_strike,
                     'bought_strike': bought_strike,
                     'right': list(rights)[0] if len(rights) == 1 else 'COMBO',
-                    'market_price': (float(p1.marketPrice or 0) + float(p2.marketPrice or 0)) / 2.0,
-                    'entry_price': (float(p1.averageCost or 0) + float(p2.averageCost or 0)) / 200.0,
+                    'market_price': round(net_mkt, 3),
+                    'entry_price': round(net_entry, 3),
                     'short_leg_price': short_p,
                     'short_delta': short_delta,
                     'unrealized_pnl': pnl_usd,

@@ -53,6 +53,40 @@ Aan de linkerkant van het scherm (de sidebar) vind je de instellingen waarmee je
 
 ---
 
+### ⚡ De Snelle Actieknoppen: 'Reset Filters' & 'Optimaliseer'
+
+Moet je na het opstarten of bij het kiezen van een strategie verplicht op deze knoppen drukken? **Nee, na het opstarten hoef je deze knoppen niet verplicht in te drukken.** Het programma start namelijk standaard al direct op met de gecalibreerde basisinstellingen. Toch hebben beide knoppen een heel specifieke en nuttige functie:
+
+#### 1. Knop: `⚡ Reset Filters`
+* **Wat doet deze knop?** 
+  Zet met één klik alle invoervelden en schuifbalken in de zijbalk terug naar de optimale fabrieksinstellingen behorend bij het gekozen profiel (**Week** of **Maand**). Bovendien is deze knop **strategie-bewust**:
+  * Staat je strategie op **Spreads** (bijv. Bull Put / Bear Call): dan zet hij de strike-afstand op **5.0% - 6.0%** en de BEP-buffer op **6.0%** (veilige Out-of-the-Money marges).
+  * Staat je strategie op **puur Long opties** (bijv. alleen **Long Call** of **Long Put**): dan weet de knop dat je opties zoekt met de scherpe 1%-regel en lage BEP-afstand, en past hij de filters automatisch direct aan.
+* **Wanneer gebruik je deze knop?**
+  1. **Bij overschakelen naar een andere strategiefamilie** (bijv. van Spreads naar Long Call / Long Put): klik op `⚡ Reset Filters` zodat alle strikes en buffers meteen optimaal staan voor die categorie.
+  2. **Na handmatig schuiven en experimenteren**: als je sliders hebt verzet (winstkans, delta, DTE, etc.) en je snel wilt terugkeren naar de bewezen basislijn.
+  3. **Als een scan onverhoopt 0 trades geeft**: om eventuele te strenge handmatige filters in één keer te ontspannen.
+
+#### 2. Knop: `🔬 Optimaliseer`
+* **Wat doet deze knop?** 
+  Deze knop start **geen** gewone scan voor de handelsdag van vandaag, maar opent en start een **historische Backtest & Vergelijkingstest** in Tab 6 (*Hit Rate & Optimalisatie*). Hij toetst tientallen historische trades over de afgelopen 1 à 2 jaar om te meten:
+  * Wat is de werkelijke historische **Hit Rate %** van je huidige configuratie?
+  * Wat is de **gemiddelde winst per trade** ($)?
+  * Hoe presteert jouw instelling ten opzichte van de standaard benchmark?
+* **Wanneer gebruik je deze knop?**
+  1. **Voor functie-onderzoek en validatie**: als je een specifieke strategievariatie wiskundig wilt valideren op historische data.
+  2. **Niet voor de dagelijkse handelsselectie**: bij je normale dagelijkse scan hoef je deze knop niet in te drukken; het is puur een onderzoeks- en optimalisatietool.
+
+#### 📋 Samenvattend Stappenplan Knoppen:
+| Situatie / Doel | Knop indrukken? | Actie |
+| :--- | :--- | :--- |
+| **Normale scan (Week/Maand Spreads)** | ❌ Nee | Symbool kiezen en direct op **Start Scan** klikken. |
+| **Wisselen naar Long Call / Long Put** | 💡 Aanbevolen | Vink `LongCall`/`LongPut` aan en klik op **`⚡ Reset Filters`**. |
+| **Terug naar basis na schuiven** | ✅ Ja | Klik op **`⚡ Reset Filters`**. |
+| **Historisch rendement valideren** | 🔬 Optioneel | Klik op **`🔬 Optimaliseer`** (in Tab 6). |
+
+---
+
 ## 3. Diepgaande Uitleg van alle Optiecontract Vormen (Strategieën)
 
 In de Spread Selector worden verschillende optievormen gebruikt. Elk contract heeft een eigen werking, risicoprofiel en winstberekening. Hieronder leggen we alle ondersteunde strategieën overzichtelijk uit.
@@ -138,26 +172,85 @@ In de Spread Selector worden verschillende optievormen gebruikt. Elk contract he
 ---
 
 ### 🎯 7. Single Leg: Long Call, Long Put & Short Put (Losse Contracten)
-* **Long Call**:
-  * **Marktvisie**: **Sterk stijgend** (Bullish momentum).
-  * **Type**: **Debit** (Aankoop van één At-The-Money / Out-of-the-Money call).
-  * **Max Winst**: Onbeperkt naar boven zolang het aandeel blijft stijgen.
-  * **Max Verlies**: 100% beperkt tot de betaalde optiepremie.
-  * **Break-Even**: Strike + betaalde premie.
 
-* **Long Put**:
-  * **Marktvisie**: **Sterk dalend** (Bearish bescherming of short-speculatie).
-  * **Type**: **Debit** (Aankoop van één At-The-Money / Out-of-the-Money put).
-  * **Max Winst**: Zeer hoog (tot koers $0 van het onderliggende aandeel).
-  * **Max Verlies**: 100% beperkt tot de betaalde optiepremie.
-  * **Break-Even**: Strike - betaalde premie.
+#### A. Long Call & Long Put: De Filosofie van de 1% Koopdrempel (Diepe ITM)
+Bij het kopen van een losse Call of Put hanteert het AntiGravity systeem een unieke, defensieve insteek via de **1% Koopdrempel (Deep In-The-Money)**:
 
-* **Short Put (Cash Secured Put)**:
-  * **Marktvisie**: **Neutraal tot gematigd stijgend** (Bullish / Zijwaarts).
-  * **Type**: **Credit** (Verkoop van één Out-of-the-Money put op de EM85-veiligheidsmarge).
-  * **Max Winst**: 100% van de ontvangen premie (zolang koers op expiratie $\ge$ Strike blijft).
-  * **Max Verlies**: Aanzienlijk indien het aandeel hard daalt (beschermd via de 2x credit stoploss of doorrollen).
-  * **Break-Even**: Strike - ontvangen premie.
+* **Wat is de 1% Koopdrempel?**
+  Een optie waarbij de uitoefenprijs zo diep in het geld (ITM) ligt, dat er slechts een minimale koersbeweging van **1,0%** in de gewenste richting nodig is om break-even te spelen.
+* **Waarom Diep In-The-Money (ITM) i.p.v. At-The-Money (ATM)?**
+  1. **Hoge Delta ($\approx 0.85$ tot $0.95$)**: De optie beweegt vrijwel 1-op-1 mee met het aandeel, net als een echt aandeel maar met een hefboom.
+  2. **Minimale Tijdswaarde (Extrinsic Value $\le 1.0\%$)**: Vrijwel de gehele premie bestaat uit *intrinsieke waarde*. Tijdswaardeverval (theta) vreet nauwelijks aan je positie.
+  3. **Kapitaalbescherming op Expiratie**: Een ATM-optie loopt bij een lichte daling of stilstand **100% waardeloos af** (totaal verlies van de inleg). Een Diepe ITM optie behoudt zijn intrinsieke bodemwaarde. Zakt de koers bijvoorbeeld 5%, dan zakt de optie mee, maar behoud je nog steeds het overgrote deel van je kapitaal!
+
+---
+
+#### B. De Strategische Keuze: 1x Diepe ITM (1% Regel) vs. Meervoudige ATM ($x\%$ Afstand)
+Wanneer je een Long positie overweegt, kun je twee richtingen kiezen met elk een heel eigen risico- en winstprofiel voor hetzelfde investeringsbudget:
+
+```
+Variant A: [ 1x Diepe ITM Call (1% Koopdrempel) ]  --> Focus: Kapitaalbescherming & Lage BEP
+Variant B: [ Nx ATM Calls (x% Afstand) ]          --> Focus: Maximale Hefboom & Explosieve Winst
+```
+
+##### 📊 Wiskundige Vergelijking (Voorbeeld aandeel van $100):
+| Eigenschap | Variant A: 1x Diepe ITM Call (1% Koopdrempel) | Variant B: Meervoudige ATM Calls ($x\%$ Afstand) |
+| :--- | :--- | :--- |
+| **Uitoefenprijs (Strike)** | $80.00 (20% ITM) | $100.00 (ATM) |
+| **Optiepremie per stuk** | $20.80 ($2.080 per contract) | $3.50 ($350 per contract) |
+| **Aantal contracten** | **1 contract** (Investering: $2.080) | **5 contracten** (Investering: $1.750 $\le$ $2.080) |
+| **Intrinsieke waarde** | $20.00 (96% van de prijs) | $0.00 (100% tijdswaarde) |
+| **Tijdswaarde (Verdampingsrisico)** | $0.80 (< 1% van de aandelenkoers) | $3.50 (3,5% van de aandelenkoers) |
+| **Delta per positie** | $0.92$ (equivalent van 92 aandelen) | $5 \times 0.50 = 2.50$ (equivalent van **250 aandelen!**) |
+| **Benodigde Koersstijging voor BEP ($x\%$)** | **Slechts +0,8%** (Koers hoeft naar $100.80) | **+3,5%** (Koers moet minimaal naar $103.50) |
+| **Winstkans / Haalbaarheid (PoP)** | **Zeer hoog (~75% - 80%)** | **Matig (~35% - 40%)** |
+| **Verliesrisico bij stilstand (0% op expiratie)** | **Slechts -3,8%** (Verlies: -$80) | **100% WAARDELOOS** (Totaal verlies: -$1.750) |
+| **Verliesrisico bij koersdaling (-5% naar $95)** | **Slechts -27,9%** (Behoudt 72% kapitaal) | **100% WAARDELOOS** (Totaal verlies: -$1.750) |
+
+---
+
+##### 📈 De 5-Traps Scenario Analyse op Expiratie:
+Wat gebeurt er daadwerkelijk met je geld bij verschillende koersscenario's op de expiratiedatum?
+
+| Scenario | Eindkoers | 1x Deep ITM ($2.080 inleg) | 5x ATM ($1.750 inleg) | Conclusie & Voordeel |
+| :--- | :--- | :--- | :--- | :--- |
+| **1. Dip (-5%)** | $95.00 | -$580.00 (**-27.9%**) | -$1.750.00 (**-100.0%**) | 🛡️ **ITM Veiliger** (Behoudt $1.500 bodemwaarde) |
+| **2. Vlak (0%)** | $100.00 | -$80.00 (**-3.8%**) | -$1.750.00 (**-100.0%**) | 🛡️ **ITM Veiliger** (Vrijwel quitte, minieme tijdswaarde) |
+| **3. Kleine Winst (+3%)** | $103.00 | **+$220.00 (+10.6%)** | -$250.00 (**-14.3%**) | 🛡️ **ITM Veiliger** (**Eye-opener: ATM verliest nog steeds!**) |
+| **4. Stevige Winst (+5%)** | $105.00 | +$420.00 (+20.2%) | **+$750.00 (+42.9%)** | ⚡ **ATM Rendement** (Hefboom haalt ITM in) |
+| **5. Uitbraak (+10%)** | $110.00 | +$920.00 (+44.2%) | **+$3.250.00 (+185.7%)** | ⚡ **ATM Rendement** (Explosieve vermenigvuldiging) |
+
+> 💡 **De Grote Eye-Opener bij Scenario 3 (+3% Koersstijging)**:
+> Zelfs als het aandeel netjes met **+3% stijgt**, verliest de belegger in de ATM-optie nog steeds geld (**-14,3% verlies**)! De ATM optie had immers minimaal +3,5% stijging nodig om alleen al de betaalde premie terug te verdienen. De Deep ITM optie daarentegen staat bij diezelfde +3% koersstijging al stevig op **+10,6% winst**!
+
+---
+
+##### ⚖️ Het Vergelijkend Risicogetal (Asymmetrie-Score):
+* **Diepe ITM (Variant A)** heeft een extreem gunstig risicogetal: je riskeert effectief alleen de minieme tijdswaarde ($\le 1\%$), terwijl je bij winst direct meeloopt.
+* **ATM Meervoudig (Variant B)** ruilt die veiligheid in voor pure hefboom: door voor hetzelfde budget 5x zoveel contracten te kopen, verdrievoudig je de delta (2.50 vs 0.92) en ontploft het rendement bij een grote stijging, maar betaal je met een 100% kans op totaal verlies als de vereiste koersuitslag ($> 3,5\%$) uitblijft.
+
+---
+
+##### 🎛️ Hoe gebruik je dit in de Scanner?
+In de **Sidebar** kun je bij actieve `LongCall` of `LongPut` kiezen uit 3 focusrichtingen:
+1. **`🛡️ Deep ITM (1% Koopdrempel - Kapitaalbehoud)`**: Zoekt uitsluitend opties met Delta 0.80 - 0.95 en $\le 1\%$ benodigde koersstijging.
+2. **`⚡ ATM Meervoudig (Hefboom / x% Afstand)`**: Zoekt rond de actuele koers en berekent de multiplier $N$.
+3. **`⚖️ Beide / Vergelijkingsmatrix`**: Toont in **Tab 2 (📊 Resultaten)** automatisch het interactieve dashboard waarin 1x Deep ITM en Nx ATM side-by-side tegen elkaar worden afgezet met de bovenstaande scenariotabel!
+
+##### 📋 Nieuwe Kolommen in de Resultatentabel:
+* **`BEP Vereist %`**: De benodigde koersbeweging van het aandeel om quitte te spelen ($+0.8\%$ voor ITM vs $+3.5\%$ voor ATM).
+* **`Tijdswaarde %`**: De tijdswaarde als percentage van de aandelenkoers (het verdampingsrisico).
+* **`Risico Vlak (0%)`**: Het verliespercentage bij gelijkblijvende koers op expiratie (-3.8% voor ITM vs -100% voor ATM).
+* **`Risico Dip (-5%)`**: **Het Vergelijkend Risicogetal**: het daadwerkelijke kapitaalverlies bij een tegenbeweging van 5%.
+
+---
+
+#### C. Short Put (Cash Secured Put)
+* **Marktvisie**: **Neutraal tot gematigd stijgend** (Bullish / Zijwaarts).
+* **Type**: **Credit** (Verkoop van één Out-of-the-Money put op de EM85-veiligheidsmarge).
+* **Max Winst**: 100% van de ontvangen premie (zolang koers op expiratie $\ge$ Strike blijft).
+* **Max Verlies**: Aanzienlijk indien het aandeel hard daalt (beschermd via de 2x credit stoploss of doorrollen).
+* **Break-Even**: Strike - ontvangen premie.
 
 ---
 
@@ -232,7 +325,10 @@ De **AG Score** is de centrale kwaliteitsmeter van het programma. Het berekent e
 3. Vul het gewenste **Aantal Contracten** in.
 4. Controleer de **Limiet Prijs**. Bij credit spreads (zoals de Bull Put) staat hier een negatief getal (bijv. `-1.20`), wat betekent dat je minimaal $1,20 per aandeel wilt ontvangen.
 5. Kies bij Order Type voor **Adaptive - Normal** (het handelsplatform onderhandelt dan automatisch de scherpste prijs).
-6. Klik op **PLAATS ORDER**. De order wordt direct naar Interactive Brokers gestuurd.
+6. **Ordergeldigheid (TIF: DAY vs GTC)**:
+   - **Hoofdorder (Instap)**: Staat standaard op **DAY**. Als de instaporder aan het einde van de beursdag niet geraakt is, vervalt deze automatisch zodat je de volgende ochtend niet onverwacht alsnog instapt.
+   - **Exit Orders (Winstnemer & Stop Verlies)**: Staan standaard op **GTC (Good 'Til Canceled)**. Zodra de instaporder gevuld is en je positie openstaat, blijven de winstnemer (Take Profit) en stop loss (Stop Verlies) doorlopend actief — ook na sluitingstijd en op volgende beursdagen — tot de gewenste winst bereikt is of het maximale verlies wordt afgekapt.
+7. Klik op **PLAATS ORDER**. De order wordt direct inclusief het beschermende GTC exit-plan naar Interactive Brokers verzonden.
 
 ---
 
@@ -452,6 +548,28 @@ Het dashboard toont direct:
 * Welke instelling globaal het meest winstgevend is (**Winst/Trade**, **Hit Rate %**, **Totale Portfoliowinst** en **Geen-BEP-Touch Rate**).
 * **1-Klik Synchronisatie**: Met de knop **"⚡ Pas Beste Instellingen Toe op de Linker Sidebar"** worden alle filters in de linker sidebar met één klik veilig overgezet naar de winnende instelling.
 * **Aandeel-Specifieke Optimalisatie**: Als bepaalde aandelen beter presteren met specifieke instellingen, worden deze profielen opgeslagen (`optimal_stock_configs`). De scanner in Tab 1 past deze instellingen dan automatisch toe per aandeel!
+
+---
+
+## 14. Export- en Printmogelijkheden (Excel .xlsx & Word .docx)
+
+Om te voorkomen dat tabellen en getallen foutief worden geïnterpreteerd door verschillende regionale Windows-instellingen (zoals komma- versus puntkomma-scheidingstekens in CSV), hanteert de tool een strikte bestandsformaat-standaard:
+
+### 📊 1. Alle Tabellen, Scans en Data-exports $\rightarrow$ Native Microsoft Excel (`.xlsx`)
+Alle exportknoppen in de grafische interface leveren direct een volwaardig **`.xlsx`** werkblad op:
+* **Direct te openen**: Dubbelklikken in Windows opent het bestand direct met keurige kolommen, getalformaten en formules in Microsoft Excel.
+* **Geen CSV-importproblemen**: Geen scheidingsassistent of conversie van punten en komma's meer nodig.
+* **Beschikbare Excel exports in de tool**:
+  1. **Tab 2 ("Scan Resultaten")**: Knop `📊 Download Excel Resultaten (.xlsx)`. Bevat de volledige tabel met geselecteerde opties, strikes, Grieken, BEP-marges en winstpotentieel. Bij het scannen van Long Calls of Long Puts bevat dit bestand tevens automatisch een tweede tabblad met de complete **ITM vs. ATM scenario-vergelijkingsmatrix**.
+  2. **Tab 4 ("S&P 500 Spreads")**: Knop `Download Excel` (`TWS_Spreads_YYYYMMDD.xlsx`).
+  3. **Tab 5 ("Dividend Covered Calls")**: Knop `Download Covered Calls Resultaten (Excel)` (`Dividend_Covered_Calls_YYYYMMDD.xlsx`).
+  4. **Tab 6 ("Hit-Rate Test")**: 
+     - Knop `Download Vergelijking & Details (Excel)` voor de A/B benchmarktest.
+     - Knop `Download Uitgebreide Maandelijkse Data (Excel)` voor historische backtest-reeksen per maand.
+
+### 📄 2. Alle Documenten en Onderzoeksrapporten $\rightarrow$ Microsoft Word (`.docx`)
+Uitgebreide inhoudelijke verslagen, wiskundige onderbouwingen en analyses worden uitsluitend als **Microsoft Word document (`.docx`)** gegenereerd:
+* **Functie- en Criteriarapport**: In Tab 1 genereert de tool met de knop *F&C Onderzoek filters & criteria* een professioneel opgemaakt Word-document (`Functie_onderzoek_filters_criteria.docx`) compleet met kopteksten, inleiding, parameter-analyses en tabellen per fonds.
 
 ---
 
