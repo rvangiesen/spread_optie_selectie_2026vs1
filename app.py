@@ -838,11 +838,21 @@ elif scan_mode == "Batch Scan (Lijst)":
         symbols_to_scan = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "NFLX", "AMD", "INTC"]
         sec_type = "Aandeel"
     elif list_choice == "S&P 100":
-        symbols_to_scan = ["AAPL", "MSFT", "AMZN", "NVDA", "GOOGL", "META", "TSLA", "BRK.B", "UNH", "JNJ", "XOM", "JPM"]
+        symbols_to_scan = [
+            "AAPL", "ABBV", "ABT", "ACN", "ADBE", "AIG", "AMD", "AMGN", "AMT", "AMZN", "AVGO", "AXP", "BA", "BAC", "BK", "BKNG", "BLK", "BMY", "BRK.B", "C",
+            "CAT", "CHTR", "CL", "CMCSA", "COF", "COP", "COST", "CRM", "CSCO", "CVS", "CVX", "DE", "DHR", "DIS", "DOW", "DUK", "EMR", "EXC", "F", "FDX",
+            "GD", "GE", "GILD", "GM", "GOOG", "GOOGL", "GS", "HD", "HON", "IBM", "INTC", "INTU", "ISRG", "JNJ", "JPM", "KHC", "KO", "LIN", "LLY", "LMT",
+            "LOW", "MA", "MCD", "MDLZ", "MDT", "MET", "META", "MMM", "MO", "MRK", "MS", "MSFT", "NEE", "NFLX", "NKE", "NVDA", "ORCL", "PEP", "PFE", "PG",
+            "PM", "PYPL", "QCOM", "RTX", "SBUX", "SCHW", "SO", "SPG", "T", "TGT", "TMO", "TMUS", "TSLA", "TXN", "UNH", "UNP", "UPS", "USB", "V", "VZ", "WBA", "WFC", "WMT", "XOM"
+        ]
         sec_type = "Aandeel"
+        st.sidebar.caption(f"ℹ️ {len(symbols_to_scan)} S&P 100 aandelen geladen.")
     elif list_choice == "AEX":
         symbols_to_scan = ["ADYEN", "ASML", "UNA", "RDSA", "INGA"]
         sec_type = "Aandeel"
+
+    if len(symbols_to_scan) >= 50:
+        st.sidebar.info("💡 **Grote Batch Tip**: Bij 50+ aandelen (zoals S&P 100/500) duurt het opvragen van optiecontracten via TWS lang wegens broker rate limits. Vink bij **TWS Instellingen** 'Gebruik Gratis Yahoo Finance Data' aan om de scan binnen 1-2 minuten af te ronden!")
 
 elif scan_mode == "Batch Scan (Bestand)":
     uploaded_file = st.sidebar.file_uploader("Upload Excel/CSV", type=['xlsx', 'csv'])
@@ -1912,20 +1922,29 @@ with tab1:
                                                      valid_strikes_for_exp.extend(chain.strikes)
                                              valid_strikes_for_exp = sorted(list(set(valid_strikes_for_exp)))
 
-                                             if price > 0:
-                                                 lower_bound = price * 0.70
-                                                 upper_bound = price * 1.30
-                                                 wide_strikes = [s for s in valid_strikes_for_exp if lower_bound <= s <= upper_bound]
-                                             else:
-                                                 wide_strikes = valid_strikes_for_exp
-
                                              found_strikes = set()
                                              for col in ['strike_buy', 'strike_sell', 'strike_p_buy', 'strike_p_sell', 'strike_c_buy', 'strike_c_sell']:
                                                  if col in target_spreads.columns:
                                                      found_strikes.update(target_spreads[col].dropna().unique().tolist())
                                              found_strikes.discard(0.0)
                                              spread_strikes = found_strikes
-                                             final_strikes = sorted(list(set(wide_strikes) | spread_strikes))
+
+                                             # Strike-optimalisatie: vraag enkel de benodigde spread-strikes op om pacing violations en 4-uur vertraging te voorkomen
+                                             if use_max_pain_filter:
+                                                 if price > 0:
+                                                     lower_bound = price * 0.88
+                                                     upper_bound = price * 1.12
+                                                     mp_strikes = [s for s in valid_strikes_for_exp if lower_bound <= s <= upper_bound][:25]
+                                                 else:
+                                                     mp_strikes = valid_strikes_for_exp[:25]
+                                                 final_strikes = sorted(list(set(mp_strikes) | spread_strikes))
+                                             else:
+                                                 if spread_strikes:
+                                                     final_strikes = sorted(list(spread_strikes))
+                                                 elif price > 0:
+                                                     final_strikes = sorted(valid_strikes_for_exp, key=lambda s: abs(s - price))[:10]
+                                                 else:
+                                                     final_strikes = valid_strikes_for_exp[:10]
 
                                              cd = scan_ib.get_chain_greeks_and_oi(sym, target_exp, final_strikes, use_yf=use_free_data)
                                              if not cd.empty and 'expiration' not in cd.columns:

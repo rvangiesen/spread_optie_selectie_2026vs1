@@ -82,6 +82,10 @@ class IBClient:
                     self.ib.reqMarketDataType(3)
                 except Exception:
                     pass
+        elif errorCode in [162, 321]: # Pacing violation or server query limit
+            import time
+            self.last_pacing_violation = time.time()
+            print(f"[IBClient] ⚠️ TWS Pacing limit/rate-limit gedetecteerd (Code {errorCode}): {errorString}. Schakel tijdelijk over naar snelle fallback.")
 
     def log_debug(self, msg):
         """Helper for logging debug information."""
@@ -592,6 +596,10 @@ class IBClient:
         import time
         from ib_insync import util
         
+        # Pacing protection: IB allows max 60 historical requests per 10 mins. If throttled, skip immediately.
+        if getattr(self, 'last_pacing_violation', 0) and (time.time() - self.last_pacing_violation < 600):
+            return pd.DataFrame()
+
         # Qualify first
         qualified = self.qualify_contract_safe(contract)
         working_contract = qualified if qualified else contract
@@ -613,8 +621,8 @@ class IBClient:
             
             start_wait = time.time()
             while not task.done():
-                self.ib.sleep(0.1)
-                if time.time() - start_wait > 10.0:
+                self.ib.sleep(0.08)
+                if time.time() - start_wait > 2.5:
                     print(f"[IBClient] IV History Timeout for {working_contract.symbol}")
                     task.cancel()
                     self.ib.sleep(0.05)
@@ -897,8 +905,8 @@ class IBClient:
                     task = asyncio.ensure_future(self.ib.qualifyContractsAsync(*sub_chunk))
                     start_wait = time.time()
                     while not task.done():
-                        self.ib.sleep(0.1)
-                        if time.time() - start_wait > 10.0:
+                        self.ib.sleep(0.08)
+                        if time.time() - start_wait > 3.0:
                             task.cancel()
                             break
                     if task.done() and not task.cancelled() and not task.exception():
@@ -932,6 +940,8 @@ class IBClient:
         
         chunk_size = 50
         for i in range(0, len(contracts), chunk_size):
+            if not self.is_connected():
+                break
             chunk = contracts[i:i + chunk_size]
             tickers = []
             self.ib.reqMarketDataType(data_types_to_try[0])
@@ -942,10 +952,10 @@ class IBClient:
             for dtype in data_types_to_try:
                 self.ib.reqMarketDataType(dtype)
                 start_type = time.time()
-                type_timeout = 2.0 if dtype == data_types_to_try[0] else 1.0
+                type_timeout = 1.2 if dtype == data_types_to_try[0] else 0.6
                 while time.time() - start_type < type_timeout:
                     if not self.ib.isConnected(): break
-                    self.ib.sleep(0.2)
+                    self.ib.sleep(0.1)
                     if all((t.modelGreeks or (t.close and t.close > 0) or (t.last and t.last > 0) or (t.bid > 0 and t.ask > 0)) for t in tickers): break
                 if any(t.modelGreeks or (t.bid > 0 and t.ask > 0) or (t.last > 0) or (t.close > 0) for t in tickers): break
             

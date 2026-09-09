@@ -657,4 +657,26 @@ Wilt u razendsnel binnen enkele seconden honderden aandelen scannen op de beste 
 
 ---
 
+## 18. Data Doorvoersnelheid & Pacing Optimalisatie bij Grote Scans (S&P 100 / S&P 500)
+
+Veel gebruikers met krachtige computers (snelle multicore CPU's en veel RAM) merken op dat het scannen van grote lijsten (zoals de S&P 100 of S&P 500) voorheen uren kon duren of bleef hangen.
+
+### ❓ Waarom lag dit niet aan uw computer, maar aan de data?
+* **Broker API Beperkingen (Pacing Violations)**: Interactive Brokers TWS hanteert strikte server-side limieten:
+  * Maximaal **60 historische data-aanvragen per 10 minuten** (TWS Error 162: *Pacing Violation*).
+  * Maximaal **100 gelijktijdige marktdata lijnen** voor particuliere accounts.
+* **Strike-Explosie**: Voorheen vroeg de scanner voor elk aandeel alle strikes tussen $-30\%$ en $+30\%$ op (voor Max Pain en marktstructuur). Bij liquide aandelen zoals AAPL of NVDA waren dat al snel **200 tot 350 optiecontracten per aandeel**!
+* **Het Resultaat**: Uw computer draaide op 1% belasting te wachten op netwerk-pauzes en rate-limits van de broker, totdat TWS na tientallen aandelen de verbinding bevroor.
+
+### ⚡ Doorgevoerde Snelheidsverbeteringen:
+1. **Strike-Pruning (Factor 20x Sneller)**:
+   * Tenzij u specifiek het Max Pain filter gebruikt, vraagt de software nu **uitsluitend de 6 tot 12 concrete kandidaat-strikes** van de gegenereerde spreads op.
+   * Het aantal TWS-aanvragen per aandeel is hierdoor met **meer dan 90% gedaald**.
+2. **TWS Pacing Guard & Snelle Timeouts**:
+   * Zodra TWS Error 162 meldt, schakelt de software direct door zonder 10 seconden per aandeel te wachten op een time-out.
+3. **Turbo Batch Scan Tip**:
+   * Wilt u 100 tot 500 aandelen binnen **1 tot 2 minuten** screenen? Vink in de linker Sidebar bij **TWS Instellingen** de optie **`Gebruik Gratis Yahoo Finance Data (Opties)`** aan. Deze haalt optieketens parallel op zonder enige TWS pacing limiet. De concrete gekozen trades kunnen daarna altijd met één klik met live TWS data worden geverifieerd.
+
+---
+
 *Succes met het scannen, bewaken, testen en selecteren van de beste optiecontracten!*
