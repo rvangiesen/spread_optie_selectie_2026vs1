@@ -3607,8 +3607,8 @@ class PortfolioAnalyzer:
         hour = now_dt.hour
 
         deadline_status = "REGULIER"
-        # Donderdagavond routine
-        if (weekday == 3 or dte == 1) and pnl_pct >= 80.0:
+        # Donderdagavond routine (alleen als DTE >= 1)
+        if ((weekday == 3 and dte >= 1) or dte == 1) and pnl_pct >= 80.0:
             if risk_level == "SAFE": risk_level = "HIGH"
             triggers.append(f"💰 DONDERDAG SWEET SPOT: Spread staat op {pnl_pct:.0f}% winst (>= 80%).")
             consequences = "De Time Decay (Theta) heeft 90% van zijn werk gedaan. Wachten op de laatste 10% op vrijdag is 'picking up pennies in front of a steamroller'."
@@ -3620,7 +3620,19 @@ class PortfolioAnalyzer:
 
         # Vrijdag expiratiedag routine
         if weekday == 4 or dte == 0:
-            if hour < 18:
+            is_deep_otm_win = (not is_itm and not is_pin and not is_between and (pnl_pct >= 85.0 or mkt_price <= 0.03))
+            
+            if is_deep_otm_win:
+                deadline_status = "EXPIRATIE_WINST"
+                if risk_level not in ["CRITICAL"]:
+                    risk_level = "SAFE"
+                triggers.append(f"🟢 100% WINSTZONE (DTE = 0): Positie staat op {pnl_pct:.0f}% winst en ruim OTM (Koers: ${underlying_p:.2f} vs Short Strike: ${sold_strike:.2f}).")
+                consequences = f"De opties lopen vanavond om 22:00 uur (NL tijd) 100% waardeloos af. Je behoudt de volledige ontvangen premie (${rec_prem_usd:.2f}) zonder enige transactiekosten of aanwijzingsgevaar."
+                action_code = "LAAT_EXPIREEREN"
+                action_title = "Rond Af / Laat Waardeloos Expireren (Maximale Winst)"
+                recommended_action = f"Geen actie vereist (trade is binnen!). De opties verdwijnen vannacht gratis uit je account. Wil je voor het weekend 100% gemoedsrust tegen onverwacht after-hours nieuws? Koop dan ALLEEN de short leg terug (BUY ${sold_strike:.2f}) met een Limit Order op $0.01. Plaats NOOIT een MKT Combo Order (de long leg heeft $0.00 bid waardoor combo orders in TWS vastlopen)."
+                execution_type = "SHORT_LEG_ONLY"
+            elif hour < 18:
                 deadline_status = "VRIJDAG_OPENING"
                 risk_level = "HIGH" if risk_level == "SAFE" else risk_level
                 triggers.append("📅 VRIJDAG EXSPIRATIEDAG (DTE = 0): Optie expireert vandaag! Sluit tijdig vóór 18:00 CET om margin-liquidatie of weekend-aanwijzing te voorkomen.")
@@ -3645,7 +3657,7 @@ class PortfolioAnalyzer:
                 consequences = "Kopers van jouw short optie hebben tot 23:30 uur de tijd om alsnog aan te wijzen na beursnieuws."
                 action_code = "TIJDIG_SLUITEN"
                 action_title = "Noodsluiting op Marktprijs (Direct Flat Gaan)"
-                recommended_action = "Sluit de positie onmiddellijk op marktprijs om niet met aandelen het weekend in te gaan."
+                recommended_action = "Sluit de positie onmiddellijk om niet met aandelen het weekend in te gaan."
                 execution_type = "COMBO_CLOSE"
 
         return {
@@ -4004,7 +4016,14 @@ class PortfolioAnalyzer:
                 "Verkoop Aandelen via Market Order",
                 "Handhaven (Geen Actie)"
             ]
-        elif anti_assign['execution_type'] == 'STOCK_CLOSE':
+        elif anti_assign.get('execution_type') == 'SHORT_LEG_ONLY':
+            alternatives = [
+                f"[Aanbevolen] {action_title}",
+                "Koop Alleen Short Leg terug (Limit $0.01)",
+                "Handhaven (Gratis Waardeloos Laten Expireren)",
+                "Combo Sluiten via Limit Order"
+            ]
+        elif anti_assign.get('execution_type') == 'STOCK_CLOSE':
             alternatives = [
                 f"[Aanbevolen] {action_title}",
                 "Verkoop Aandelen via Market Order",

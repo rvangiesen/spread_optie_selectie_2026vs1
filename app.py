@@ -405,9 +405,19 @@ def render_portfolio_management_dashboard(tws_host, tws_port):
                         for trg in triggers:
                             st.info(trg)
                     else:
-                        st.markdown("##### 🛡️ Anti-Assignment Risico Melding:")
-                        for trg in triggers:
-                            st.error(trg)
+                        if risk_lvl == "SAFE":
+                            st.markdown("##### 🟢 Expiratie & Winst Status:")
+                            for trg in triggers:
+                                st.success(trg)
+                        else:
+                            st.markdown("##### 🛡️ Anti-Assignment Risico Melding:")
+                            for trg in triggers:
+                                if "🟢" in trg or "✅" in trg:
+                                    st.success(trg)
+                                elif "💰" in trg or "⚠️" in trg:
+                                    st.warning(trg)
+                                else:
+                                    st.error(trg)
                         
                         c_ext1, c_ext2 = st.columns(2)
                         with c_ext1:
@@ -538,6 +548,29 @@ def render_portfolio_management_dashboard(tws_host, tws_port):
                             'action_code': act_code,
                             'legs': item['pos_data'].get('legs', []),
                             'qty': stock_qty
+                        }]
+                        exec_ib = IBClient()
+                        import random
+                        s_ok, s_msg = exec_ib.connect(tws_host, tws_port, random.randint(10000, 99999))
+                        if s_ok:
+                            res = exec_ib.execute_portfolio_adjustments(single_act)
+                            for r in res:
+                                st.success(f"✅ {r['message']}")
+                            exec_ib.ib.sleep(1.0)
+                            exec_ib.disconnect()
+                            st.rerun()
+                elif exec_type == 'SHORT_LEG_ONLY' or act_code == 'LAAT_EXPIREEREN':
+                    st.success("🟢 **Maximale Winst Bereikt!**")
+                    st.caption("Beide poten lopen vanavond om 22:00 uur (NL tijd) gratis waardeloos af. Geen actie vereist.")
+                    if st.button(f"🛡️ Koop Alleen Short Leg Terug ($0.01 Limit)", key=f"btn_quick_short_{idx}_{sym}", help="Koopt alleen de verkochte optiepoot terug op $0.01 Limit om 100% weekendrust te borgen, zonder risico op vastlopende combo orders."):
+                        single_act = [{
+                            'symbol': sym,
+                            'strategy': strat,
+                            'selected_action': 'SHORT_LEG_ONLY',
+                            'action_code': 'SHORT_LEG_ONLY',
+                            'legs': item['pos_data'].get('legs', []),
+                            'qty': item['pos_data'].get('qty', 1),
+                            'market_price': 0.01
                         }]
                         exec_ib = IBClient()
                         import random

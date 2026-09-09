@@ -1883,6 +1883,27 @@ class IBClient:
                     'message': f"Aandelenherstelorder verzonden naar TWS: {act} {shares_qty} aandelen {sym} om marge te herstellen."
                 })
 
+            # --- CASE 0B: ALLEEN SHORT LEG SLUITEN (Diep OTM / DTE=0 Veilige Sluiting) ---
+            elif any(k in code for k in ['SHORT_LEG_ONLY', 'Alleen Short Leg', 'Koop Alleen Short', 'LAAT_EXPIREEREN']):
+                short_leg = next((l for l in legs if getattr(l, 'position', 0) < 0), None)
+                if short_leg:
+                    c = self.qualify_contract_safe(short_leg.contract) or short_leg.contract
+                    short_order = LimitOrder(
+                        action='BUY',
+                        totalQuantity=qty,
+                        lmtPrice=0.01,
+                        tif='DAY',
+                        outsideRth=False
+                    )
+                    trade = self.ib.placeOrder(c, short_order)
+                    results.append({
+                        'symbol': sym,
+                        'status': 'SUCCESS',
+                        'message': f"Short leg sluitingsorder (BUY Limit @ $0.01) verzonden voor {qty}x {getattr(c, 'right', '')} {getattr(c, 'strike', '')}. Obligatie geëlimineerd zonder combo-probleem!"
+                    })
+                else:
+                    results.append({'symbol': sym, 'status': 'SKIPPED', 'message': f"Geen short leg gevonden voor {sym}."})
+
             # --- CASE 1: SLUITEN / WINST BORGEN / STOP LOSS (Anti-Assignment Bescherming) ---
             elif any(k in code for k in ['TIJDIG_SLUITEN', 'WINST_BORGEN', 'Direct Sluiten', 'Winst Borgen', 'Stop-Loss', 'COMBO_CLOSE', 'Bescherm', 'Pin Risk', 'Tijdwaarde']):
                 # Sluit als Combo-order (BAG) conform Pg 8 & 14 van het document om legging-in risico te vermijden
