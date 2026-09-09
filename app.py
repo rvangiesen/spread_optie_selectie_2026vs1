@@ -145,7 +145,12 @@ def run_portfolio_check_action(tws_host, tws_port):
     
     with st.spinner("🔍 Bezig met ophalen en analyseren van TWS portfolio posities..."):
         positions = ib_p.get_account_portfolio_spreads()
+        acc_summary = ib_p.get_account_summary()
         analyzer = PortfolioAnalyzer(ib_p)
+        
+        exposure = PortfolioAnalyzer.calculate_portfolio_exposure(positions, net_liquidation=acc_summary.get('NetLiquidation', 0.0))
+        st.session_state['portfolio_exposure'] = exposure
+        st.session_state['portfolio_acc_summary'] = acc_summary
         
         evaluations = []
         for pos in positions:
@@ -182,6 +187,14 @@ def render_portfolio_management_dashboard(tws_host, tws_port):
     st.markdown("## 🛡️ Portfolio Bewaking & Geautomatiseerd Verliesbeheer")
     st.caption("Controleert live TWS posities en berekent indicator-gestuurde verliesbeperking en winstborging voor spreads én losse opties.")
 
+    # Check US Options Market Status
+    ib_temp = IBClient()
+    mkt_info = ib_temp.is_us_options_market_open()
+    if mkt_info.get('is_open'):
+        st.success(f"🟢 **Amerikaanse Optiemarkt: GEOPEND** ({mkt_info.get('current_et', '')}) — {mkt_info.get('reason', '')}")
+    else:
+        st.info(f"🕒 **Amerikaanse Optiemarkt: GESLOTEN** ({mkt_info.get('current_et', '')}) — {mkt_info.get('reason', '')}\n\n*Orders geplaatst buiten openingstijden (15:30 - 22:00 CET) worden als BAG Limit order klaargezet in TWS en automatisch geactiveerd bij marktopening.*")
+
     col_cp1, col_cp2 = st.columns([3, 1])
     with col_cp1:
         if st.button("🔍 Voer Live Portfolio Check Uit", type="primary", key="btn_run_port_check"):
@@ -215,6 +228,29 @@ def render_portfolio_management_dashboard(tws_host, tws_port):
     total_pnl = sum([e['pnl_usd'] for e in evaluations])
     m4.metric("Totale Ongerealiseerde P&L", f"${total_pnl:,.2f}")
 
+    # Account Vermogensbewaking Banner
+    exposure = st.session_state.get('portfolio_exposure')
+    if exposure:
+        net_liq = exposure.get('net_liquidation', 0.0)
+        tot_put_obl = exposure.get('total_put_obligation', 0.0)
+        lev_ratio = exposure.get('leverage_ratio', 0.0)
+        max_loss = exposure.get('total_max_loss', 0.0)
+        status_icon = exposure.get('status_icon', '🟢')
+        status_msg = exposure.get('message', '')
+        
+        st.markdown("---")
+        st.markdown("#### ⚖️ Account Vermogensbewaking & Hefboom Controle")
+        c_v1, c_v2, c_v3, c_v4 = st.columns(4)
+        c_v1.metric("Netto Liquidatie (Accountwaarde)", f"${net_liq:,.2f}" if net_liq > 0 else "Niet beschikbaar")
+        c_v2.metric("Totale Put Aankoopverplichting", f"${tot_put_obl:,.2f}", help="Totale nominale waarde van 100 aandelen per short put bij verplichte levering (Assignment).")
+        c_v3.metric(f"{status_icon} Hefboom (Obligatie / Net Liq)", f"{lev_ratio:.1f}%" if net_liq > 0 else "N/A", delta=f"{exposure['status']}", delta_color="normal" if exposure['status'] == 'VEILIG' else "inverse")
+        c_v4.metric("Gedefinieerd Max Spread Verlies", f"${max_loss:,.2f}", help="Maximaal verlies bij faillissement onderliggende waarden zolang long spreads intact blijven.")
+        
+        if exposure['status'] == 'GEVAARLIJK':
+            st.error(f"🚨 **{status_msg}**\n\n*Waarschuwing:* Bij een marktdaling kan IBKR direct overgaan tot automatische liquidatie als uw aankoopverplichting te groot is ten opzichte van uw rekening.")
+        elif exposure['status'] == 'AANDACHT':
+            st.warning(f"⚠️ **{status_msg}**")
+
     if n_threatened > 0:
         st.error(
             f"🚨 **CRITIEK AANWIJZINGSRISICO GEDETECTEERD BIJ {n_threatened} POSITIE(S)**\n\n"
@@ -235,7 +271,8 @@ def render_portfolio_management_dashboard(tws_host, tws_port):
                         'selected_action': th['action_code'],
                         'action_code': th['action_code'],
                         'legs': th['pos_data'].get('legs', []),
-                        'qty': th['pos_data'].get('qty', 1)
+                        'qty': th['pos_data'].get('qty', 1),
+                        'market_price': th['pos_data'].get('market_price', 0.50)
                     })
                 with st.spinner("Bezig met verzenden van beschermingsorders naar TWS..."):
                     res = exec_ib.execute_portfolio_adjustments(actions_to_exec)
@@ -516,14 +553,16 @@ def render_portfolio_management_dashboard(tws_host, tws_port):
                             st.error(f"Verbinding mislukt: {s_msg}")
 
                 elif risk_lvl in ['CRITICAL', 'HIGH']:
-                    if st.button(f"🛡️ Sluit Positie Nu (Combo Order)", type="primary", key=f"btn_quick_close_{idx}_{sym}", help="Sluit beide optiebenen tegelijk als één combinatieorder in TWS om legging-in risico te vermijden."):
+                    close_btn_label = f"🛡️ Sluit Positie Nu (Combo Order)" if mkt_info.get('is_open') else f"🛡️ Sluit Positie (Wachtrij tot 15:30 CET)"
+                    if st.button(close_btn_label, type="primary", key=f"btn_quick_close_{idx}_{sym}", help="Sluit beide optiebenen tegelijk als één combinatieorder (BAG Limit) in TWS om legging-in risico te vermijden."):
                         single_act = [{
                             'symbol': sym,
                             'strategy': strat,
                             'selected_action': 'TIJDIG_SLUITEN',
                             'action_code': 'TIJDIG_SLUITEN',
                             'legs': item['pos_data'].get('legs', []),
-                            'qty': item['pos_data'].get('qty', 1)
+                            'qty': item['pos_data'].get('qty', 1),
+                            'market_price': item['pos_data'].get('market_price', 0.50)
                         }]
                         exec_ib = IBClient()
                         import random
@@ -545,7 +584,8 @@ def render_portfolio_management_dashboard(tws_host, tws_port):
                             'selected_action': 'DOORROLLEN_CREDIT',
                             'action_code': 'DOORROLLEN_CREDIT',
                             'legs': item['pos_data'].get('legs', []),
-                            'qty': item['pos_data'].get('qty', 1)
+                            'qty': item['pos_data'].get('qty', 1),
+                            'market_price': item['pos_data'].get('market_price', 0.50)
                         }]
                         exec_ib = IBClient()
                         import random
@@ -578,7 +618,8 @@ def render_portfolio_management_dashboard(tws_host, tws_port):
                         'selected_action': selected_alt,
                         'action_code': act_code,
                         'legs': item['pos_data'].get('legs', []),
-                        'qty': item['pos_data'].get('qty', 1)
+                        'qty': item['pos_data'].get('qty', 1),
+                        'market_price': item['pos_data'].get('market_price', 0.50)
                     })
 
     st.markdown("---")
@@ -638,7 +679,7 @@ def render_filter_diagnostics_ui(diagnostics, expanded=True):
                         delta=f"-{item['dropped_pct']}% van totaal",
                         delta_color="inverse"
                     )
-                    st.markdown(f"• **Min delta shortleg**: `{item['setting_str']}`")
+                    st.markdown(f"• **Ingestelde Waarde**: `{item['setting_str']}`")
                     st.markdown(f"• **Gemiddelde in Markt**: `{item['actual_avg']}`")
                     st.markdown(f"• **Minimaal Nodig (Top 5)**: `{item['suggested_min']}`")
 
@@ -650,12 +691,12 @@ def render_filter_diagnostics_ui(diagnostics, expanded=True):
             df_diag = pd.DataFrame(breakdown)
             display_df = df_diag.rename(columns={
                 'name': 'Filter Criterium',
-                'setting_str': 'Min delta shortleg',
+                'setting_str': 'Ingestelde Waarde / Drempel',
                 'dropped_count': 'Aantal Afgekeurd',
                 'dropped_pct': 'Afgekeurd (%)',
                 'actual_avg': 'Gemiddelde Waarde in Markt',
                 'suggested_min': 'Minimaal Nodig voor Top 5 Spreads'
-            })[['Filter Criterium', 'Min delta shortleg', 'Aantal Afgekeurd', 'Afgekeurd (%)', 'Gemiddelde Waarde in Markt', 'Minimaal Nodig voor Top 5 Spreads']]
+            })[['Filter Criterium', 'Ingestelde Waarde / Drempel', 'Aantal Afgekeurd', 'Afgekeurd (%)', 'Gemiddelde Waarde in Markt', 'Minimaal Nodig voor Top 5 Spreads']]
             st.dataframe(display_df, width='stretch', hide_index=True)
 
         st.info(
@@ -719,9 +760,9 @@ marktvisie = st.sidebar.selectbox("Marktvisie", ["Bullish (Stijgend)", "Bearish 
 # Determine strategies based on Outlook
 active_strategies = []
 if "Bullish" in marktvisie:
-    active_strategies = ["BullCall", "BullPut", "LongCall"]
+    active_strategies = ["BullCall", "BullPut", "LongCall", "SynthCoveredCall"]
 elif "Bearish" in marktvisie:
-    active_strategies = ["BearCall", "BearPut", "LongPut"]
+    active_strategies = ["BearCall", "BearPut", "LongPut", "SynthCoveredPut"]
 elif "Neutraal" in marktvisie:
     active_strategies = ["IronCondor", "Strangle"]
 
@@ -1006,7 +1047,7 @@ itm_support_level = st.sidebar.selectbox(
 
 # Additional Strategy Overrides/Toggles
 with st.sidebar.expander("Specifieke Strategieën", expanded=True):
-    strategy_options = ["BullCall", "BullPut", "BearCall", "BearPut", "LongCall", "LongPut", "IronCondor", "Strangle"]
+    strategy_options = ["BullCall", "BullPut", "BearCall", "BearPut", "LongCall", "LongPut", "SynthCoveredCall", "SynthCoveredPut", "IronCondor", "Strangle"]
     final_strategies = []
     for s in strategy_options:
         is_default = s in active_strategies
@@ -1028,6 +1069,32 @@ with st.sidebar.expander("Specifieke Strategieën", expanded=True):
             key="sb_long_focus",
             help="Deep ITM zoekt opties met Delta 0.80-0.95 en <= 1% BEP beweging. ATM zoekt rond de koers en berekent hefboom bij meerdere contracten."
         )
+
+    synth_pmcc_min_long_dte = 180
+    synth_pmcc_min_short_dte = 20
+    synth_pmcc_max_short_dte = 50
+    if any(s in active_strategies for s in ['SynthCoveredCall', 'SynthCoveredPut']):
+        st.markdown("---")
+        st.markdown("##### 🏛️ Synthetische Covered (PMCC/PMCP)")
+        synth_pmcc_min_long_dte = int(st.number_input(
+            "Minimaal LEAPS DTE (Long Leg)", 
+            min_value=90, max_value=730, value=180, step=30,
+            key="sb_pmcc_long_dte",
+            help="Minimale looptijd van de diep ITM long optie (aandelenvervanger, conform regel: minimaal 6-12 maanden)."
+        ))
+        c_pmcc1, c_pmcc2 = st.columns(2)
+        with c_pmcc1:
+            synth_pmcc_min_short_dte = int(st.number_input(
+                "Min Short DTE", min_value=7, max_value=60, value=20, step=5,
+                key="sb_pmcc_short_min_dte",
+                help="Minimale looptijd van de te verkopen OTM optie (inkomstenbron)."
+            ))
+        with c_pmcc2:
+            synth_pmcc_max_short_dte = int(st.number_input(
+                "Max Short DTE", min_value=14, max_value=90, value=45, step=5,
+                key="sb_pmcc_short_max_dte",
+                help="Maximale looptijd van de te verkopen OTM optie (sweet spot 30-45 DTE voor optimale theta decay)."
+            ))
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### ⚪ Handig / Geavanceerd (Optioneel)")
@@ -1502,6 +1569,7 @@ with tab1:
                                          'min_pop': min_pop, 'min_profit': min_profit, 'min_delta': min_delta,
                                          'max_delta': max_delta, 'min_bep_dist_pct': min_bep_dist_pct,
                                          'min_gamma': min_gamma, 'max_dte': max_dte, 'min_dte': min_dte, 
+                                         'min_short_dte': synth_pmcc_min_short_dte, 'max_short_dte': synth_pmcc_max_short_dte,
                                          'koopadvies_p': koopadvies_p, 'only_koopadvies': only_koopadvies
                                      }
                                      if use_max_pain_filter: current_filters['max_pain_dist'] = max_pain_dist
@@ -1722,16 +1790,17 @@ with tab1:
                                                      widths_to_check.append(15)
                                                      
                                              for w in widths_to_check:
-                                                 p = {'symbol': sym, 'min_dte': min_dte, 'koopadvies_p': koopadvies_p, 'only_koopadvies': only_koopadvies, 'max_dte': d_max, 
-                                                     'width': w, 'iv': underlying_iv, 'strike_range_pct': strike_range_pct, 'min_strike_pct': min_strike_pct,
-                                                     'itm_support_level': itm_support_level, 'long_focus': long_focus_mode}
-                                                 for strat in active_strategies:
-                                                     # Single-leg strategies do not use width. Only generate them for the first width.
-                                                     if strat in ['LongCall', 'LongPut'] and w != widths_to_check[0]:
-                                                         continue
-                                                     fs = scanner.generate_spreads(chains, strat, price, p, log_func=log)
-                                                     if fs is not None and not fs.empty:
-                                                         res = pd.concat([res, fs], ignore_index=True)
+                                                p = {'symbol': sym, 'min_dte': min_dte, 'koopadvies_p': koopadvies_p, 'only_koopadvies': only_koopadvies, 'max_dte': d_max, 
+                                                    'width': w, 'iv': underlying_iv, 'strike_range_pct': strike_range_pct, 'min_strike_pct': min_strike_pct,
+                                                    'itm_support_level': itm_support_level, 'long_focus': long_focus_mode,
+                                                    'min_long_dte': synth_pmcc_min_long_dte, 'min_short_dte': synth_pmcc_min_short_dte, 'max_short_dte': synth_pmcc_max_short_dte}
+                                                for strat in active_strategies:
+                                                    # Single-leg and Synthetic Covered strategies do not use width. Only generate them for the first width.
+                                                    if strat in ['LongCall', 'LongPut', 'SynthCoveredCall', 'SynthCoveredPut'] and w != widths_to_check[0]:
+                                                        continue
+                                                    fs = scanner.generate_spreads(chains, strat, price, p, log_func=log)
+                                                    if fs is not None and not fs.empty:
+                                                        res = pd.concat([res, fs], ignore_index=True)
                                          return res
 
                                      raw_spreads_all = run_gen(max_dte_to_use)
@@ -1755,34 +1824,55 @@ with tab1:
                                      processed_spreads = pd.DataFrame()
                                      unique_expirations = raw_spreads_all['expiry'].unique()
                                      log(f"   📡 Ophalen Greeks & Max Pain ({len(unique_expirations)} expiraties)...")
+                                     chain_cache = {}
 
                                      for idx, exp in enumerate(unique_expirations):
                                          exp_spreads = raw_spreads_all[raw_spreads_all['expiry'] == exp].copy()
                                          if exp_spreads.empty: continue
                                          log(f'      [{idx+1}/{len(unique_expirations)}] Download data voor expiratie {exp}...')
 
-                                         valid_strikes_for_exp = []
-                                         for chain in chains:
-                                             if exp in chain.expirations:
-                                                 valid_strikes_for_exp.extend(chain.strikes)
-                                         valid_strikes_for_exp = sorted(list(set(valid_strikes_for_exp)))
+                                         def get_chain_for_exp(target_exp, target_spreads):
+                                             if target_exp in chain_cache:
+                                                 return chain_cache[target_exp]
+                                             valid_strikes_for_exp = []
+                                             for chain in chains:
+                                                 if target_exp in chain.expirations:
+                                                     valid_strikes_for_exp.extend(chain.strikes)
+                                             valid_strikes_for_exp = sorted(list(set(valid_strikes_for_exp)))
 
-                                         if price > 0:
-                                             lower_bound = price * 0.70
-                                             upper_bound = price * 1.30
-                                             wide_strikes = [s for s in valid_strikes_for_exp if lower_bound <= s <= upper_bound]
-                                         else:
-                                             wide_strikes = valid_strikes_for_exp
+                                             if price > 0:
+                                                 lower_bound = price * 0.70
+                                                 upper_bound = price * 1.30
+                                                 wide_strikes = [s for s in valid_strikes_for_exp if lower_bound <= s <= upper_bound]
+                                             else:
+                                                 wide_strikes = valid_strikes_for_exp
 
-                                         found_strikes = set()
-                                         for col in ['strike_buy', 'strike_sell', 'strike_p_buy', 'strike_p_sell', 'strike_c_buy', 'strike_c_sell']:
-                                             if col in exp_spreads.columns:
-                                                 found_strikes.update(exp_spreads[col].dropna().unique().tolist())
-                                         found_strikes.discard(0.0)
-                                         spread_strikes = found_strikes
-                                         final_strikes = sorted(list(set(wide_strikes) | spread_strikes))
+                                             found_strikes = set()
+                                             for col in ['strike_buy', 'strike_sell', 'strike_p_buy', 'strike_p_sell', 'strike_c_buy', 'strike_c_sell']:
+                                                 if col in target_spreads.columns:
+                                                     found_strikes.update(target_spreads[col].dropna().unique().tolist())
+                                             found_strikes.discard(0.0)
+                                             spread_strikes = found_strikes
+                                             final_strikes = sorted(list(set(wide_strikes) | spread_strikes))
 
-                                         chain_data = scan_ib.get_chain_greeks_and_oi(sym, exp, final_strikes, use_yf=use_free_data)
+                                             cd = scan_ib.get_chain_greeks_and_oi(sym, target_exp, final_strikes, use_yf=use_free_data)
+                                             if not cd.empty and 'expiration' not in cd.columns:
+                                                 cd['expiration'] = target_exp
+                                             chain_cache[target_exp] = cd
+                                             return cd
+
+                                         chain_data = get_chain_for_exp(exp, exp_spreads)
+
+                                         # Multi-expiratie support voor diagonale spreads (SynthCoveredCall / SynthCoveredPut)
+                                         if 'expiry_long' in exp_spreads.columns:
+                                             diag_rows = exp_spreads[exp_spreads['expiry_long'].notna()]
+                                             long_exps = diag_rows['expiry_long'].unique().tolist()
+                                             for l_exp in long_exps:
+                                                 if l_exp != exp:
+                                                     sub_df = exp_spreads[exp_spreads['expiry_long'] == l_exp]
+                                                     cd_long = get_chain_for_exp(l_exp, sub_df)
+                                                     if not cd_long.empty:
+                                                         chain_data = pd.concat([chain_data, cd_long], ignore_index=True)
 
                                          if not chain_data.empty:
                                              m_struct = scanner.analyze_market_structure(chain_data)
@@ -1823,6 +1913,7 @@ with tab1:
                                              'min_gamma': d_min_gm,
                                              'max_dte': d_max_dt,
                                              'min_dte': d_min_dt, 
+                                             'min_short_dte': synth_pmcc_min_short_dte, 'max_short_dte': synth_pmcc_max_short_dte,
                                              'koopadvies_p': koopadvies_p, 'only_koopadvies': only_koopadvies
                                          }
                                          if use_max_pain_filter:
@@ -1925,7 +2016,7 @@ with tab1:
                                  if not all_unfiltered_global.empty:
                                      global_guidance = scanner.get_filter_guidance(all_unfiltered_global, target_n=10)
                                      st.session_state['filter_guidance'] = global_guidance
-                                     st.session_state['filter_diagnostics'] = scanner.analyze_filter_bottlenecks(all_unfiltered_global, {'min_pop': min_pop, 'min_profit': min_profit, 'min_delta': min_delta, 'max_delta': max_delta, 'min_bep_dist_pct': min_bep_dist_pct, 'min_gamma': min_gamma, 'max_dte': max_dte, 'min_dte': min_dte, 'only_koopadvies': only_koopadvies}, target_n=5)
+                                     st.session_state['filter_diagnostics'] = scanner.analyze_filter_bottlenecks(all_unfiltered_global, {'min_pop': min_pop, 'min_profit': min_profit, 'min_delta': min_delta, 'max_delta': max_delta, 'min_bep_dist_pct': min_bep_dist_pct, 'min_gamma': min_gamma, 'max_dte': max_dte, 'min_dte': min_dte, 'min_short_dte': synth_pmcc_min_short_dte, 'max_short_dte': synth_pmcc_max_short_dte, 'only_koopadvies': only_koopadvies}, target_n=5)
 
                                  ranked = scanner.rank_spreads(all_results, sort_criteria=criteria, top_n=100) 
                                  st.session_state['results'] = ranked
@@ -1935,7 +2026,7 @@ with tab1:
                                  log(f"⚠️ Geen optie contracten gevonden")
                                  st.warning("Geen optie contracten gevonden. Probeer parameters te verruimen.")
                                  if not all_unfiltered_global.empty:
-                                     st.session_state['filter_diagnostics'] = scanner.analyze_filter_bottlenecks(all_unfiltered_global, {'min_pop': min_pop, 'min_profit': min_profit, 'min_delta': min_delta, 'max_delta': max_delta, 'min_bep_dist_pct': min_bep_dist_pct, 'min_gamma': min_gamma, 'max_dte': max_dte, 'min_dte': min_dte, 'only_koopadvies': only_koopadvies}, target_n=5)
+                                     st.session_state['filter_diagnostics'] = scanner.analyze_filter_bottlenecks(all_unfiltered_global, {'min_pop': min_pop, 'min_profit': min_profit, 'min_delta': min_delta, 'max_delta': max_delta, 'min_bep_dist_pct': min_bep_dist_pct, 'min_gamma': min_gamma, 'max_dte': max_dte, 'min_dte': min_dte, 'min_short_dte': synth_pmcc_min_short_dte, 'max_short_dte': synth_pmcc_max_short_dte, 'only_koopadvies': only_koopadvies}, target_n=5)
                              
                              # Update GUI: scan klaar
                              scan_status.success("✅ Scan voltooid!")
@@ -2134,7 +2225,11 @@ with tab2:
             "winst_laatste": st.column_config.NumberColumn("Winst (Laatste)", format="$%.2f"),
             "AG_Score": st.column_config.NumberColumn("AG Score", format="⭐ %.1f"),
             "strategy": st.column_config.TextColumn("Strategie"),
-            "expiry": st.column_config.TextColumn("Expiratie"),
+            "expiry": st.column_config.TextColumn("Expiratie (Kort)", help="Expiratiedatum van de korte geschreven optie"),
+            "expiry_long": st.column_config.TextColumn("Expiratie Long (LEAPS)", help="Expiratiedatum van de diep ITM long optie (LEAPS)"),
+            "dte_long": st.column_config.NumberColumn("DTE Long", format="%d", help="Dagen tot expiratie van de long LEAPS optie"),
+            "roc_cyclus": st.column_config.NumberColumn("ROC Cyclus %", format="%.1f%%", help="Rendement op netto debit per short cyclus (premie sell / netto debit)"),
+            "roc_jaars": st.column_config.NumberColumn("ROC Jaar %", format="%.1f%%", help="Geannualiseerd rendement op kapitaal op basis van de short cyclus"),
             "strike_buy": st.column_config.NumberColumn("Buy Strike", format="$%.2f"),
             "strike_sell": st.column_config.NumberColumn("Sell Strike", format="$%.2f"),
             "strike_p_buy": st.column_config.NumberColumn("Put Buy", format="$%.2f"),
@@ -2222,7 +2317,10 @@ with tab2:
         final_cfg = {k: v for k, v in col_cfg.items() if k in final_cols}
 
         # Consistent label generation
-        results['label'] = results.apply(lambda x: f"#{x.name} {x['symbol']} {x['expiry']} {x['strategy']} {x['strike_buy']}/{x['strike_sell']} (max ${x.get('max_profit', 0):.0f})", axis=1)
+        def _make_trade_label(x):
+            exp_txt = f"{x['expiry']} / Long:{x['expiry_long']}" if ('expiry_long' in x and pd.notna(x['expiry_long']) and str(x['expiry_long']) != str(x['expiry'])) else f"{x['expiry']}"
+            return f"#{x.name} {x['symbol']} {exp_txt} {x['strategy']} {x['strike_buy']}/{x['strike_sell']} (max ${x.get('max_profit', 0):.0f})"
+        results['label'] = results.apply(_make_trade_label, axis=1)
         labels = results['label'].unique()
 
         # Shared state initialization
@@ -2291,6 +2389,17 @@ with tab2:
             st.success(f"🎯 **Geselecteerd voor order ({len(selected_rows)}):** {summary_symbols}")
         else:
             st.info("💡 **Geen contract aangevinkt:** Vink in de linkerkolom ('Selecteer') het contract aan dat je wilt kopen.")
+
+        if not selected_rows.empty:
+            bulk_put_obl = 0.0
+            for _, r in selected_rows.iterrows():
+                r_strat = str(r.get('strategy', ''))
+                if 'Put' in r_strat or 'PUT' in r_strat.upper():
+                    r_sell_k = float(r.get('strike_sell', 0.0) or 0.0)
+                    if r_sell_k > 0:
+                        bulk_put_obl += r_sell_k * 100.0 * bulk_qty
+            if bulk_put_obl > 0:
+                st.warning(f"⚖️ **Totale Potentiële Aankoopverplichting bij Uitoefening (Bulk):** **${bulk_put_obl:,.2f}** ({bulk_qty}x per positie). Voorkom overleverage!")
 
         col_b1, col_b2, col_b3, col_b4 = st.columns([1, 1.3, 1, 1.7])
         with col_b1:
@@ -2535,9 +2644,16 @@ with tab3:
                 st.markdown("### Handelen")
                 order_qty = st.number_input("Aantal Contracten", min_value=1, value=1)
 
-                # TWS Spread Order Structure (Conform handleiding Roland van Giesen Pg 1-2)
+                sell_k = float(selected_row.get('strike_sell', 0.0) or 0.0)
                 strat = selected_row['strategy']
-                is_credit = strat not in ['LongCall', 'LongPut', 'BullCall', 'BearPut', 'Strangle']
+                if sell_k > 0 and ('Put' in strat or 'PUT' in strat.upper()):
+                    tot_notional = sell_k * 100.0 * order_qty
+                    st.warning(
+                        f"⚖️ **Vermogenswaarschuwing (Aankoopverplichting)**:\n"
+                        f"Bij onverhoopte uitoefening (Assignment) bent u verplicht **{order_qty * 100} aandelen** te kopen tegen ${sell_k:.2f} = **${tot_notional:,.2f}**.\n\n"
+                        f"*Tip:* Stem het aantal contracten zorgvuldig af op uw beschikbare vermogen om overmatige hefboomwerking (overleverage) te voorkomen."
+                    )
+                is_credit = strat not in ['LongCall', 'LongPut', 'BullCall', 'BearPut', 'Strangle', 'SynthCoveredCall', 'SynthCoveredPut']
                 tws_action = "SELL" if is_credit else "BUY"
                 cashflow_label = "Credit Ontvangen" if is_credit else "Debit Betalen"
 
@@ -2736,7 +2852,7 @@ with tab3:
                                         new_ps = ps_p + ps_c
 
                                     net_mid = abs(new_pb - new_ps)
-                                    strat_is_credit = strat_type not in ['LongCall', 'LongPut', 'BullCall', 'BearPut', 'Strangle']
+                                    strat_is_credit = strat_type not in ['LongCall', 'LongPut', 'BullCall', 'BearPut', 'Strangle', 'SynthCoveredCall', 'SynthCoveredPut']
                                     new_net_signed = -net_mid if strat_is_credit else net_mid
                                     
                                     idx = selected_row.name
@@ -2774,7 +2890,9 @@ with tab3:
                                 'strike_p_buy': selected_row.get('strike_p_buy', 0),
                                 'strike_p_sell': selected_row.get('strike_p_sell', 0),
                                 'strike_c_sell': selected_row.get('strike_c_sell', 0),
-                                'strike_c_buy': selected_row.get('strike_c_buy', 0)
+                                'strike_c_buy': selected_row.get('strike_c_buy', 0),
+                                'expiry_long': selected_row.get('expiry_long', selected_row.get('expiry')),
+                                'expiry': selected_row.get('expiry')
                             }
 
                             # Determine Overall Action

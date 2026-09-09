@@ -573,4 +573,54 @@ Uitgebreide inhoudelijke verslagen, wiskundige onderbouwingen en analyses worden
 
 ---
 
+## 15. Synthetische Covered Spreads: Poor Man's Covered Call (PMCC) & Covered Put (PMCP)
+
+In aanvulling op de standaard spreads ondersteunt de applicatie **Synthetische Covered Calls** (en **Synthetische Covered Puts**):
+
+### 🎯 1. Concept: Kapitaalefficiëntie zonder 100 Aandelen
+In plaats van 100 fysieke aandelen te kopen (wat bij aandelen zoals NVDA, MSFT of AAPL al snel \$15.000 tot \$40.000+ kapitaal beslaat), bootst een **Poor Man's Covered Call** exact dezelfde payoff na met een fractie van het kapitaal:
+* **Long Leg (Aandelenvervanger)**: Een diep In-The-Money (**ITM**) Call met een lange looptijd (LEAPS of ver in de toekomst) en een **Delta $\ge 0.80$**. Door deze hoge delta beweegt de optie vrijwel 1-op-1 mee met het aandeel, maar met behoud van een ingebouwde maximale verliesbeperking gelijk aan de betaalde premie.
+* **Short Leg (Inkomstenmachine)**: Een kortlopende Out-of-the-Money (**OTM**) Call met een **Delta $\le 0.20$** en een looptijd van 20 tot 45 dagen. Deze short optie wordt regelmatig gerold of vervalt waardeloos, waardoor een constante kasstroom ontstaat.
+* **POP $\ge 80 - 90\%$**: Door de ruime afstand tussen de aandelenkoers en de korte strike ontstaat een extreem defensieve structuur met een statistische winstkans van 80% tot 90%.
+
+### 📉 2. Synthetische Covered Put (PMCP)
+Voor bearmarkten of dalende fondsen geldt het gespiegelde principe:
+* Een diep ITM Long Put (Delta $\le -0.80$, lange looptijd) gecombineerd met een kortlopende OTM Short Put (Delta $\ge -0.20$) om te profiteren van neerwaartse trends met hoge winstkans.
+
+---
+
+## 16. Praktijklessen Risicomanagement & TWS Executie-Protocollen
+
+Gebaseerd op praktijktesten en intensieve accountbewaking zijn vier cruciale safeguards in het systeem verankerd:
+
+### 🚫 1. TWS Error 10349 & Ondeelbare Combo Limit Orders (No Legging-In Risk)
+* **Het Probleem (TWS Error 10349)**: Interactive Brokers TWS staat **geen** Market Orders toe op samengestelde spreadorders (`secType='BAG'`). Het verzenden van een `MarketOrder` resulteert direct in de foutmelding:
+  > *TWS Error 10349: Order type Market is not supported for combination orders.*
+* **De Gevaarlijke "Quick Fix" (Unbundling Vermijden)**: Sommige tools vallen bij Error 10349 automatisch terug op het splitsen van de spread in twee losse marktorders. **Dit is levensgevaarlijk!** Als één poot wordt uitgevoerd en de andere poot wordt geweigerd of slipt, blijft het account achter met een **volledig naakte short optie** (onbeperkt verliesrisico en directe margin call).
+* **Onze Oplossing**: De software genereert **altijd** een `LimitOrder` op het `BAG` contract (berekend op basis van de netto marktprijs met een kleine uitvoeringsbuffer). Mocht een order geweigerd worden, dan blijft de spread intact en wordt deze **nooit** automatisch gesplitst in losse marktorders.
+
+### ⏰ 2. Beursopeningstijden & Pre-Market Wachtrij (15:30 – 22:00 CET)
+* De Amerikaanse optiebeurzen (CBOE, NYSE, NASDAQ) zijn geopend van **09:30 tot 16:00 US Eastern Time**, wat overeenkomt met **15:30 tot 22:00 Nederlandse tijd (CET/CEST)**.
+* Buiten deze tijden (bijvoorbeeld 's ochtends om 11:54 CET) vindt er geen optiehandel plaats.
+* De applicatie toont bovenaan in het dashboard live de beursstatus:
+  * 🟢 **GEOPEND**: Orders worden direct naar de markt verzonden.
+  * 🕒 **GESLOTEN (Voorbeurs/Weekend)**: Orders worden als `Limit DAY` klaargezet in de TWS wachtrij en worden automatisch door TWS uitgevoerd zodra de beurs om 15:30 CET opent.
+
+### 📅 3. DTE = 0 Expiratiedag Protocol (Directe Sluiting Vanaf Ochtend)
+* Op de expiratiedag zelf (**DTE = 0**) explodeert het *pin risk* (het risico dat de koers precies op of rond de short strike eindigt) en kan de broker (IBKR) vanaf 18:00 CET geforceerd posities liquideren tegen slechte prijzen.
+* In de software activeert DTE = 0 nu **onmiddellijk vanaf de ochtend** de status `TIJDIG_SLUITEN` met urgentie `HIGH`.
+* Hierdoor is de rode actieknop **"🛡️ Sluit Positie Nu (Combo Order)"** de gehele dag direct beschikbaar, zodat traders niet hoeven te wachten tot na 18:00 uur om hun positie veilig te stellen.
+
+### ⚖️ 4. Account Vermogensbewaking: Voorkomen van Overleverage
+* **Het Risico**: Een short put verplicht tot de aankoop van 100 aandelen tegen de uitoefenprijs. Bij het per ongeluk verhogen van de contractgrootte (bijv. 12 contracten NVDA Put 217.5 in plaats van 6) ontstaat plotseling een potentiële afnameverplichting van:
+  $$\text{12 contracten} \times 100 \times \$217.50 = \mathbf{\$261.000}$$
+* **De Ingebouwde Bewaking**:
+  1. **Dashboard Vermogensbewaking (Tab 0)**: Toont live uw netto accountwaarde (Net Liquidation), totale aankoopverplichting over alle open short puts, en de **Hefboom-ratio (Leverage %)**:
+     * 🟢 **Groen ($\le 100\%$)**: Volledig gedekt binnen accountwaarde.
+     * 🟡 **Geel ($100\% - 200\%$)**: Verhoogd margegebruik (monitoring vereist).
+     * 🔴 **Rood ($> 200\%$)**: **OVERLEVERAGE ALARM!** Kans op automatische broker liquidatie.
+  2. **Order-Invoer Waarschuwing (Tab 2 Bulk & Tab 3 Enkel)**: Zodra u het aantal contracten wijzigt, berekent de tool direct de nominale afnameverplichting in dollars en waarschuwt u vóórdat de order naar TWS wordt gestuurd.
+
+---
+
 *Succes met het scannen, bewaken, testen en selecteren van de beste optiecontracten!*

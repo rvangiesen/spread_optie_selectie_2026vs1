@@ -53,10 +53,19 @@ class BjerksundStensland2002:
 
     @staticmethod
     def price_american_option(right, S, K, T, r, q, sigma):
-        if T <= 0: return max(0.0, S - K if right.lower().startswith('c') else K - S)
+        intrinsic = max(0.0, S - K if right.lower().startswith('c') else K - S)
+        if T <= 0: return intrinsic
         if right.lower().startswith('p'):
-            # Put-Call Symmetry for Put
-            return BjerksundStensland2002.price_american_option('c', K, S, T, q, r, sigma)
+            # Put-Call Symmetry for Put bounded by intrinsic & BS
+            try:
+                bs_put = black_scholes('p', S, K, T, r, sigma)
+            except Exception:
+                bs_put = intrinsic
+            try:
+                bj_put = BjerksundStensland2002.price_american_option('c', K, S, T, q, r, sigma)
+            except Exception:
+                bj_put = intrinsic
+            return max(intrinsic, bs_put, bj_put)
         
         b = r - q
         if b >= r: return BjerksundStensland2002.black_scholes_call(S, K, T, r, q, sigma)
@@ -75,7 +84,7 @@ class BjerksundStensland2002:
         c5 = alpha1 * BjerksundStensland2002.psi(S, T, t1, beta, I1, I2, I1, r, b, sigma)
         c6 = BjerksundStensland2002.psi(S, T, t1, 1, I1, I2, I1, r, b, sigma) - BjerksundStensland2002.psi(S, T, t1, 1, K, I2, I1, r, b, sigma)
         c7 = K * BjerksundStensland2002.psi(S, T, t1, 0, I1, I2, I1, r, b, sigma) - K * BjerksundStensland2002.psi(S, T, t1, 0, K, I2, I1, r, b, sigma)
-        return c1 + c2 - c3 + c4 - c5 + c6 - c7
+        return max(intrinsic, c1 + c2 - c3 + c4 - c5 + c6 - c7)
 
     @staticmethod
     def black_scholes_call(S, K, T, r, q, sigma):
@@ -578,7 +587,161 @@ class SpreadScanner:
         upper_bound = component_price * (1 + strike_range_abs)
         
         valid_expirations = sorted(list(set([exp for chain in chains for exp in chain.expirations])))
-        
+
+        # Handle Synthetic Covered Spreads (PMCC / PMCP - Multi-expiration Diagonals)
+        if strategy in ['SynthCoveredCall', 'SynthCoveredPut']:
+            now_date = pd.Timestamp.now().normalize()
+            all_exp_dtes = []
+            for exp in valid_expirations:
+                try:
+                    t_date = pd.to_datetime(exp)
+                    d_val = (t_date - now_date).days
+                    all_exp_dtes.append((exp, d_val))
+                except Exception:
+                    pass
+            
+            # Short leg candidates: 20 to 50 DTE (sweet spot 30-45 DTE)
+            min_short = params.get('min_short_dte', params.get('min_dte', 20))
+            max_short = params.get('max_short_dte', params.get('max_dte', 50))
+            if min_short < 7: min_short = 14
+            short_cands = [e for e in all_exp_dtes if min_short <= e[1] <= max_short]
+            if not short_cands:
+                short_cands = [e for e in all_exp_dtes if 10 <= e[1] <= 60]
+            if not short_cands and all_exp_dtes:
+                short_cands = [min(all_exp_dtes, key=lambda x: abs(x[1] - 30))]
+                
+            # Long leg candidates (LEAPS): >= 180 DTE (typically 180 - 730 DTE)
+            min_long = params.get('min_long_dte', 180)
+            long_cands = [e for e in all_exp_dtes if e[1] >= min_long]
+            if not long_cands:
+                long_cands = [e for e in all_exp_dtes if e[1] >= 120]
+            if not long_cands and all_exp_dtes:
+                longest_exp = max(all_exp_dtes, key=lambda x: x[1])
+                if longest_exp[1] >= 60:
+                    long_cands = [longest_exp]
+            
+            # Focus on the most optimal expirations (top 2 short and top 2 long)
+            short_cands = sorted(short_cands, key=lambda x: abs(x[1] - 35))[:2]
+            long_cands = sorted(long_cands, key=lambda x: abs(x[1] - 300))[:2]
+            
+            iv_val = params.get('iv', 0.25)
+            if iv_val <= 0: iv_val = 0.25
+            r = 0.04
+            q = 0.015
+            
+            for s_exp, s_dte in short_cands:
+                strikes_short = sorted(list(set([s for chain in chains for s in chain.strikes if s_exp in chain.expirations])))
+                t_short = max(0.001, float(s_dte) / 365.0)
+                
+                for l_exp, l_dte in long_cands:
+                    if l_dte <= s_dte: continue # Long must be further out than short
+                    strikes_long = sorted(list(set([s for chain in chains for s in chain.strikes if l_exp in chain.expirations])))
+                    t_long = max(0.001, float(l_dte) / 365.0)
+                    
+                    if strategy == 'SynthCoveredCall':
+                        # Long Call: Deep ITM (Delta 0.75 to 0.95, sweet spot 0.85-0.90, strike < component_price)
+                        long_cands_strikes = []
+                        for k in strikes_long:
+                            if k >= component_price or k < component_price * 0.50: continue
+                            try:
+                                d_val = delta('c', component_price, k, t_long, r, iv_val)
+                            except Exception:
+                                d_val = 0.85
+                            if 0.70 <= d_val <= 0.95:
+                                p_theo = BjerksundStensland2002.price_american_option('c', component_price, k, t_long, r, q, iv_val)
+                                long_cands_strikes.append((k, d_val, p_theo))
+                                
+                        # Short Call: OTM (Delta 0.08 to 0.22, sweet spot 0.10-0.15 for 80-90% PoP, strike > component_price)
+                        short_cands_strikes = []
+                        for k in strikes_short:
+                            if k <= component_price or k > component_price * 1.50: continue
+                            try:
+                                d_val = delta('c', component_price, k, t_short, r, iv_val)
+                            except Exception:
+                                d_val = 0.12
+                            if 0.08 <= d_val <= 0.22:
+                                p_theo = BjerksundStensland2002.price_american_option('c', component_price, k, t_short, r, q, iv_val)
+                                short_cands_strikes.append((k, d_val, p_theo))
+                                
+                        # Pair them up and enforce IJzeren Regel 1: Strikeverschil > Netto Debit
+                        for k_buy, d_buy, p_buy in long_cands_strikes:
+                            for k_sell, d_sell, p_sell in short_cands_strikes:
+                                width = k_sell - k_buy
+                                if width <= 0: continue
+                                est_debit = p_buy - p_sell
+                                # IJZEREN REGEL 1: Breedte moet groter zijn dan Netto Debit!
+                                if width <= est_debit:
+                                    continue
+                                
+                                spreads.append({
+                                    'symbol': params.get('symbol', ''),
+                                    'strategy': strategy,
+                                    'expiry': s_exp,
+                                    'expiry_long': l_exp,
+                                    'dte': s_dte,
+                                    'dte_long': l_dte,
+                                    'strike_buy': k_buy,
+                                    'strike_sell': k_sell,
+                                    'right': 'C',
+                                    'width': width,
+                                    'iv': iv_val
+                                })
+                                
+                    elif strategy == 'SynthCoveredPut':
+                        # Long Put: Deep ITM (Delta -0.95 to -0.70, sweet spot -0.90 to -0.85, strike > component_price)
+                        long_cands_strikes = []
+                        for k in strikes_long:
+                            if k <= component_price or k > component_price * 1.50: continue
+                            try:
+                                d_val = delta('p', component_price, k, t_long, r, iv_val)
+                            except Exception:
+                                d_val = -0.85
+                            if -0.95 <= d_val <= -0.70:
+                                p_theo = BjerksundStensland2002.price_american_option('p', component_price, k, t_long, r, q, iv_val)
+                                long_cands_strikes.append((k, d_val, p_theo))
+                                
+                        # Short Put: OTM (Delta -0.22 to -0.08, sweet spot -0.15 to -0.10 for 80-90% PoP, strike < component_price)
+                        short_cands_strikes = []
+                        for k in strikes_short:
+                            if k >= component_price or k < component_price * 0.50: continue
+                            try:
+                                d_val = delta('p', component_price, k, t_short, r, iv_val)
+                            except Exception:
+                                d_val = -0.12
+                            if -0.22 <= d_val <= -0.08:
+                                p_theo = BjerksundStensland2002.price_american_option('p', component_price, k, t_short, r, q, iv_val)
+                                short_cands_strikes.append((k, d_val, p_theo))
+                                
+                        # Pair them up and enforce IJzeren Regel 1: Strikeverschil > Netto Debit
+                        for k_buy, d_buy, p_buy in long_cands_strikes:
+                            for k_sell, d_sell, p_sell in short_cands_strikes:
+                                width = k_buy - k_sell
+                                if width <= 0: continue
+                                est_debit = p_buy - p_sell
+                                # IJZEREN REGEL 1: Breedte moet groter zijn dan Netto Debit!
+                                if width <= est_debit:
+                                    continue
+                                
+                                spreads.append({
+                                    'symbol': params.get('symbol', ''),
+                                    'strategy': strategy,
+                                    'expiry': s_exp,
+                                    'expiry_long': l_exp,
+                                    'dte': s_dte,
+                                    'dte_long': l_dte,
+                                    'strike_buy': k_buy,
+                                    'strike_sell': k_sell,
+                                    'right': 'P',
+                                    'width': width,
+                                    'iv': iv_val
+                                })
+                                
+            if spreads:
+                return pd.DataFrame(spreads)
+            elif log_func:
+                log_func(f"   ⚠️ 0 {strategy} kandidaten die voldoen aan de 3 IJzeren Regels (DTE/Delta/Breedte>Debit).")
+            return pd.DataFrame(spreads)
+
         for expiration in valid_expirations:
             # Filter by DTE (Normalized to date to avoid afternoon/evening bias)
             # Use .ceil() or normalization to ensure a Friday-to-Friday count is consistent.
@@ -1121,14 +1284,25 @@ class SpreadScanner:
                 r_norm = 'C' if str(row['right']).upper().startswith('C') else 'P'
                 # [FIX] Round strike to 4 decimals for robust lookup
                 # Store (Effective Price, Greeks, Mid, Last, Bid, Ask)
-                lookup[(round(float(row['strike']), 4), r_norm)] = (float(price), greeks, float(mid), float(last_p), float(bid), float(ask))
+                k_round = round(float(row['strike']), 4)
+                entry_data = (float(price), greeks, float(mid), float(last_p), float(bid), float(ask))
+                exp_clean = str(row.get('expiration', '')).replace('-', '').strip()
+                if exp_clean:
+                    lookup[(k_round, r_norm, exp_clean)] = entry_data
+                lookup[(k_round, r_norm)] = entry_data
         
         # Helper for vectorizable lookup met theoretische fallback voor weekend/ontbrekende data
-        def get_data(strike, right, dte):
+        def get_data(strike, right, dte, expiry=None):
             # Normalizeer right naar C/P
             r_norm = 'C' if right.upper().startswith('C') else 'P'
             # Rond strike af voor betrouwbare lookup
-            res = lookup.get((round(float(strike), 4), r_norm))
+            k_round = round(float(strike), 4)
+            res = None
+            if expiry:
+                exp_clean = str(expiry).replace('-', '').strip()
+                res = lookup.get((k_round, r_norm, exp_clean))
+            if not res:
+                res = lookup.get((k_round, r_norm))
             if res: return res, True # Gevonden in echte TWS data
             
             # Als we in live mode zijn (echte chain_data beschikbaar) en het contract is niet gevonden,
@@ -1246,8 +1420,10 @@ class SpreadScanner:
                 bids_sell[i] = pbs + cbs
                 asks_sell[i] = pas + cas
             else:
-                # Vertical Spreads or Single Legs
-                res_b = get_data(row.strike_buy, row.right, row.dte)
+                # Vertical Spreads, Diagonals or Single Legs
+                dte_buy = getattr(row, 'dte_long', row.dte)
+                exp_buy = getattr(row, 'expiry_long', row.expiry)
+                res_b = get_data(row.strike_buy, row.right, dte_buy, exp_buy)
                 is_single_leg = (getattr(row, 'strike_sell', 0.0) == 0.0)
                 
                 if is_single_leg:
@@ -1267,7 +1443,7 @@ class SpreadScanner:
                     bids_buy[i] = bb
                     asks_buy[i] = ab
                 else:
-                    res_s = get_data(row.strike_sell, row.right, row.dte)
+                    res_s = get_data(row.strike_sell, row.right, row.dte, row.expiry)
                     if not res_b[1] or not res_s[1]:
                         valid_mask[i] = False
                         continue
@@ -1352,7 +1528,7 @@ class SpreadScanner:
         # --- FILTER STALE/INVALID OPTIONS PREMIUMS ---
         # Geen enkele verticale spread (of Iron Condor) premie kan groter zijn dan de breedte van de strikes.
         # Als dat wel zo is, komt dit door stale/ontbrekende marktdata (bijv. long poot gewaardeerd op 0).
-        is_invalid_premium = (spreads_df['width'] > 0) & (spreads_df['strategy'] != 'Strangle') & (spreads_df['spread_mid_abs'] > spreads_df['width'] + 0.05)
+        is_invalid_premium = (spreads_df['width'] > 0) & (~spreads_df['strategy'].isin(['Strangle'])) & (spreads_df['spread_mid_abs'] > spreads_df['width'] + 0.05)
         
         # Voor single-leg opties (LongCall / LongPut): check of de gekochte optieprijs niet onder de intrinsieke waarde ligt
         if underlying_price > 0:
@@ -1362,7 +1538,7 @@ class SpreadScanner:
             is_invalid_premium = is_invalid_premium | is_below_intrinsic
         
         # Ook debit spreads die als credit worden weergegeven (of vice versa) zijn stale/foutief.
-        is_debit_strat = spreads_df['strategy'].isin(['BullCall', 'BearPut'])
+        is_debit_strat = spreads_df['strategy'].isin(['BullCall', 'BearPut', 'SynthCoveredCall', 'SynthCoveredPut'])
         is_credit_strat = spreads_df['strategy'].isin(['BearCall', 'BullPut', 'IronCondor'])
         is_stale_direction = (is_debit_strat & (spreads_df['net_price'] < -0.10)) | (is_credit_strat & (spreads_df['net_price'] > 0.10))
         
@@ -1463,7 +1639,12 @@ class SpreadScanner:
         # nearest_leg_delta
         nld = np.where(dist_buy <= dist_sell, spreads_df['delta_buy'].values, spreads_df['delta_sell'].values)
         is_credit_strat = spreads_df['net_price'].values < 0
-        pop_vals = np.where(is_credit_strat, (1.0 - np.abs(nld)) * 100, np.abs(nld) * 100)
+        is_synth = spreads_df['strategy'].isin(['SynthCoveredCall', 'SynthCoveredPut'])
+        # Voor credit spreads en synthetische covered spreads (PMCC/PMCP): PoP = (1 - abs(delta_sell)) * 100
+        # Dit waarborgt wiskundig de 80-90% winstkans doordat de short leg OTM met lage delta geschreven wordt.
+        pop_standard = np.where(is_credit_strat, (1.0 - np.abs(nld)) * 100, np.abs(nld) * 100)
+        pop_synth = (1.0 - np.abs(spreads_df['delta_sell'].values)) * 100
+        pop_vals = np.where(is_synth, pop_synth, pop_standard)
         spreads_df['pop'] = np.round(pop_vals, 1)
 
         # Safety Buffer: Distance to Max Pain
@@ -1520,8 +1701,8 @@ class SpreadScanner:
             for idx, row in spreads_df.iterrows():
                 # Bepaal de gunstige koersrichting (S_target)
                 strat = str(row['strategy']).lower()
-                is_bullish = ('bull' in strat) or ('longcall' in strat)
-                is_bearish = ('bear' in strat) or ('longput' in strat)
+                is_bullish = ('bull' in strat) or ('longcall' in strat) or ('synthcoveredcall' in strat)
+                is_bearish = ('bear' in strat) or ('longput' in strat) or ('synthcoveredput' in strat)
                 
                 em68_val = float(row.get('EM68', row.get('expected_move', 0.0)))
                 em85_val = float(row.get('EM85', em68_val * 1.439535))
@@ -1541,17 +1722,22 @@ class SpreadScanner:
                 
                 # Resterende looptijd bij sluiten (bijv. na 5 dagen, of halverwege als dte < 10)
                 dte_val = float(row['dte'])
+                dte_long_val = float(row.get('dte_long', dte_val))
                 dte_target = dte_val - 5.0 if dte_val > 10.0 else dte_val * 0.5
                 dte_target = max(0.1, dte_target)
-                t_target = dte_target / 365.0
+                t_target_short = dte_target / 365.0
                 
-                def get_theo_price(strike, right_str, s_tgt):
+                dte_target_long = max(0.1, dte_long_val - 5.0)
+                t_target_long = dte_target_long / 365.0
+                
+                def get_theo_price(strike, right_str, s_tgt, t_override=None):
                     if pd.isna(strike) or strike <= 0:
                         return 0.0
                     r_norm = 'c' if str(right_str).upper().startswith('C') else 'p'
+                    t_eval = t_override if t_override is not None else t_target_short
                     try:
                         price_calc = BjerksundStensland2002.price_american_option(
-                            r_norm, float(s_tgt), float(strike), t_target, r, q, iv_val
+                            r_norm, float(s_tgt), float(strike), t_eval, r, q, iv_val
                         )
                         return max(0.01, float(price_calc))
                     except:
@@ -1560,18 +1746,18 @@ class SpreadScanner:
                 right = str(row['right']).upper()
                 def calc_net_new(s_tgt):
                     if right == 'STR':
-                        pb_new = get_theo_price(row.get('strike_p_buy', row['strike_buy']), 'P', s_tgt)
-                        cb_new = get_theo_price(row.get('strike_c_buy', row['strike_buy']), 'C', s_tgt)
+                        pb_new = get_theo_price(row.get('strike_p_buy', row['strike_buy']), 'P', s_tgt, t_target_short)
+                        cb_new = get_theo_price(row.get('strike_c_buy', row['strike_buy']), 'C', s_tgt, t_target_short)
                         return pb_new + cb_new
                     elif right == 'IC':
-                        pb_new = get_theo_price(row.get('strike_p_buy', 0.0), 'P', s_tgt)
-                        ps_new = get_theo_price(row.get('strike_p_sell', 0.0), 'P', s_tgt)
-                        cs_new = get_theo_price(row.get('strike_c_sell', 0.0), 'C', s_tgt)
-                        cb_new = get_theo_price(row.get('strike_c_buy', 0.0), 'C', s_tgt)
+                        pb_new = get_theo_price(row.get('strike_p_buy', 0.0), 'P', s_tgt, t_target_short)
+                        ps_new = get_theo_price(row.get('strike_p_sell', 0.0), 'P', s_tgt, t_target_short)
+                        cs_new = get_theo_price(row.get('strike_c_sell', 0.0), 'C', s_tgt, t_target_short)
+                        cb_new = get_theo_price(row.get('strike_c_buy', 0.0), 'C', s_tgt, t_target_short)
                         return (pb_new + cb_new) - (ps_new + cs_new)
-                    else: # Vertical Spread of Single Leg
-                        pb_new = get_theo_price(row['strike_buy'], row['right'], s_tgt)
-                        ps_new = get_theo_price(row['strike_sell'], row['right'], s_tgt) if row['strike_sell'] > 0 else 0.0
+                    else: # Vertical Spread, Diagonal of Single Leg
+                        pb_new = get_theo_price(row['strike_buy'], row['right'], s_tgt, t_target_long)
+                        ps_new = get_theo_price(row['strike_sell'], row['right'], s_tgt, t_target_short) if row['strike_sell'] > 0 else 0.0
                         return pb_new - ps_new
                 
                 net_price_entry = float(row['net_price'])
@@ -1637,8 +1823,8 @@ class SpreadScanner:
             
             # Identify Directional Expectation
             strat = spreads_df['strategy']
-            is_bull = strat.isin(['BullCall', 'BullPut', 'LongCall'])
-            is_bear = strat.isin(['BearCall', 'BearPut', 'LongPut'])
+            is_bull = strat.isin(['BullCall', 'BullPut', 'LongCall', 'SynthCoveredCall'])
+            is_bear = strat.isin(['BearCall', 'BearPut', 'LongPut', 'SynthCoveredPut'])
             # Neutral/Volatile (IronCondor, Strangle) inherently check both directions and take the worst case.
             
             final_payout = np.where(is_bull, payout_up, np.where(is_bear, payout_down, np.minimum(payout_up, payout_down)))
@@ -1650,17 +1836,33 @@ class SpreadScanner:
             profit_mid = final_payout - n_price
             profit_worst = final_payout - n_price_worst
             
-            spreads_df['koopadvies'] = np.where(profit_worst > 0, "✅", "❌")
+            is_synth = strat.isin(['SynthCoveredCall', 'SynthCoveredPut'])
+            # IJzeren Regels voor Koopadvies bij synthetische covered spreads:
+            # Regel 1: Breedte > Netto Debit (worst entry)
+            # Regel 2: PoP >= 80%
+            synth_pass = (spreads_df['width'].values > n_price_worst) & (spreads_df['pop'].values >= 80.0)
+            standard_pass = (profit_worst > 0)
+            spreads_df['koopadvies'] = np.where(is_synth, np.where(synth_pass, "✅", "❌"), np.where(standard_pass, "✅", "❌"))
+            
             spreads_df['winst_midden'] = profit_mid * 100
             spreads_df['winst_laat'] = profit_worst * 100
+            
+            # Calculate ROC metrics for synthetic covered spreads (Return on Capital per short cycle & annualized)
+            price_sell_arr = spreads_df['price_sell'].values
+            entry_cost = np.maximum(0.01, n_price_worst)
+            roc_cyclus = np.where(is_synth, (price_sell_arr / entry_cost) * 100.0, 0.0)
+            dte_vals = np.maximum(1.0, spreads_df['dte'].values)
+            roc_jaars = np.where(is_synth, roc_cyclus * (365.0 / dte_vals), 0.0)
+            spreads_df['roc_cyclus'] = np.round(roc_cyclus, 1)
+            spreads_df['roc_jaars'] = np.round(roc_jaars, 1)
             
             bep = np.zeros_like(s_buy, dtype=float)
             st_vals = strat.values
             for idx, st_val in enumerate(st_vals):
                 entry = n_price_worst[idx]
-                if st_val in ['LongCall', 'BullCall']:
+                if st_val in ['LongCall', 'BullCall', 'SynthCoveredCall']:
                     bep[idx] = s_buy[idx] + entry
-                elif st_val in ['LongPut', 'BearPut']:
+                elif st_val in ['LongPut', 'BearPut', 'SynthCoveredPut']:
                     bep[idx] = s_buy[idx] - entry
                 elif st_val == 'BearCall':
                     bep[idx] = s_sell[idx] + (-entry)
@@ -1685,10 +1887,10 @@ class SpreadScanner:
                 if b <= 0 or u_price <= 0:
                     cushion_pct[idx] = 0.0
                     continue
-                if st_val in ['BullCall', 'BullPut', 'LongCall']:
+                if st_val in ['BullCall', 'BullPut', 'LongCall', 'SynthCoveredCall']:
                     cushion_pct[idx] = ((u_price - b) / u_price) * 100.0
                     req_bep_move_pct[idx] = max(0.0, ((b - u_price) / u_price) * 100.0)
-                elif st_val in ['BearCall', 'BearPut', 'LongPut']:
+                elif st_val in ['BearCall', 'BearPut', 'LongPut', 'SynthCoveredPut']:
                     cushion_pct[idx] = ((b - u_price) / u_price) * 100.0
                     req_bep_move_pct[idx] = max(0.0, ((u_price - b) / u_price) * 100.0)
                 else:
@@ -1907,7 +2109,7 @@ class SpreadScanner:
             fd = int(((spreads_df['delta_sell'].abs() < min_d) | (spreads_df['delta_sell'].abs() > max_d)).sum())
             if fd > 0: isolated_drops['Delta'] = f"{fd}/{initial_count} ({fd/initial_count*100:.0f}%)"
         if 'bep_afstand_pct' in spreads_df.columns and 'min_bep_dist_pct' in filters and filters['min_bep_dist_pct'] > 0:
-            is_credit_spread = spreads_df['strategy'].isin(['BullPut', 'BearCall', 'BullCall', 'BearPut'])
+            is_credit_spread = spreads_df['strategy'].isin(['BullPut', 'BearCall'])
             fbep = int(((spreads_df['bep_afstand_pct'] < filters['min_bep_dist_pct']) & is_credit_spread).sum())
             if fbep > 0: isolated_drops['BEP Buffer'] = f"{fbep}/{initial_count} ({fbep/initial_count*100:.0f}%)"
 
@@ -1944,12 +2146,12 @@ class SpreadScanner:
                 drop_stats['Delta'] = dropped
                 if log_func: log_func(f"   🔻 Filter Delta Sell [{filters.get('min_delta', 0.0):.2f} - {filters.get('max_delta', 1.0):.2f}]: {dropped} dropped")
 
-        # Filter Minimale BEP Afstand (Geldt voor spreads als veiligheidsbuffer; Longs worden beschermd)
+        # Filter Minimale BEP Afstand (Geldt voor credit spreads als veiligheidsbuffer; Longs & Synthetics zijn vrijgesteld)
         if 'min_bep_dist_pct' in filters and filters['min_bep_dist_pct'] > 0:
             before = len(df)
             if 'bep_afstand_pct' in df.columns:
-                is_long = df['strategy'].isin(['LongCall', 'LongPut'])
-                df = df[is_long | (df['bep_afstand_pct'] >= filters['min_bep_dist_pct'])]
+                is_exempt_bep = df['strategy'].isin(['LongCall', 'LongPut', 'SynthCoveredCall', 'SynthCoveredPut'])
+                df = df[is_exempt_bep | (df['bep_afstand_pct'] >= filters['min_bep_dist_pct'])]
                 dropped = before - len(df)
                 if dropped > 0:
                     drop_stats['BEP Afstand'] = dropped
@@ -1966,7 +2168,9 @@ class SpreadScanner:
         
         if 'max_dte' in filters:
             before = len(df)
-            df = df[df['dte'] <= filters['max_dte']]
+            is_synth = df['strategy'].isin(['SynthCoveredCall', 'SynthCoveredPut'])
+            synth_max = filters.get('max_short_dte', 60)
+            df = df[(is_synth & (df['dte'] <= synth_max)) | (~is_synth & (df['dte'] <= filters['max_dte']))]
             dropped = before - len(df)
             if dropped > 0:
                 drop_stats['Max DTE'] = dropped
@@ -1974,7 +2178,9 @@ class SpreadScanner:
             
         if 'min_dte' in filters:
             before = len(df)
-            df = df[df['dte'] >= filters['min_dte']]
+            is_synth = df['strategy'].isin(['SynthCoveredCall', 'SynthCoveredPut'])
+            synth_min = filters.get('min_short_dte', 14)
+            df = df[(is_synth & (df['dte'] >= synth_min)) | (~is_synth & (df['dte'] >= filters['min_dte']))]
             dropped = before - len(df)
             if dropped > 0:
                 drop_stats['Min DTE'] = dropped
@@ -2261,11 +2467,25 @@ class SpreadScanner:
                 thresh = float(filters.get(spec['key'], 0))
                 vals = df[col].dropna()
                 if not vals.empty:
-                    isolated_fails = int((vals < thresh).sum()) if thresh > 0 else 0
-                    mean_val = float(vals.mean())
-                    avg_val = f"${mean_val:.2f}" if 'profit' in col else f"{mean_val:.1f}%"
-                    q_val = float(vals.quantile(q_target))
-                    suggested_val = f"${q_val:.2f}" if 'profit' in col else f"{q_val:.1f}%"
+                    if spec['key'] == 'min_bep_dist_pct':
+                        # Exclude strategies where positive BEP buffer does not apply (Longs & Synthetics)
+                        applicable_mask = ~df['strategy'].isin(['LongCall', 'LongPut', 'SynthCoveredCall', 'SynthCoveredPut'])
+                        vals = df.loc[applicable_mask, col].dropna() if applicable_mask.any() else pd.Series(dtype=float)
+                        isolated_fails = int((vals < thresh).sum()) if thresh > 0 and not vals.empty else 0
+                        if not vals.empty:
+                            mean_val = float(vals.mean())
+                            avg_val = f"{mean_val:.1f}%"
+                            q_val = float(vals.quantile(q_target))
+                            suggested_val = f"{q_val:.1f}%"
+                        else:
+                            avg_val = "N.v.t. (Alleen debit/synth)"
+                            suggested_val = "N.v.t."
+                    else:
+                        isolated_fails = int((vals < thresh).sum()) if thresh > 0 else 0
+                        mean_val = float(vals.mean())
+                        avg_val = f"${mean_val:.2f}" if 'profit' in col else f"{mean_val:.1f}%"
+                        q_val = float(vals.quantile(q_target))
+                        suggested_val = f"${q_val:.2f}" if 'profit' in col else f"{q_val:.1f}%"
             elif spec['type'] == 'range_abs' and col in df.columns:
                 min_d = float(filters.get('min_delta', 0.0))
                 max_d = float(filters.get('max_delta', 1.0))
@@ -2295,9 +2515,15 @@ class SpreadScanner:
             elif spec['type'] == 'range' and col in df.columns:
                 min_d = float(filters.get('min_dte', 0))
                 max_d = float(filters.get('max_dte', 999))
+                synth_min = float(filters.get('min_short_dte', 20))
+                synth_max = float(filters.get('max_short_dte', 50))
+                
+                is_synth = df['strategy'].isin(['SynthCoveredCall', 'SynthCoveredPut'])
+                fails_std = ((df.loc[~is_synth, col] < min_d) | (df.loc[~is_synth, col] > max_d)).sum() if (~is_synth).any() else 0
+                fails_synth = ((df.loc[is_synth, col] < synth_min) | (df.loc[is_synth, col] > synth_max)).sum() if is_synth.any() else 0
+                isolated_fails = int(fails_std + fails_synth)
                 vals = df[col].dropna()
                 if not vals.empty:
-                    isolated_fails = int(((vals < min_d) | (vals > max_d)).sum())
                     avg_val = f"{vals.mean():.1f} d"
                     suggested_val = f"{int(vals.min())} - {int(vals.max())} d"
 
@@ -3320,8 +3546,13 @@ class PortfolioAnalyzer:
         if weekday == 4 or dte == 0:
             if hour < 18:
                 deadline_status = "VRIJDAG_OPENING"
-                if is_itm:
-                    triggers.append("📅 VRIJDAG EXSPIRATIEDAG: Optimale marktomstandigheden om de spread te sluiten via Combo Limit (Mid-price).")
+                risk_level = "HIGH" if risk_level == "SAFE" else risk_level
+                triggers.append("📅 VRIJDAG EXSPIRATIEDAG (DTE = 0): Optie expireert vandaag! Sluit tijdig vóór 18:00 CET om margin-liquidatie of weekend-aanwijzing te voorkomen.")
+                consequences = "Op expiratiedag neemt pin-risk en assignment risico exponentieel toe. IBKR scant vanaf 18:00 uur accounts op margin-tekorten."
+                action_code = "TIJDIG_SLUITEN"
+                action_title = "Direct Sluiten op Expiratiedag (DTE = 0 Protocol)"
+                recommended_action = "Plaats een Combo Limit Order om beide poten tegelijk te sluiten en het weekend risicovrij in te gaan."
+                execution_type = "COMBO_CLOSE"
             elif 18 <= hour < 20:
                 deadline_status = "VRIJDAG_DEADLINE_18_20"
                 risk_level = "CRITICAL"
@@ -3356,6 +3587,92 @@ class PortfolioAnalyzer:
             'is_between_strikes': is_between,
             'ex_dividend_risk': ex_div_risk,
             'deadline_status': deadline_status
+        }
+
+    @staticmethod
+    def calculate_portfolio_exposure(positions, net_liquidation=0.0):
+        """
+        Berekent de totale potentiële aankoopverplichting (Assignment Obligation)
+        en hefboom (Leverage Ratio) over alle openstaande short opties in het portfolio.
+        Voorkomt dat traders overleveraged raken (zoals 12 ipv 6 contracten = $261k verplichting).
+        """
+        total_put_obligation = 0.0
+        total_call_obligation = 0.0
+        total_max_loss = 0.0
+        breakdown = []
+
+        for p in positions:
+            sym = p.get('symbol', '')
+            strat = p.get('strategy', '')
+            qty = int(p.get('qty', 1))
+            sold_strike = float(p.get('sold_strike', 0.0))
+            bought_strike = float(p.get('bought_strike', 0.0))
+            right = str(p.get('right', '')).upper()
+            
+            put_obl = 0.0
+            call_obl = 0.0
+            max_loss = 0.0
+
+            # Short Put obligatie: Aankoopverplichting 100 aandelen @ sold_strike per contract
+            if ('P' in right or 'PUT' in strat.upper() or 'CONDOR' in strat.upper()) and sold_strike > 0:
+                put_obl = sold_strike * 100.0 * qty
+                total_put_obligation += put_obl
+
+            # Short Call obligatie: Leveringsverplichting 100 aandelen @ sold_strike
+            if ('C' in right or 'CALL' in strat.upper() or 'CONDOR' in strat.upper()) and sold_strike > 0:
+                call_obl = sold_strike * 100.0 * qty
+                total_call_obligation += call_obl
+
+            # Max verlies op spreads
+            if sold_strike > 0 and bought_strike > 0:
+                spread_width = abs(sold_strike - bought_strike)
+                prem = float(p.get('entry_price', 0.0))
+                max_loss = max(0.0, (spread_width - prem)) * 100.0 * qty
+                total_max_loss += max_loss
+
+            pct_of_account = (put_obl / net_liquidation * 100.0) if net_liquidation > 0 else 0.0
+
+            breakdown.append({
+                'symbol': sym,
+                'strategy': strat,
+                'qty': qty,
+                'sold_strike': sold_strike,
+                'bought_strike': bought_strike,
+                'put_obligation': put_obl,
+                'call_obligation': call_obl,
+                'max_loss': max_loss,
+                'pct_of_account': pct_of_account
+            })
+
+        leverage_ratio = (total_put_obligation / net_liquidation * 100.0) if net_liquidation > 0 else 0.0
+
+        if leverage_ratio <= 100.0:
+            status = "VEILIG"
+            status_color = "green"
+            status_icon = "🟢"
+            message = "Volledig gedekt: Totale put-verplichting past binnen uw accountwaarde."
+        elif leverage_ratio <= 200.0:
+            status = "AANDACHT"
+            status_color = "orange"
+            status_icon = "🟡"
+            message = f"Verhoogd margin-gebruik ({leverage_ratio:.1f}%): Vraagt actieve monitoring bij scherpe daling."
+        else:
+            status = "GEVAARLIJK"
+            status_color = "red"
+            status_icon = "🔴"
+            message = f"OVERLEVERAGE ALARM ({leverage_ratio:.1f}%): Uw aankoopverplichting overstijgt het dubbele van uw accountwaarde! Kans op margin call of automatische TWS liquidatie."
+
+        return {
+            'total_put_obligation': total_put_obligation,
+            'total_call_obligation': total_call_obligation,
+            'total_max_loss': total_max_loss,
+            'net_liquidation': net_liquidation,
+            'leverage_ratio': leverage_ratio,
+            'status': status,
+            'status_color': status_color,
+            'status_icon': status_icon,
+            'message': message,
+            'breakdown': breakdown
         }
 
     @staticmethod

@@ -864,7 +864,8 @@ class IBClient:
                             'theta': theta,
                             'iv': iv,
                             'opt_price': mid_p,
-                            'und_price': und_price
+                            'und_price': und_price,
+                            'expiration': str(expiration).replace('-', '').strip()
                         })
                         
                 add_to_list(chain.calls, 'C')
@@ -1076,7 +1077,8 @@ class IBClient:
                 'theta': greeks['theta'],
                 'iv': greeks['iv'],
                 'opt_price': price_for_validation,
-                'und_price': greeks['und_price']
+                'und_price': greeks['und_price'],
+                'expiration': str(expiration).replace('-', '').strip()
             })
             
         return pd.DataFrame(data_list)
@@ -1135,10 +1137,11 @@ class IBClient:
         
         from ib_insync import Option, Contract, Order, ComboLeg, TagValue
         
-        def make_opt(strike, r=None):
+        def make_opt(strike, r=None, exp=None):
             if not strike or strike <= 0: return None
             # Use right from params if provided, else from the outer scope
             r_val = r if r else right
+            exp_val = str(exp) if exp else str(expiry)
             
             # Intelligently routing to CBOE for index options, SMART for others
             is_index = any(idx in symbol.upper() for idx in ['SPX', 'NDX', 'RUT', 'VIX', 'DAX'])
@@ -1148,7 +1151,7 @@ class IBClient:
             # HARDENED: Use keyword args and float casting
             c = Option(
                 symbol=str(symbol), 
-                lastTradeDateOrContractMonth=str(expiry), 
+                lastTradeDateOrContractMonth=exp_val, 
                 strike=float(strike), 
                 right=str(r_val), 
                 exchange=primary_exchange, 
@@ -1157,12 +1160,12 @@ class IBClient:
             )
             qualified = self.qualify_contract_safe(c)
             if not qualified:
-                print(f"DEBUG_LOG: Qualification failed for {symbol} {expiry} {r_val} {strike} on {primary_exchange}. Retrying with fallback {fallback_exchange}...")
+                print(f"DEBUG_LOG: Qualification failed for {symbol} {exp_val} {r_val} {strike} on {primary_exchange}. Retrying with fallback {fallback_exchange}...")
                 c.exchange = fallback_exchange
                 qualified = self.qualify_contract_safe(c)
                 
             if not qualified:
-                err_msg = f"Optiepoot met strike {strike} ({r_val}) voor {symbol} (expiratie {expiry}) bestaat niet of kon niet worden gekwalificeerd in TWS"
+                err_msg = f"Optiepoot met strike {strike} ({r_val}) voor {symbol} (expiratie {exp_val}) bestaat niet of kon niet worden gekwalificeerd in TWS"
                 print(f"DEBUG_LOG: {err_msg}")
                 self.last_error = err_msg
             return qualified
@@ -1205,6 +1208,22 @@ class IBClient:
         elif strategy == 'BearPut':
             p_buy = make_opt(strikes_dict.get('strike_buy'), 'P')
             p_sell = make_opt(strikes_dict.get('strike_sell'), 'P')
+            if p_buy and p_sell:
+                legs_data.append((p_buy, 'BUY'))
+                legs_data.append((p_sell, 'SELL'))
+        elif strategy == 'SynthCoveredCall':
+            exp_long = strikes_dict.get('expiry_long', expiry)
+            exp_short = strikes_dict.get('expiry', expiry)
+            c_buy = make_opt(strikes_dict.get('strike_buy'), 'C', exp_long)
+            c_sell = make_opt(strikes_dict.get('strike_sell'), 'C', exp_short)
+            if c_buy and c_sell:
+                legs_data.append((c_buy, 'BUY'))
+                legs_data.append((c_sell, 'SELL'))
+        elif strategy == 'SynthCoveredPut':
+            exp_long = strikes_dict.get('expiry_long', expiry)
+            exp_short = strikes_dict.get('expiry', expiry)
+            p_buy = make_opt(strikes_dict.get('strike_buy'), 'P', exp_long)
+            p_sell = make_opt(strikes_dict.get('strike_sell'), 'P', exp_short)
             if p_buy and p_sell:
                 legs_data.append((p_buy, 'BUY'))
                 legs_data.append((p_sell, 'SELL'))
@@ -1694,7 +1713,99 @@ class IBClient:
                     'legs': items
                 })
 
-        return positions_list
+    def is_us_options_market_open(self):
+        """
+        Checks if the US options market (NYSE/CBOE/NASDAQ) is currently open for regular trading.
+        US Options Regular Trading Hours: 9:30 AM to 4:00 PM Eastern Time (ET), Monday - Friday.
+        In Dutch time (CET/CEST): 15:30 to 22:00.
+        Returns:
+            dict with 'is_open' (bool), 'status' ('OPEN'/'GESLOTEN'), 'reason' (str), 'current_et' (str).
+        """
+        import datetime
+        try:
+            import pytz
+            et_tz = pytz.timezone('US/Eastern')
+            now_et = datetime.datetime.now(et_tz)
+        except Exception:
+            now_utc = datetime.datetime.utcnow()
+            now_et = now_utc - datetime.timedelta(hours=4)
+            
+        weekday = now_et.weekday() # 0=Mon, 4=Fri, 5=Sat, 6=Sun
+        time_min = now_et.hour * 60 + now_et.minute
+        
+        open_min = 9 * 60 + 30  # 09:30 ET / 15:30 CET
+        close_min = 16 * 60     # 16:00 ET / 22:00 CET
+        
+        is_weekday = weekday < 5
+        is_rth = open_min <= time_min < close_min
+        
+        # Standard US market holidays
+        holiday_dates = [
+            (1, 1), (1, 19), (2, 16), (4, 3), (5, 25), (6, 19), (7, 3), (9, 7), (11, 26), (12, 25)
+        ]
+        is_holiday = (now_et.month, now_et.day) in holiday_dates
+        
+        is_open = is_weekday and is_rth and not is_holiday
+        status_str = "OPEN" if is_open else "GESLOTEN"
+        
+        if is_holiday:
+            reason = f"Feestdag in de VS ({now_et.strftime('%Y-%m-%d')})"
+        elif not is_weekday:
+            reason = "Weekend (Amerikaanse beurs gesloten)"
+        elif time_min < open_min:
+            mins_left = open_min - time_min
+            hrs = mins_left // 60
+            rem_m = mins_left % 60
+            reason = f"Voorbeurs (opent om 15:30 CET / 09:30 ET, over {hrs}u {rem_m}m)"
+        elif time_min >= close_min:
+            reason = "Nabeurs (gesloten om 22:00 CET / 16:00 ET)"
+        else:
+            reason = "Reguliere handelstijden geopend (09:30 - 16:00 ET / 15:30 - 22:00 CET)"
+            
+        return {
+            'is_open': is_open,
+            'status': status_str,
+            'reason': reason,
+            'current_et': now_et.strftime('%H:%M:%S ET'),
+            'date_str': now_et.strftime('%Y-%m-%d')
+        }
+
+    def get_account_summary(self):
+        """
+        Fetches key account balance and margin values from TWS:
+        NetLiquidation, TotalCashValue, MaintMarginReq, ExcessLiquidity, BuyingPower, Currency.
+        """
+        if not self.is_connected():
+            return {}
+        summary = {}
+        try:
+            vals = self.ib.accountSummary()
+            for item in vals:
+                if item.tag in ['NetLiquidation', 'TotalCashValue', 'MaintMarginReq', 'ExcessLiquidity', 'BuyingPower']:
+                    try:
+                        summary[item.tag] = float(item.value)
+                    except (ValueError, TypeError):
+                        pass
+                if item.tag == 'NetLiquidation':
+                    summary['currency'] = item.currency
+        except Exception as e:
+            print(f"DEBUG_LOG: Fout bij accountSummary(): {e}")
+
+        # Fallback to accountValues if summary is empty
+        if not summary:
+            try:
+                for item in self.ib.accountValues():
+                    if item.tag in ['NetLiquidation', 'TotalCashValue', 'MaintMarginReq', 'ExcessLiquidity', 'BuyingPower']:
+                        try:
+                            summary[item.tag] = float(item.value)
+                        except (ValueError, TypeError):
+                            pass
+                    if item.tag == 'NetLiquidation':
+                        summary['currency'] = item.currency
+            except Exception as e_av:
+                print(f"DEBUG_LOG: Fout bij accountValues(): {e_av}")
+
+        return summary
 
     def execute_portfolio_adjustments(self, approved_actions):
         """
@@ -1742,11 +1853,12 @@ class IBClient:
 
             # --- CASE 1: SLUITEN / WINST BORGEN / STOP LOSS (Anti-Assignment Bescherming) ---
             elif any(k in code for k in ['TIJDIG_SLUITEN', 'WINST_BORGEN', 'Direct Sluiten', 'Winst Borgen', 'Stop-Loss', 'COMBO_CLOSE', 'Bescherm', 'Pin Risk', 'Tijdwaarde']):
-                # Probeer eerst als Combo-order (BAG) conform Pg 8 & 14 van het document om legging-in risico te vermijden
-                is_combo_success = False
+                # Sluit als Combo-order (BAG) conform Pg 8 & 14 van het document om legging-in risico te vermijden
+                # TWS VEREIST EEN LIMIT ORDER VOOR COMBOS (Error 10349 treedt op bij MarketOrder op BAG).
                 if len(legs) == 2 and all(getattr(l.contract, 'secType', '') in ['OPT', 'FOP'] for l in legs):
                     try:
                         combo_legs = []
+                        net_debit = 0.0
                         for item in legs:
                             c = self.qualify_contract_safe(item.contract) or item.contract
                             leg_act = 'BUY' if item.position < 0 else 'SELL'
@@ -1756,40 +1868,93 @@ class IBClient:
                                 action=leg_act,
                                 exchange='SMART'
                             ))
+                            m_p = float(getattr(item, 'marketPrice', 0.0) or 0.0)
+                            if m_p <= 0:
+                                m_p = self.get_market_price(c) or 0.0
+                            if item.position < 0:
+                                net_debit += m_p
+                            else:
+                                net_debit -= m_p
+
+                        if action.get('lmt_price') is not None:
+                            combo_lmt_price = round(float(action['lmt_price']), 2)
+                        elif net_debit > 0:
+                            combo_lmt_price = round(net_debit + 0.05, 2)
+                        else:
+                            combo_lmt_price = round(float(action.get('market_price', 0.50)) + 0.05, 2)
+                            if combo_lmt_price <= 0:
+                                combo_lmt_price = 0.50
+
                         bag = Contract(symbol=sym, secType='BAG', currency='USD', exchange='SMART', comboLegs=combo_legs)
-                        combo_order = MarketOrder(action='BUY', totalQuantity=qty)
+                        combo_order = LimitOrder(
+                            action='BUY',
+                            totalQuantity=qty,
+                            lmtPrice=combo_lmt_price,
+                            tif='DAY',
+                            outsideRth=False
+                        )
                         trade = self.ib.placeOrder(bag, combo_order)
-                        is_combo_success = True
+                        
+                        mkt_check = self.is_us_options_market_open()
+                        queue_note = "" if mkt_check.get('is_open') else f" (Let op: Amerikaanse optiemarkt gesloten. Order geplaatst in TWS wachtrij voor opening om 15:30 CET)."
+
                         results.append({
                             'symbol': sym,
                             'status': 'SUCCESS',
-                            'message': f"Combo Sluitingsorder (BAG) succesvol verzonden naar TWS voor {qty}x contract (BUY Combo, voorkomt legging-in risico)."
+                            'message': f"Combo Sluitingsorder (BAG Limit @ ${combo_lmt_price:.2f}) succesvol verzonden naar TWS voor {qty}x contract. Geen legging-in risico!{queue_note}"
                         })
                     except Exception as e_combo:
-                        print(f"DEBUG_LOG: Combo sluiting mislukt, fallback naar losse poten: {e_combo}")
+                        print(f"DEBUG_LOG: Fout bij plaatsen Combo BAG order: {e_combo}")
+                        # GEEN FALLBACK NAAR MARKET UNBUNDLING! Dat creëert naakt risico (legging-in).
+                        results.append({
+                            'symbol': sym,
+                            'status': 'ERROR',
+                            'message': f"Combo sluiting mislukt: {e_combo}. Let op: Er is GEEN fallback naar losse orders uitgevoerd om naakt optierisico te voorkomen."
+                        })
 
-                # Fallback indien geen 2-leg combo of combo-fout
-                if not is_combo_success:
-                    closed_count = 0
-                    for item in legs:
-                        c = item.contract
-                        pos_qty = item.position
-                        if pos_qty == 0:
-                            continue
-                        
-                        q_contract = self.qualify_contract_safe(c) or c
-                        close_action = 'BUY' if pos_qty < 0 else 'SELL'
+                elif len(legs) == 1:
+                    item = legs[0]
+                    c = self.qualify_contract_safe(item.contract) or item.contract
+                    pos_qty = item.position
+                    if pos_qty != 0:
+                        close_act = 'BUY' if pos_qty < 0 else 'SELL'
                         close_qty = int(abs(pos_qty))
-                        
-                        order = MarketOrder(action=close_action, totalQuantity=close_qty)
-                        trade = self.ib.placeOrder(q_contract, order)
-                        closed_count += 1
-                    
-                    results.append({
-                        'symbol': sym,
-                        'status': 'SUCCESS',
-                        'message': f"Sluitingsorders verzonden naar TWS ({closed_count} optiepoot/poten gesloten)."
-                    })
+                        m_p = float(getattr(item, 'marketPrice', 0.0) or 0.0)
+                        if m_p <= 0:
+                            m_p = self.get_market_price(c) or 0.0
+                        if m_p > 0:
+                            lmt_p = round(m_p * (1.05 if close_act == 'BUY' else 0.95), 2)
+                            order = LimitOrder(action=close_act, totalQuantity=close_qty, lmtPrice=lmt_p, tif='DAY')
+                        else:
+                            order = MarketOrder(action=close_act, totalQuantity=close_qty)
+                        trade = self.ib.placeOrder(c, order)
+                        results.append({
+                            'symbol': sym,
+                            'status': 'SUCCESS',
+                            'message': f"Single leg sluitingsorder ({close_act} {close_qty}x) verzonden naar TWS."
+                        })
+                else:
+                    try:
+                        combo_legs = []
+                        for item in legs:
+                            c = self.qualify_contract_safe(item.contract) or item.contract
+                            leg_act = 'BUY' if item.position < 0 else 'SELL'
+                            combo_legs.append(ComboLeg(conId=c.conId, ratio=1, action=leg_act, exchange='SMART'))
+                        bag = Contract(symbol=sym, secType='BAG', currency='USD', exchange='SMART', comboLegs=combo_legs)
+                        lmt_p = round(float(action.get('lmt_price', action.get('market_price', 1.00))), 2)
+                        combo_order = LimitOrder(action='BUY', totalQuantity=qty, lmtPrice=max(0.05, lmt_p), tif='DAY')
+                        trade = self.ib.placeOrder(bag, combo_order)
+                        results.append({
+                            'symbol': sym,
+                            'status': 'SUCCESS',
+                            'message': f"Multi-leg Combo Sluitingsorder (BAG Limit @ ${max(0.05, lmt_p):.2f}) verzonden naar TWS voor {qty}x spread."
+                        })
+                    except Exception as e_multi:
+                        results.append({
+                            'symbol': sym,
+                            'status': 'ERROR',
+                            'message': f"Multi-leg sluiting mislukt: {e_multi}."
+                        })
 
             # --- CASE 2: DOORROLLEN (ROLLING) ---
             elif any(k in code for k in ['Doorrollen', 'DOORROLLEN', 'roll']):
