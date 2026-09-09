@@ -1073,6 +1073,10 @@ with st.sidebar.expander("Specifieke Strategieën", expanded=True):
     synth_pmcc_min_long_dte = 180
     synth_pmcc_min_short_dte = 20
     synth_pmcc_max_short_dte = 50
+    synth_target_delta = 0.25
+    synth_target_otm = 8.0
+    synth_min_premium = 2.00
+    synth_min_roc = 5.0
     if any(s in active_strategies for s in ['SynthCoveredCall', 'SynthCoveredPut']):
         st.markdown("---")
         st.markdown("##### 🏛️ Synthetische Covered (PMCC/PMCP)")
@@ -1094,6 +1098,32 @@ with st.sidebar.expander("Specifieke Strategieën", expanded=True):
                 "Max Short DTE", min_value=14, max_value=90, value=45, step=5,
                 key="sb_pmcc_short_max_dte",
                 help="Maximale looptijd van de te verkopen OTM optie (sweet spot 30-45 DTE voor optimale theta decay)."
+            ))
+        c_pmcc3, c_pmcc4 = st.columns(2)
+        with c_pmcc3:
+            synth_target_delta = float(st.number_input(
+                "Doel Delta Short", min_value=0.10, max_value=0.40, value=0.25, step=0.05, format="%.2f",
+                key="sb_pmcc_delta",
+                help="Standaard 0.25 voor gezonde cashflow en solide 75% PoP."
+            ))
+        with c_pmcc4:
+            synth_target_otm = float(st.number_input(
+                "Doel OTM %", min_value=2.0, max_value=20.0, value=8.0, step=1.0, format="%.1f",
+                key="sb_pmcc_otm",
+                help="Standaard 8.0% afstand van de short strike boven de koers."
+            ))
+        c_pmcc5, c_pmcc6 = st.columns(2)
+        with c_pmcc5:
+            synth_min_premium = float(st.number_input(
+                "Min. Premie ($)", min_value=0.50, max_value=10.0, value=2.00, step=0.25, format="%.2f",
+                key="sb_pmcc_min_prem",
+                help="Minimale premieopbrengst van de short optie (standaard >= $2.00)."
+            ))
+        with c_pmcc6:
+            synth_min_roc = float(st.number_input(
+                "Min. Rendement (%)", min_value=1.0, max_value=25.0, value=5.0, step=0.5, format="%.1f",
+                key="sb_pmcc_min_roc",
+                help="Minimale cyclus-cashflow t.o.v. netto debit (standaard >= 5.0%)."
             ))
 
 st.sidebar.markdown("---")
@@ -1570,6 +1600,7 @@ with tab1:
                                          'max_delta': max_delta, 'min_bep_dist_pct': min_bep_dist_pct,
                                          'min_gamma': min_gamma, 'max_dte': max_dte, 'min_dte': min_dte, 
                                          'min_short_dte': synth_pmcc_min_short_dte, 'max_short_dte': synth_pmcc_max_short_dte,
+                                         'synth_min_premium': synth_min_premium, 'synth_min_roc': synth_min_roc,
                                          'koopadvies_p': koopadvies_p, 'only_koopadvies': only_koopadvies
                                      }
                                      if use_max_pain_filter: current_filters['max_pain_dist'] = max_pain_dist
@@ -1793,7 +1824,8 @@ with tab1:
                                                 p = {'symbol': sym, 'min_dte': min_dte, 'koopadvies_p': koopadvies_p, 'only_koopadvies': only_koopadvies, 'max_dte': d_max, 
                                                     'width': w, 'iv': underlying_iv, 'strike_range_pct': strike_range_pct, 'min_strike_pct': min_strike_pct,
                                                     'itm_support_level': itm_support_level, 'long_focus': long_focus_mode,
-                                                    'min_long_dte': synth_pmcc_min_long_dte, 'min_short_dte': synth_pmcc_min_short_dte, 'max_short_dte': synth_pmcc_max_short_dte}
+                                                    'min_long_dte': synth_pmcc_min_long_dte, 'min_short_dte': synth_pmcc_min_short_dte, 'max_short_dte': synth_pmcc_max_short_dte,
+                                                    'synth_target_delta': synth_target_delta, 'synth_target_otm_pct': synth_target_otm, 'synth_min_premium': synth_min_premium, 'synth_min_roc': synth_min_roc}
                                                 for strat in active_strategies:
                                                     # Single-leg and Synthetic Covered strategies do not use width. Only generate them for the first width.
                                                     if strat in ['LongCall', 'LongPut', 'SynthCoveredCall', 'SynthCoveredPut'] and w != widths_to_check[0]:
@@ -1914,6 +1946,7 @@ with tab1:
                                              'max_dte': d_max_dt,
                                              'min_dte': d_min_dt, 
                                              'min_short_dte': synth_pmcc_min_short_dte, 'max_short_dte': synth_pmcc_max_short_dte,
+                                             'synth_min_premium': synth_min_premium, 'synth_min_roc': synth_min_roc,
                                              'koopadvies_p': koopadvies_p, 'only_koopadvies': only_koopadvies
                                          }
                                          if use_max_pain_filter:

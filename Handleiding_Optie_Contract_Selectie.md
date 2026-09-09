@@ -577,15 +577,19 @@ Uitgebreide inhoudelijke verslagen, wiskundige onderbouwingen en analyses worden
 
 In aanvulling op de standaard spreads ondersteunt de applicatie **Synthetische Covered Calls** (en **Synthetische Covered Puts**):
 
-### 🎯 1. Concept: Kapitaalefficiëntie zonder 100 Aandelen
+### 🎯 1. Concept & Gouden Standaard
 In plaats van 100 fysieke aandelen te kopen (wat bij aandelen zoals NVDA, MSFT of AAPL al snel \$15.000 tot \$40.000+ kapitaal beslaat), bootst een **Poor Man's Covered Call** exact dezelfde payoff na met een fractie van het kapitaal:
-* **Long Leg (Aandelenvervanger)**: Een diep In-The-Money (**ITM**) Call met een lange looptijd (LEAPS of ver in de toekomst) en een **Delta $\ge 0.80$**. Door deze hoge delta beweegt de optie vrijwel 1-op-1 mee met het aandeel, maar met behoud van een ingebouwde maximale verliesbeperking gelijk aan de betaalde premie.
-* **Short Leg (Inkomstenmachine)**: Een kortlopende Out-of-the-Money (**OTM**) Call met een **Delta $\le 0.20$** en een looptijd van 20 tot 45 dagen. Deze short optie wordt regelmatig gerold of vervalt waardeloos, waardoor een constante kasstroom ontstaat.
-* **POP $\ge 80 - 90\%$**: Door de ruime afstand tussen de aandelenkoers en de korte strike ontstaat een extreem defensieve structuur met een statistische winstkans van 80% tot 90%.
+* **Long Leg (Aandelenvervanger)**: Een diep In-The-Money (**ITM**) Call met een lange looptijd (LEAPS of ver in de toekomst) en een **Delta $\ge 0.80$**. Door deze hoge delta beweegt de optie vrijwel 1-op-1 mee met het aandeel, maar met een ingebouwde maximale verliesbeperking gelijk aan de betaalde premie.
+* **Short Leg (Inkomstenmachine & Neerwaartse Buffer)**: Een kortlopende Out-of-the-Money (**OTM**) Call volgens de **nieuwe geoptimaliseerde standaard**:
+  * 🎯 **Afstand tot koers (OTM)**: **circa 8% OTM** (ruime veilige afstand boven de huidige koers).
+  * 📈 **Delta**: **$\approx 0{,}25$** (ideale balans tussen solide cashflow en ca. 75% winstkans/POP).
+  * 💰 **Minimale Premie**: **$\ge \$2{,}00$** (\$200 per contract) om reële neerwaartse koersdemping te bieden.
+  * 🚀 **Minimaal Cyclus-Rendement**: **$\ge 5{,}0\%$** per short cyclus (20-45 dagen) ten opzichte van het geïnvesteerde debitkapitaal.
+* **Geannualiseerd Rendement**: Door elke 3 à 4 weken een nieuwe call te schrijven tegen deze standaard, genereert de positie op jaarbasis **50% tot 70%+ cashflow** op het geïnvesteerde optiekapitaal.
 
 ### 📉 2. Synthetische Covered Put (PMCP)
 Voor bearmarkten of dalende fondsen geldt het gespiegelde principe:
-* Een diep ITM Long Put (Delta $\le -0.80$, lange looptijd) gecombineerd met een kortlopende OTM Short Put (Delta $\ge -0.20$) om te profiteren van neerwaartse trends met hoge winstkans.
+* Een diep ITM Long Put (Delta $\le -0.80$, lange looptijd) gecombineerd met een kortlopende OTM Short Put op **circa 8% onder de koers (Delta $\approx -0{,}25$, premie $\ge \$2{,}00$, rendement $\ge 5{,}0\%$)**.
 
 ---
 

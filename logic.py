@@ -651,25 +651,33 @@ class SpreadScanner:
                                 p_theo = BjerksundStensland2002.price_american_option('c', component_price, k, t_long, r, q, iv_val)
                                 long_cands_strikes.append((k, d_val, p_theo))
                                 
-                        # Short Call: OTM (Delta 0.08 to 0.22, sweet spot 0.10-0.15 for 80-90% PoP, strike > component_price)
+                        # Short Call: Standaard OTM ~8%, Delta ~0.25 (range 0.16 - 0.35), premie >= $2.00
+                        target_otm = 0.08
+                        target_delta = 0.25
+                        min_target_prem = 2.0
                         short_cands_strikes = []
                         for k in strikes_short:
-                            if k <= component_price or k > component_price * 1.50: continue
+                            if k <= component_price or k > component_price * 1.35: continue
                             try:
                                 d_val = delta('c', component_price, k, t_short, r, iv_val)
                             except Exception:
-                                d_val = 0.12
-                            if 0.08 <= d_val <= 0.22:
+                                d_val = 0.25
+                            otm_ratio = (k - component_price) / component_price
+                            if 0.15 <= d_val <= 0.35:
                                 p_theo = BjerksundStensland2002.price_american_option('c', component_price, k, t_short, r, q, iv_val)
-                                short_cands_strikes.append((k, d_val, p_theo))
+                                diff_score = abs(d_val - target_delta) * 100.0 + abs(otm_ratio - target_otm) * 50.0
+                                if p_theo < min_target_prem:
+                                    diff_score += (min_target_prem - p_theo) * 20.0
+                                short_cands_strikes.append((k, d_val, p_theo, diff_score))
                                 
+                        short_cands_strikes = sorted(short_cands_strikes, key=lambda x: x[3])
+                        
                         # Pair them up and enforce IJzeren Regel 1: Strikeverschil > Netto Debit
                         for k_buy, d_buy, p_buy in long_cands_strikes:
-                            for k_sell, d_sell, p_sell in short_cands_strikes:
+                            for k_sell, d_sell, p_sell, _ in short_cands_strikes:
                                 width = k_sell - k_buy
                                 if width <= 0: continue
                                 est_debit = p_buy - p_sell
-                                # IJZEREN REGEL 1: Breedte moet groter zijn dan Netto Debit!
                                 if width <= est_debit:
                                     continue
                                 
@@ -700,25 +708,33 @@ class SpreadScanner:
                                 p_theo = BjerksundStensland2002.price_american_option('p', component_price, k, t_long, r, q, iv_val)
                                 long_cands_strikes.append((k, d_val, p_theo))
                                 
-                        # Short Put: OTM (Delta -0.22 to -0.08, sweet spot -0.15 to -0.10 for 80-90% PoP, strike < component_price)
+                        # Short Put: Standaard OTM ~8% onder koers, Delta ~ -0.25 (range -0.35 tot -0.15)
+                        target_otm = 0.08
+                        target_delta = -0.25
+                        min_target_prem = 2.0
                         short_cands_strikes = []
                         for k in strikes_short:
-                            if k >= component_price or k < component_price * 0.50: continue
+                            if k >= component_price or k < component_price * 0.65: continue
                             try:
                                 d_val = delta('p', component_price, k, t_short, r, iv_val)
                             except Exception:
-                                d_val = -0.12
-                            if -0.22 <= d_val <= -0.08:
+                                d_val = -0.25
+                            otm_ratio = (component_price - k) / component_price
+                            if -0.35 <= d_val <= -0.15:
                                 p_theo = BjerksundStensland2002.price_american_option('p', component_price, k, t_short, r, q, iv_val)
-                                short_cands_strikes.append((k, d_val, p_theo))
+                                diff_score = abs(d_val - target_delta) * 100.0 + abs(otm_ratio - target_otm) * 50.0
+                                if p_theo < min_target_prem:
+                                    diff_score += (min_target_prem - p_theo) * 20.0
+                                short_cands_strikes.append((k, d_val, p_theo, diff_score))
                                 
+                        short_cands_strikes = sorted(short_cands_strikes, key=lambda x: x[3])
+                        
                         # Pair them up and enforce IJzeren Regel 1: Strikeverschil > Netto Debit
                         for k_buy, d_buy, p_buy in long_cands_strikes:
-                            for k_sell, d_sell, p_sell in short_cands_strikes:
+                            for k_sell, d_sell, p_sell, _ in short_cands_strikes:
                                 width = k_buy - k_sell
                                 if width <= 0: continue
                                 est_debit = p_buy - p_sell
-                                # IJZEREN REGEL 1: Breedte moet groter zijn dan Netto Debit!
                                 if width <= est_debit:
                                     continue
                                 
@@ -1837,15 +1853,6 @@ class SpreadScanner:
             profit_worst = final_payout - n_price_worst
             
             is_synth = strat.isin(['SynthCoveredCall', 'SynthCoveredPut'])
-            # IJzeren Regels voor Koopadvies bij synthetische covered spreads:
-            # Regel 1: Breedte > Netto Debit (worst entry)
-            # Regel 2: PoP >= 80%
-            synth_pass = (spreads_df['width'].values > n_price_worst) & (spreads_df['pop'].values >= 80.0)
-            standard_pass = (profit_worst > 0)
-            spreads_df['koopadvies'] = np.where(is_synth, np.where(synth_pass, "✅", "❌"), np.where(standard_pass, "✅", "❌"))
-            
-            spreads_df['winst_midden'] = profit_mid * 100
-            spreads_df['winst_laat'] = profit_worst * 100
             
             # Calculate ROC metrics for synthetic covered spreads (Return on Capital per short cycle & annualized)
             price_sell_arr = spreads_df['price_sell'].values
@@ -1855,6 +1862,23 @@ class SpreadScanner:
             roc_jaars = np.where(is_synth, roc_cyclus * (365.0 / dte_vals), 0.0)
             spreads_df['roc_cyclus'] = np.round(roc_cyclus, 1)
             spreads_df['roc_jaars'] = np.round(roc_jaars, 1)
+
+            # Nieuwe Standaard voor Synthetische Covered Spreads:
+            # Regel 1: Breedte > Netto Debit (worst entry)
+            # Regel 2: Premie Short Leg >= $2.00
+            # Regel 3: Rendement per Cyclus (ROC Cyclus) >= 5.0%
+            # Regel 4: PoP >= 70% (consequent met Delta ~0.25)
+            synth_pass = (
+                (spreads_df['width'].values > n_price_worst) & 
+                (price_sell_arr >= 2.0) & 
+                (roc_cyclus >= 5.0) & 
+                (spreads_df['pop'].values >= 70.0)
+            )
+            standard_pass = (profit_worst > 0)
+            spreads_df['koopadvies'] = np.where(is_synth, np.where(synth_pass, "✅", "❌"), np.where(standard_pass, "✅", "❌"))
+            
+            spreads_df['winst_midden'] = profit_mid * 100
+            spreads_df['winst_laat'] = profit_worst * 100
             
             bep = np.zeros_like(s_buy, dtype=float)
             st_vals = strat.values
