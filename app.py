@@ -770,8 +770,48 @@ elif "Neutraal" in marktvisie:
 # For now, stick to user request: "Kies als selectie versnelling... stijgende of dalende koersverwachting"
 st.sidebar.markdown(f"**Actieve Strategieën:** {', '.join(active_strategies)}")
 
+# S&P 500 Symbol List Definition & Caching Helper
+STANDARD_SP500 = [
+    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "UNH", "JNJ", "XOM", "JPM", "V", "PG", "MA", "AVGO", "HD", "CVX", "MRK", "ABBV", "COST",
+    "PEP", "ADBE", "WMT", "KO", "BAC", "ACN", "MCD", "CSCO", "TMO", "CRM", "ABT", "LIN", "ORCL", "NFLX", "AMD", "DIS", "PM", "PFE", "TXN", "DHR",
+    "INTC", "CAT", "VZ", "AMGN", "IBM", "UNP", "SPGI", "LOW", "NOW", "HON", "BA", "COP", "GE", "AMAT", "GS", "QCOM", "BKNG", "NKE", "SBUX", "ELV",
+    "INTU", "PLD", "BLK", "RTX", "ISR", "MDLZ", "TJX", "AXP", "GILD", "DE", "ADI", "ISRG", "MMC", "T", "LRCX", "SCHW", "C", "VRTX", "LMT", "EOG", "PGR"
+]
+OPTIONABLE_ETFS = ["SPY", "QQQ", "IWM", "DIA", "XLF", "XLK", "XLE", "XLV", "XLI", "XLY", "XLP", "XLB", "XLU", "XLRE", "GDX", "GLD", "TLT", "SLV", "USO", "UNG", "KRE", "SMH", "IBB", "XOP", "ARKK", "EEM", "FXI", "EWZ"]
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_sp500_symbols_raw():
+    try:
+        import urllib.request
+        req = urllib.request.Request('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies', headers={'User-Agent': 'Mozilla/5.0'})
+        html = urllib.request.urlopen(req, timeout=8).read()
+        df_sp = pd.read_html(html)[0]
+        syms = df_sp['Symbol'].dropna().astype(str).str.strip().tolist()
+        if syms:
+            return syms
+    except Exception:
+        pass
+    return list(STANDARD_SP500)
+
+def get_sp500_symbols(include_etfs=False, for_ib=False):
+    raw_syms = fetch_sp500_symbols_raw()
+    if for_ib:
+        clean_syms = [s.replace('.', ' ') for s in raw_syms]
+    else:
+        clean_syms = [s.replace('.', '-') for s in raw_syms]
+    if include_etfs:
+        clean_syms = sorted(list(set(clean_syms + OPTIONABLE_ETFS)))
+    else:
+        clean_syms = sorted(list(set(clean_syms)))
+    return clean_syms
+
 # Batch Scanner Input
-scan_mode = st.sidebar.selectbox("Scan Modus", ["Enkel Symbool", "Batch Scan (Lijst)", "Batch Scan (Bestand)", "Live TWS Scanner", "BarChart Optie Flow (CSV)", "Auto-Pilot (Downloads map)", "Super-Fast ATM Long Scan (1% Koop)"])
+scan_modes_list = ["Enkel Symbool", "Batch Scan (Lijst)", "Batch Scan (Bestand)", "Live TWS Scanner", "BarChart Optie Flow (CSV)", "Auto-Pilot (Downloads map)", "Super-Fast ATM Long Scan (1% Koop)"]
+current_scan_mode = st.session_state.get('scan_mode_choice', "Enkel Symbool")
+if current_scan_mode not in scan_modes_list:
+    current_scan_mode = "Enkel Symbool"
+scan_mode_idx = scan_modes_list.index(current_scan_mode)
+scan_mode = st.sidebar.selectbox("Scan Modus", scan_modes_list, index=scan_mode_idx, key="scan_mode_choice")
 
 symbols_to_scan = []
 scan_code = "MOST_ACTIVE" 
@@ -781,20 +821,27 @@ if scan_mode == "Enkel Symbool":
     sec_type = st.sidebar.radio("Type Activa", ["Aandeel", "Index"])
     symbol_input = st.sidebar.text_input("Symbool (bijv. SPY)", value="SPY")
     if symbol_input:
-        symbols_to_scan = [symbol_input]
+        symbols_to_scan = [symbol_input.strip().upper()]
 
 elif scan_mode == "Batch Scan (Lijst)":
     # Pre-defined lists
-    list_choice = st.sidebar.selectbox("Kies Lijst", ["S&P 100", "Top 10 Tech", "AEX"])
-    if list_choice == "Top 10 Tech":
+    list_opts = ["S&P 500 (Wikipedia)", "S&P 100", "Top 10 Tech", "AEX"]
+    cur_list_choice = st.session_state.get('batch_list_choice', "S&P 500 (Wikipedia)")
+    if cur_list_choice not in list_opts:
+        cur_list_choice = "S&P 500 (Wikipedia)"
+    list_choice = st.sidebar.selectbox("Kies Lijst", list_opts, index=list_opts.index(cur_list_choice), key="batch_list_choice")
+    if list_choice == "S&P 500 (Wikipedia)":
+        symbols_to_scan = get_sp500_symbols(include_etfs=False)
+        sec_type = "Aandeel"
+        st.sidebar.caption(f"ℹ️ {len(symbols_to_scan)} S&P 500 aandelen geladen.")
+    elif list_choice == "Top 10 Tech":
         symbols_to_scan = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "NFLX", "AMD", "INTC"]
         sec_type = "Aandeel"
     elif list_choice == "S&P 100":
-        # Placeholder list - in real app fetch this or use larger list
-        symbols_to_scan = ["AAPL", "MSFT", "AMZN", "NVDA", "GOOGL", "META", "TSLA", "BRK.B", "UNH", "JNJ", "XOM", "JPM"] # Shortened for speed
+        symbols_to_scan = ["AAPL", "MSFT", "AMZN", "NVDA", "GOOGL", "META", "TSLA", "BRK.B", "UNH", "JNJ", "XOM", "JPM"]
         sec_type = "Aandeel"
     elif list_choice == "AEX":
-        symbols_to_scan = ["ADYEN", "ASML", "UNA", "RDSA", "INGA"] # Note: RDSA ticker might be different on TWS (SHELL)
+        symbols_to_scan = ["ADYEN", "ASML", "UNA", "RDSA", "INGA"]
         sec_type = "Aandeel"
 
 elif scan_mode == "Batch Scan (Bestand)":
@@ -886,8 +933,23 @@ elif scan_mode == "Auto-Pilot (Downloads map)":
     sec_type = "Aandeel"
 
 elif scan_mode == "Super-Fast ATM Long Scan (1% Koop)":
-    st.sidebar.info("Super-snel scannen van S&P 500 aandelen en ETF's voor Long Call/Put opties via het 1% koop proces.")
+    st.sidebar.info("⚡ Super-snel scannen van aandelen en ETF's voor Long Call/Put opties via het 1% koop proces.")
+    fast_universe = st.sidebar.selectbox(
+        "Selecteer Universe", 
+        ["S&P 500 (Wikipedia + Top ETF's)", "S&P 100", "Top 10 Tech", "Enkel Symbool (bijv. SPY)"],
+        key="fast_atm_universe"
+    )
+    if fast_universe == "S&P 500 (Wikipedia + Top ETF's)":
+        symbols_to_scan = get_sp500_symbols(include_etfs=True)
+    elif fast_universe == "S&P 100":
+        symbols_to_scan = ["AAPL", "MSFT", "AMZN", "NVDA", "GOOGL", "META", "TSLA", "BRK.B", "UNH", "JNJ", "XOM", "JPM"]
+    elif fast_universe == "Top 10 Tech":
+        symbols_to_scan = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "NFLX", "AMD", "INTC"]
+    else:
+        cust_sym = st.sidebar.text_input("Symbool voor 1% Scan", value="SPY", key="fast_single_sym")
+        symbols_to_scan = [cust_sym.strip().upper()] if cust_sym else ["SPY"]
     sec_type = "Aandeel"
+    st.sidebar.caption(f"ℹ️ {len(symbols_to_scan)} symbolen geselecteerd voor ATM 1% scan.")
 
 # Process any pending sidebar updates (safe from StreamlitAPIException)
 if 'pending_sidebar_updates' in st.session_state:
@@ -1440,7 +1502,7 @@ with tab1:
                                  current_symbols = []
 
                          if scan_mode == "Super-Fast ATM Long Scan (1% Koop)":
-                             current_symbols = ["DUMMY"]
+                             current_symbols = list(symbols_to_scan) if symbols_to_scan else get_sp500_symbols(include_etfs=True)
 
                          if not current_symbols:
                              st.warning("Geen symbolen om te scannen.")
@@ -1521,30 +1583,8 @@ with tab1:
 
                              for i, sym in enumerate(current_symbols):
                                  if is_fast_atm:
-                                     if scan_mode == "Super-Fast ATM Long Scan (1% Koop)":
-                                         status_text.text("S&P 500 symbolen ophalen via Wikipedia...")
-                                         import urllib.request
-                                         sp500_symbols = []
-                                         try:
-                                             req = urllib.request.Request('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies', headers={'User-Agent': 'Mozilla/5.0'})
-                                             html = urllib.request.urlopen(req).read()
-                                             df_sp500 = pd.read_html(html)[0]
-                                             sp500_symbols = df_sp500['Symbol'].tolist()
-                                             sp500_symbols = [s.replace('.', '-') for s in sp500_symbols if ' ' not in s]
-                                         except Exception as e:
-                                             log(f"⚠️ Wikipedia retrieval ({e}): meegenomen standaard S&P 500 top-lijst.")
-                                             
-                                         STANDARD_SP500 = [
-                                             "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "UNH", "JNJ", "XOM", "JPM", "V", "PG", "MA", "AVGO", "HD", "CVX", "MRK", "ABBV", "COST",
-                                             "PEP", "ADBE", "WMT", "KO", "BAC", "ACN", "MCD", "CSCO", "TMO", "CRM", "ABT", "LIN", "ORCL", "NFLX", "AMD", "DIS", "PM", "PFE", "TXN", "DHR",
-                                             "INTC", "CAT", "VZ", "AMGN", "IBM", "UNP", "SPGI", "LOW", "NOW", "HON", "BA", "COP", "GE", "AMAT", "GS", "QCOM", "BKNG", "NKE", "SBUX", "ELV",
-                                             "INTU", "PLD", "BLK", "RTX", "ISR", "MDLZ", "TJX", "AXP", "GILD", "DE", "ADI", "ISRG", "MMC", "T", "LRCX", "SCHW", "C", "VRTX", "LMT", "EOG", "PGR"
-                                         ]
-                                         OPTIONABLE_ETFS = ["SPY", "QQQ", "IWM", "DIA", "XLF", "XLK", "XLE", "XLV", "XLI", "XLY", "XLP", "XLB", "XLU", "XLRE", "GDX", "GLD", "TLT", "SLV", "USO", "UNG", "KRE", "SMH", "IBB", "XOP", "ARKK", "EEM", "FXI", "EWZ"]
-                                         fast_symbols = sorted(list(set(sp500_symbols + STANDARD_SP500 + OPTIONABLE_ETFS)))
-                                     else:
-                                         fast_symbols = current_symbols
-                                         
+                                     fast_symbols = list(symbols_to_scan) if symbols_to_scan else get_sp500_symbols(include_etfs=True)
+                                     
                                      fast_strategies = [s for s in active_strategies if s in ['LongCall', 'LongPut']]
                                      if not fast_strategies:
                                          if "Bullish" in marktvisie: fast_strategies = ["LongCall"]
@@ -2151,7 +2191,7 @@ with tab2:
         # --- LONG CALL / LONG PUT VERGELIJKINGSMATRIX ---
         has_longs = any(results['strategy'].isin(['LongCall', 'LongPut']))
         scenario_dfs_to_save = []
-        if has_longs:
+        if has_longs and not is_fast_atm:
             with st.expander("⚖️ Vergelijkingsmatrix: 1x Deep ITM (1% Drempel) vs. Meervoudige ATM (Hefboom)", expanded=True):
                 scanner_comp = SpreadScanner()
                 long_syms = results[results['strategy'].isin(['LongCall', 'LongPut'])]['symbol'].unique()
@@ -3009,6 +3049,15 @@ with tab4:
     st.subheader("Opties Spreads Exporter (TWS)")
     st.write("Exporteer Bied/Laat/Spread voor ATM & 15% ITM Strikes via de IBKR/TWS data feed.")
     
+    st.info("💡 **Tip**: Wil je de S&P 500 scannen op zoek naar winstgevende optie-spreads of 1% ATM opties? Kies in de linker Sidebar bij **Scan Modus** voor **'Batch Scan (Lijst)' -> S&P 500 (Wikipedia)** of **'Super-Fast ATM Long Scan (1% Koop)'** en klik op **'Start Scan'** in Tab 1 (Scanner).")
+    col_t4_act, _ = st.columns([2, 3])
+    with col_t4_act:
+        if st.button("🚀 Activeer S&P 500 direct voor Tab 1 (Scanner)", key="btn_activate_sp500_scanner"):
+            st.session_state['scan_mode_choice'] = "Batch Scan (Lijst)"
+            st.session_state['batch_list_choice'] = "S&P 500 (Wikipedia)"
+            st.success("✅ S&P 500 (Wikipedia) lijst succesvol geactiveerd voor Tab 1! Schakel over naar Tab 1 om de scan te starten.")
+            st.rerun()
+
     # Custom symbols vs S&P 500 list
     scan_method = st.radio("Selecteer Input Methode", ["Upload Excel/CSV", "S&P 500 (Wikipedia)", "Custom Lijst (Handmatig)"])
     
@@ -3026,7 +3075,6 @@ with tab4:
         else:
             import io
             import datetime
-            import urllib.request
             import random
             from ib_insync import Stock
             
@@ -3035,15 +3083,7 @@ with tab4:
             
             symbols = []
             if scan_method == "S&P 500 (Wikipedia)":
-                try:
-                    status_text.text("S&P 500 symbolen ophalen via Wikipedia...")
-                    req = urllib.request.Request('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies', headers={'User-Agent': 'Mozilla/5.0'})
-                    html = urllib.request.urlopen(req).read()
-                    df_sp500 = pd.read_html(html)[0]
-                    symbols = df_sp500['Symbol'].tolist()
-                    symbols = [s.replace('.', ' ') for s in symbols] # IB assigns BRK B instead of BRK.B
-                except Exception as e:
-                    st.error(f"Fout bij ophalen S&P 500: {e}")
+                symbols = get_sp500_symbols(include_etfs=False, for_ib=True)
             elif scan_method == "Custom Lijst (Handmatig)":
                 symbols = [s.strip() for s in custom_symbols_input.split(',') if s.strip()]
             elif scan_method == "Upload Excel/CSV":

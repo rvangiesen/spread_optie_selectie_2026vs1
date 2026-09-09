@@ -2303,87 +2303,124 @@ class SpreadScanner:
         if spreads_df is None or spreads_df.empty or underlying_price <= 0:
             return None
         
-        long_df = spreads_df[spreads_df['strategy'].isin(['LongCall', 'LongPut'])].copy()
-        if long_df.empty:
-            return None
+        try:
+            long_df = spreads_df[spreads_df['strategy'].isin(['LongCall', 'LongPut'])].copy()
+            if long_df.empty or len(long_df) < 2:
+                return None
 
-        strat = long_df['strategy'].iloc[0]
-        u_price = float(underlying_price)
+            strat = str(long_df['strategy'].iloc[0])
+            u_price = float(underlying_price)
 
-        # Separate candidates into Deep ITM and ATM
-        if strat == 'LongCall':
-            itm_pool = long_df[(long_df['strike_buy'] < u_price) & (long_df['delta_buy'] >= 0.70)]
-            atm_pool = long_df[(abs(long_df['strike_buy'] - u_price) / u_price <= 0.05) & (long_df['delta_buy'] >= 0.35) & (long_df['delta_buy'] <= 0.65)]
-        else:
-            itm_pool = long_df[(long_df['strike_buy'] > u_price) & (long_df['delta_buy'].abs() >= 0.70)]
-            atm_pool = long_df[(abs(long_df['strike_buy'] - u_price) / u_price <= 0.05) & (long_df['delta_buy'].abs() >= 0.35) & (long_df['delta_buy'].abs() <= 0.65)]
-
-        if itm_pool.empty:
-            itm_pool = long_df.sort_values('strike_buy', ascending=(strat == 'LongCall')).head(3)
-        if atm_pool.empty:
-            dist = (long_df['strike_buy'] - u_price).abs()
-            atm_pool = long_df.loc[[dist.idxmin()]]
-
-        # Best ITM (highest AG_Score or lowest req_bep_move)
-        best_itm = itm_pool.sort_values('AG_Score', ascending=False).iloc[0]
-        
-        # Best ATM with matching expiry if possible
-        atm_same_exp = atm_pool[atm_pool['expiry'] == best_itm['expiry']]
-        best_atm = atm_same_exp.sort_values('AG_Score', ascending=False).iloc[0] if not atm_same_exp.empty else atm_pool.sort_values('AG_Score', ascending=False).iloc[0]
-
-        itm_cost = float(best_itm['worst_entry_signed']) * 100.0
-        atm_cost_single = float(best_atm['worst_entry_signed']) * 100.0
-        n_atm = max(1, int(itm_cost // max(1.0, atm_cost_single)))
-        atm_total_cost = n_atm * atm_cost_single
-
-        # Scenarios: Dip -5%, Vlak 0%, Winst +3%, Winst +5%, Uitbraak +10%
-        scenarios = [-0.05, 0.0, 0.03, 0.05, 0.10] if strat == 'LongCall' else [0.05, 0.0, -0.03, -0.05, -0.10]
-        labels = ['Dip -5%', 'Vlak 0%', 'Winst +3%', 'Winst +5%', 'Uitbraak +10%']
-
-        scenario_rows = []
-        for sc, lab in zip(scenarios, labels):
-            s_end = u_price * (1.0 + sc)
-            if strat == 'LongCall':
-                val_itm = max(0.0, s_end - float(best_itm['strike_buy'])) * 100.0
-                val_atm = max(0.0, s_end - float(best_atm['strike_buy'])) * 100.0 * n_atm
+            # Robust delta extraction
+            if 'delta_buy' in long_df.columns:
+                delta_series = pd.to_numeric(long_df['delta_buy'], errors='coerce').fillna(0.50)
+            elif 'delta' in long_df.columns:
+                delta_series = pd.to_numeric(long_df['delta'], errors='coerce').fillna(0.50)
             else:
-                val_itm = max(0.0, float(best_itm['strike_buy']) - s_end) * 100.0
-                val_atm = max(0.0, float(best_atm['strike_buy']) - s_end) * 100.0 * n_atm
+                if strat == 'LongCall':
+                    delta_series = pd.Series(np.where(long_df['strike_buy'] < u_price, 0.75, 0.50), index=long_df.index)
+                else:
+                    delta_series = pd.Series(np.where(long_df['strike_buy'] > u_price, -0.75, -0.50), index=long_df.index)
 
-            pnl_itm = val_itm - itm_cost
-            pnl_atm = val_atm - atm_total_cost
-            pct_itm = (pnl_itm / itm_cost) * 100.0
-            pct_atm = (pnl_atm / atm_total_cost) * 100.0
+            # Separate candidates into Deep ITM and ATM
+            if strat == 'LongCall':
+                itm_pool = long_df[(long_df['strike_buy'] < u_price) & (delta_series >= 0.65)]
+                atm_pool = long_df[(abs(long_df['strike_buy'] - u_price) / u_price <= 0.05) & (delta_series >= 0.35) & (delta_series <= 0.65)]
+            else:
+                itm_pool = long_df[(long_df['strike_buy'] > u_price) & (delta_series.abs() >= 0.65)]
+                atm_pool = long_df[(abs(long_df['strike_buy'] - u_price) / u_price <= 0.05) & (delta_series.abs() >= 0.35) & (delta_series.abs() <= 0.65)]
 
-            scenario_rows.append({
-                'Scenario': lab,
-                'Eindkoers': f"${s_end:.2f}",
-                '1x Deep ITM ($)': f"{pnl_itm:+.2f}",
-                '1x Deep ITM (%)': f"{pct_itm:+.1f}%",
-                f'{n_atm}x ATM ($)': f"{pnl_atm:+.2f}",
-                f'{n_atm}x ATM (%)': f"{pct_atm:+.1f}%",
-                'Voordeel': '🛡️ ITM Veiliger' if pnl_itm > pnl_atm else '⚡ ATM Rendement'
-            })
+            if itm_pool.empty:
+                itm_pool = long_df.sort_values('strike_buy', ascending=(strat == 'LongCall')).head(3)
+            if atm_pool.empty:
+                dist = (long_df['strike_buy'] - u_price).abs()
+                atm_pool = long_df.loc[[dist.idxmin()]]
 
-        return {
-            'strategy': strat,
-            'underlying_price': u_price,
-            'itm_contract': best_itm,
-            'atm_contract': best_atm,
-            'itm_cost': itm_cost,
-            'atm_single_cost': atm_cost_single,
-            'atm_multiplier': n_atm,
-            'atm_total_cost': atm_total_cost,
-            'itm_bep_move_pct': float(best_itm.get('req_bep_move_pct', 0.0)),
-            'atm_bep_move_pct': float(best_atm.get('req_bep_move_pct', 0.0)),
-            'itm_pop': float(best_itm.get('pop', 0.0)),
-            'atm_pop': float(best_atm.get('pop', 0.0)),
-            'itm_delta_total': float(best_itm.get('delta_buy', 0.0)),
-            'atm_delta_total': float(best_atm.get('delta_buy', 0.0)) * n_atm,
-            'itm_capital_risk_dip5': float(best_itm.get('capital_risk_dip5_pct', 0.0)),
-            'atm_capital_risk_dip5': float(best_atm.get('capital_risk_dip5_pct', 100.0)),
-            'scenario_df': pd.DataFrame(scenario_rows)
-        }
+            score_col = 'AG_Score' if 'AG_Score' in long_df.columns else ('pop' if 'pop' in long_df.columns else None)
+            if score_col:
+                best_itm = itm_pool.sort_values(score_col, ascending=False).iloc[0]
+            else:
+                best_itm = itm_pool.iloc[0]
+            
+            # Best ATM with matching expiry if possible
+            if 'expiry' in atm_pool.columns and 'expiry' in best_itm:
+                atm_same_exp = atm_pool[atm_pool['expiry'] == best_itm['expiry']]
+            else:
+                atm_same_exp = pd.DataFrame()
+
+            if not atm_same_exp.empty:
+                best_atm = atm_same_exp.sort_values(score_col, ascending=False).iloc[0] if score_col else atm_same_exp.iloc[0]
+            else:
+                best_atm = atm_pool.sort_values(score_col, ascending=False).iloc[0] if score_col else atm_pool.iloc[0]
+
+            # If strikes are identical, there is no distinct ITM vs ATM comparison possible
+            if abs(float(best_itm['strike_buy']) - float(best_atm['strike_buy'])) < 0.01:
+                return None
+
+            def _get_entry_cost(row):
+                for c in ['worst_entry_signed', 'price_buy', 'spread_ask_abs', 'net_price', 'spread_mid_abs', 'last']:
+                    if c in row and pd.notnull(row[c]) and float(row[c]) > 0:
+                        return float(row[c]) * 100.0
+                return 100.0
+
+            itm_cost = max(1.0, _get_entry_cost(best_itm))
+            atm_cost_single = max(1.0, _get_entry_cost(best_atm))
+            n_atm = max(1, int(itm_cost // max(1.0, atm_cost_single)))
+            atm_total_cost = n_atm * atm_cost_single
+
+            # Scenarios: Dip -5%, Vlak 0%, Winst +3%, Winst +5%, Uitbraak +10%
+            scenarios = [-0.05, 0.0, 0.03, 0.05, 0.10] if strat == 'LongCall' else [0.05, 0.0, -0.03, -0.05, -0.10]
+            labels = ['Dip -5%', 'Vlak 0%', 'Winst +3%', 'Winst +5%', 'Uitbraak +10%']
+
+            scenario_rows = []
+            for sc, lab in zip(scenarios, labels):
+                s_end = u_price * (1.0 + sc)
+                if strat == 'LongCall':
+                    val_itm = max(0.0, s_end - float(best_itm['strike_buy'])) * 100.0
+                    val_atm = max(0.0, s_end - float(best_atm['strike_buy'])) * 100.0 * n_atm
+                else:
+                    val_itm = max(0.0, float(best_itm['strike_buy']) - s_end) * 100.0
+                    val_atm = max(0.0, float(best_atm['strike_buy']) - s_end) * 100.0 * n_atm
+
+                pnl_itm = val_itm - itm_cost
+                pnl_atm = val_atm - atm_total_cost
+                pct_itm = (pnl_itm / itm_cost) * 100.0
+                pct_atm = (pnl_atm / atm_total_cost) * 100.0
+
+                scenario_rows.append({
+                    'Scenario': lab,
+                    'Eindkoers': f"${s_end:.2f}",
+                    '1x Deep ITM ($)': f"{pnl_itm:+.2f}",
+                    '1x Deep ITM (%)': f"{pct_itm:+.1f}%",
+                    f'{n_atm}x ATM ($)': f"{pnl_atm:+.2f}",
+                    f'{n_atm}x ATM (%)': f"{pct_atm:+.1f}%",
+                    'Voordeel': '🛡️ ITM Veiliger' if pnl_itm > pnl_atm else '⚡ ATM Rendement'
+                })
+
+            itm_delta = float(best_itm.get('delta_buy', best_itm.get('delta', 0.75 if strat == 'LongCall' else -0.75)))
+            atm_delta = float(best_atm.get('delta_buy', best_atm.get('delta', 0.50 if strat == 'LongCall' else -0.50)))
+
+            return {
+                'strategy': strat,
+                'underlying_price': u_price,
+                'itm_contract': best_itm,
+                'atm_contract': best_atm,
+                'itm_cost': itm_cost,
+                'atm_single_cost': atm_cost_single,
+                'atm_multiplier': n_atm,
+                'atm_total_cost': atm_total_cost,
+                'itm_bep_move_pct': float(best_itm.get('req_bep_move_pct', 0.0)),
+                'atm_bep_move_pct': float(best_atm.get('req_bep_move_pct', 0.0)),
+                'itm_pop': float(best_itm.get('pop', 0.0)),
+                'atm_pop': float(best_atm.get('pop', 0.0)),
+                'itm_delta_total': itm_delta,
+                'atm_delta_total': atm_delta * n_atm,
+                'itm_capital_risk_dip5': float(best_itm.get('capital_risk_dip5_pct', 0.0)),
+                'atm_capital_risk_dip5': float(best_atm.get('capital_risk_dip5_pct', 100.0)),
+                'scenario_df': pd.DataFrame(scenario_rows)
+            }
+        except Exception:
+            return None
 
     def analyze_filter_bottlenecks(self, unfiltered_df, filters, target_n=5):
         """
@@ -3030,20 +3067,29 @@ class SpreadScanner:
                 dte = 30
                 
             p = koopadvies_p
+            ask_val = ask if ask > 0 else (mid if mid > 0 else last)
+            mid_val = mid if mid > 0 else ask_val
+            last_val = last if last > 0 else mid_val
+
+            p = koopadvies_p
             if r == 'C':
                 target_price = s_price * (1 + p)
                 payout = max(0.0, target_price - strike)
                 strat = "LongCall"
+                d_buy = 0.50
             else:
                 target_price = s_price * (1 - p)
                 payout = max(0.0, strike - target_price)
                 strat = "LongPut"
+                d_buy = -0.50
                 
-            winst_laat = (payout - ask) * 100
-            winst_midden = (payout - mid) * 100
-            winst_laatste = (payout - last) * 100
+            winst_laat = (payout - ask_val) * 100
+            winst_midden = (payout - mid_val) * 100
+            winst_laatste = (payout - last_val) * 100
             koopadvies = "✅" if winst_laat > 0 else "❌"
             
+            bep_dist = round((ask_val / s_price) * 100.0, 2) if s_price > 0 else 0.0
+
             final_rows.append({
                 'koopadvies': koopadvies,
                 'koopadvies_status': koopadvies,
@@ -3055,12 +3101,18 @@ class SpreadScanner:
                 'strike_sell': 0.0,
                 'right': r,
                 'width': 0.0,
-                'spread_ask_abs': ask,
-                'spread_mid_abs': mid,
-                'spread_last_abs': last,
-                'price_buy': ask,
+                'spread_ask_abs': ask_val,
+                'spread_mid_abs': mid_val,
+                'spread_last_abs': last_val,
+                'price_buy': ask_val,
                 'price_sell': 0.0,
-                'net_price': mid,
+                'net_price': mid_val,
+                'worst_entry_signed': ask_val,
+                'delta_buy': d_buy,
+                'delta_sell': 0.0,
+                'delta': d_buy,
+                'req_bep_move_pct': bep_dist,
+                'capital_risk_dip5_pct': 100.0,
                 'winst_laat': winst_laat,
                 'winst_midden': winst_midden,
                 'winst_laatste': winst_laatste,

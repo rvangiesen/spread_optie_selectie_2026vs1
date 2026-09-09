@@ -627,4 +627,34 @@ Gebaseerd op praktijktesten en intensieve accountbewaking zijn vier cruciale saf
 
 ---
 
+## 17. S&P 500 Scannen & Super-Fast ATM Long Scan (1% Koopdrempel)
+
+Om snel en efficiënt de volledige S&P 500 index te doorzoeken naar kansrijke optiecontracten zijn er twee krachtige methoden ingebouwd:
+
+### 🚀 Methode 1: Reguliere Spreads Scan over de S&P 500
+Wilt u alle verticale spreads (Bull Put, Bull Call, Iron Condor, Synthetische Spreads etc.) over de volledige S&P 500 scannen?
+1. Ga in de linker **Sidebar** naar **Scan Modus** en kies **`Batch Scan (Lijst)`**.
+2. Kies bij **Kies Lijst** voor **`S&P 500 (Wikipedia)`**.
+3. De software haalt automatisch en gebufferd alle actuele ~500 S&P aandelen op via Wikipedia.
+4. Klik in **Tab 1 (Scanner)** op **`Start Scan / Activeer Auto-Pilot`**.
+
+> 💡 **Snelkoppeling vanuit Tab 4**: In **Tab 4 (📈 S&P 500 Spreads)** vindt u nu bovenaan een directe blauwe knop: **`🚀 Activeer S&P 500 direct voor Tab 1 (Scanner)`**. Eén klik stelt de scanner direct in op de volledige S&P 500 lijst!
+
+### ⚡ Methode 2: Super-Fast ATM Long Scan (1% Koopdrempel)
+Wilt u razendsnel binnen enkele seconden honderden aandelen scannen op de beste At-The-Money (ATM) Call of Put opties die voldoen aan de **1% koersstijging koopdrempel**?
+1. Kies in de linker Sidebar bij **Scan Modus** voor **`Super-Fast ATM Long Scan (1% Koop)`**.
+2. Selecteer uw gewenste **Universe**:
+   * `S&P 500 (Wikipedia + Top ETF's)` (circa 528 symbolen)
+   * `S&P 100`
+   * `Top 10 Tech`
+   * `Enkel Symbool (bijv. SPY)`
+3. Klik in **Tab 1 (Scanner)** op **`Start Scan`**.
+4. De scanner haalt parallel alle realtime koersen en optieketens op, berekent de verwachte winst bij een 1% koersbeweging en toont direct welke contracten een groen koopadvies (**`✅`**) krijgen.
+
+### 🛡️ Robuuste ITM vs. ATM Vergelijkingsmatrix
+* Bij reguliere Long Call / Long Put scans berekent het systeem automatisch de **Vergelijkingsmatrix (1x Deep ITM vs. Meervoudige ATM)** om kapitaalbehoud tegen hefboomwerking af te wegen.
+* Deze matrix is volledig beveiligd tegen ontbrekende Grieken (`delta_buy`) of identieke uitoefenprijzen, waardoor crashes (zoals `KeyError`) effectief worden voorkomen.
+
+---
+
 *Succes met het scannen, bewaken, testen en selecteren van de beste optiecontracten!*
