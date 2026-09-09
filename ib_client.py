@@ -1356,18 +1356,40 @@ class IBClient:
             self.ib.placeOrder(target_contract, tp_order)
 
             # 2. Stop Loss Order - Transmits full bracket
-            sl_order = Order(
-                action=exit_action,
-                totalQuantity=quantity,
-                orderType='STP' if len(legs_data) == 1 else 'LMT',
-                auxPrice=sl_price if len(legs_data) == 1 else None,
-                lmtPrice=sl_price if len(legs_data) > 1 else None,
-                parentId=parent_id,
-                tif=bracket_tif,
-                outsideRth=True,
-                transmit=True
-            )
-            print(f"DEBUG_LOG: Attaching Stop Loss order: {exit_action} @ {sl_price} (parentId: {parent_id}, tif={bracket_tif})")
+            if len(legs_data) == 1:
+                # Single Leg: Standaard Stop Market Order
+                sl_order = Order(
+                    action=exit_action,
+                    totalQuantity=quantity,
+                    orderType='STP',
+                    auxPrice=sl_price,
+                    parentId=parent_id,
+                    tif=bracket_tif,
+                    outsideRth=True,
+                    transmit=True
+                )
+            else:
+                # Multi-leg Combo (BAG): TWS vereist 'STP LMT' (Stop Limit)
+                # auxPrice = Stop Trigger koers (sl_price)
+                # lmtPrice = Uitvoeringslimiet (met 0.20 slippage buffer)
+                sl_buffer = 0.20
+                if exit_action == 'SELL':
+                    sl_lmt = round(max(0.01, sl_price - sl_buffer), 2)
+                else:
+                    sl_lmt = round(sl_price + sl_buffer, 2)
+                
+                sl_order = Order(
+                    action=exit_action,
+                    totalQuantity=quantity,
+                    orderType='STP LMT',
+                    auxPrice=sl_price,
+                    lmtPrice=sl_lmt,
+                    parentId=parent_id,
+                    tif=bracket_tif,
+                    outsideRth=True,
+                    transmit=True
+                )
+            print(f"DEBUG_LOG: Attaching Stop Loss order ({sl_order.orderType}): {exit_action} @ aux={sl_price}, lmt={getattr(sl_order, 'lmtPrice', None)} (parentId: {parent_id}, tif={bracket_tif})")
             self.ib.placeOrder(target_contract, sl_order)
 
         # 3. Wait for Submit - Wacht specifiek totdat TWS de order verwerkt en PendingSubmit verlaat
