@@ -3596,6 +3596,11 @@ class PortfolioAnalyzer:
         en hefboom (Leverage Ratio) over alle openstaande short opties in het portfolio.
         Voorkomt dat traders overleveraged raken (zoals 12 ipv 6 contracten = $261k verplichting).
         """
+        if not positions:
+            positions = []
+        if net_liquidation is None:
+            net_liquidation = 0.0
+
         total_put_obligation = 0.0
         total_call_obligation = 0.0
         total_max_loss = 0.0

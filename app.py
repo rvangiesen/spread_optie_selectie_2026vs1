@@ -144,8 +144,8 @@ def run_portfolio_check_action(tws_host, tws_port):
         return
     
     with st.spinner("🔍 Bezig met ophalen en analyseren van TWS portfolio posities..."):
-        positions = ib_p.get_account_portfolio_spreads()
-        acc_summary = ib_p.get_account_summary()
+        positions = ib_p.get_account_portfolio_spreads() or []
+        acc_summary = ib_p.get_account_summary() or {}
         analyzer = PortfolioAnalyzer(ib_p)
         
         exposure = PortfolioAnalyzer.calculate_portfolio_exposure(positions, net_liquidation=acc_summary.get('NetLiquidation', 0.0))
