@@ -591,6 +591,14 @@ In plaats van 100 fysieke aandelen te kopen (wat bij aandelen zoals NVDA, MSFT o
 Voor bearmarkten of dalende fondsen geldt het gespiegelde principe:
 * Een diep ITM Long Put (Delta $\le -0.80$, lange looptijd) gecombineerd met een kortlopende OTM Short Put op **circa 8% onder de koers (Delta $\approx -0{,}25$, premie $\ge \$2{,}00$, rendement $\ge 5{,}0\%$)**.
 
+### 🛡️ 3. Automatische Herkenning & Portfolio Bewaking in het Dashboard
+Omdat een Synthetische Covered Call uit **twee verschillende expiratiedata** bestaat (bijvoorbeeld een Long Call met expiratie in 2027 en een Short Call met expiratie in 2026), splitsten traditionele tools deze posities vaak verkeerd op als losse opties.
+* **Slimme Multi-Expiratie Koppeling**: De AntiGravity Portfolio Bewaker detecteert automatisch wanneer u binnen hetzelfde aandeel een langlopende long optie en een kortlopende short optie aanhoudt.
+* **Gecombineerde Weergave**: De positie wordt in het dashboard direct samengevoegd als `SyntheticCoveredCall` of `SyntheticCoveredPut`:
+  * De **DTE** en het risicobeheer worden dynamisch gestuurd door de eerst aflopende short leg (de inkomstenpoot).
+  * De **Long LEAP** wordt correct herkend als volledige dekking, zodat er nooit een vals margin- of toewijzingsalarm afgaat.
+  * Zowel de netto aankoopwaarde (debit), huidige marktwaarde, ongerealiseerde winst/verlies als het Break-Even Point (BEP) worden exact berekend en bewaakt.
+
 ---
 
 ## 16. Praktijklessen Risicomanagement & TWS Executie-Protocollen
@@ -610,10 +618,29 @@ Gebaseerd op praktijktesten en intensieve accountbewaking zijn vier cruciale saf
   * 🟢 **GEOPEND**: Orders worden direct naar de markt verzonden.
   * 🕒 **GESLOTEN (Voorbeurs/Weekend)**: Orders worden als `Limit DAY` klaargezet in de TWS wachtrij en worden automatisch door TWS uitgevoerd zodra de beurs om 15:30 CET opent.
 
-### 📅 3. DTE = 0 Expiratiedag Protocol (Directe Sluiting Vanaf Ochtend)
-* Op de expiratiedag zelf (**DTE = 0**) explodeert het *pin risk* (het risico dat de koers precies op of rond de short strike eindigt) en kan de broker (IBKR) vanaf 18:00 CET geforceerd posities liquideren tegen slechte prijzen.
-* In de software activeert DTE = 0 nu **onmiddellijk vanaf de ochtend** de status `TIJDIG_SLUITEN` met urgentie `HIGH`.
-* Hierdoor is de rode actieknop **"🛡️ Sluit Positie Nu (Combo Order)"** de gehele dag direct beschikbaar, zodat traders niet hoeven te wachten tot na 18:00 uur om hun positie veilig te stellen.
+### 📅 3. DTE = 0 Expiratiedag Protocol: Rustgevende Winstzone vs. Echte Risicobewaking
+* **Het Oude Probleem (Vals Alarm bij 100% Winst)**: Voorheen kregen alle posities op de expiratiedag (DTE = 0) na 18:00 of 20:00 uur automatisch een felrood paniekalarm (*"🔴 DEADLINE VOORBIJ - Noodsluiting op Marktprijs"*). Hierdoor leek het alsof een trade in gevaar was, terwijl de spread in werkelijkheid op **100% maximale winst** stond (de koers lag mijlenver buiten de strikes en beide opties noteerden op $0.01).
+* **De Geoptimaliseerde Logica**:
+  * 🟢 **Winstzone (Diep OTM & $\ge 85\%$ Winst)**: Staat de onderliggende waarde ruim buiten de strikes en is de optiewaarde verdampt naar $\le \$0.03$? Dan toont het dashboard direct een rustgevend groen bord: **`🟢 100% WINSTZONE - Trade is binnen!`**. Er dreigt geen margin call of pin risk; de opties lopen om 22:00 uur gratis waardeloos af.
+  * 🔴 **Reëel Risico (ITM of Pin Risk binnen 1.5%)**: Staat de koers dicht bij of tussen de strikes? Dan activeert de app direct het protocol `TIJDIG_SLUITEN` met een duidelijke waarschuwing vóór 18:00/20:00 uur.
+
+### 🚫 5. Waarom Combo Market Orders Vastlopen op \$0.00 Bid & De 1-Klik Oplossing
+* **Het Beursmechanisme (Vastlopende Combo Order)**: Op de expiratiemiddag droogt de liquiditeit van diep Out-of-the-Money opties op. De beschermende long optie noteert dan vaak met een **Biedprijs (Bid) van \$0.00** en een Laatprijs (Ask) van \$0.01.
+  * Als u in TWS probeert de hele spread te sluiten via een **Market Order (MKT)** of te scherpe combo-order, weigert de Amerikaanse optiebeurs deze te vullen. Geen enkele Market Maker gaat een combinatie vullen waarbij hij een waardeloze \$0.00 poot verplicht tegen marktprijs moet overnemen.
+  * **Gevolg**: De order blijft oneindig op `0/contracten (Ingediend)` in de wachtrij van TWS hangen.
+* **De Juiste Handelswijze**:
+  1. **Optie A (Beste keuze): Niets doen!** Laat de spread om 22:00 uur gratis waardeloos expireren. Interactive Brokers ruimt de contracten 's nachts kosteloos op.
+  2. **Optie B (Voor 100% weekendrust): Koop ALLEEN de Short Leg terug!**  
+     Plaats geen combo-order, maar koop uitsluitend de verkochte risicodragende poot terug:
+     $$\text{Order: BUY Short Leg} \quad @ \quad \text{Limit } \mathbf{\$0.01}$$
+     * **Waarom vult dit direct?** Omdat de Market Maker \$0.01 vraagt (Ask). Zodra u hem die \$0.01 biedt, is hij direct gevuld. De kosten zijn slechts \$1.00 per contract (\$12 voor 12 contracten).
+     * Zodra de short leg dicht is, is uw leveringsverplichting verdwenen en kan de resterende waardeloze long leg voor \$0.00 blijven staan.
+* **Directe Knop in de App**: In het dashboard vindt u bij winnende DTE=0 posities direct de knop **`🛡️ Koop Alleen Short Leg Terug ($0.01 Limit)`** om dit met 1 klik foutloos uit te voeren.
+
+### 🛑 6. Ordertypes in de Praktijk: Stop-Limit (`STP LMT`) vs. Beursuren
+* **Stop-Limit Mechanisme**: Een `STP LMT` order verkoopt **nooit** zomaar tegen elke marktprijs. Zodra de stopprijs (bijv. \$46.92) wordt geraakt, verandert de order in een *Limit Order* met als harde minimumprijs \$46.92. 
+  * Als de koers al is doorgezakt naar bijvoorbeeld \$46.72, zal de order **niet** vullen, omdat niemand op de beurs \$46.92 voor uw contract wil betalen als de marktwaarde \$46.72 is. De order blijft dan keurig op `0/1` staan (de positie is dus nog in uw bezit).
+* **Beursopeningstijden**: Optiecombinaties handelen uitsluitend tussen **15:30 en 22:00 CET**. Buiten deze uren (bijvoorbeeld om 10:00 uur 's ochtends) zijn de bid/ask spreads bevroren en worden optie-stops door de broker niet geactiveerd.
 
 ### ⚖️ 4. Account Vermogensbewaking: Voorkomen van Overleverage
 * **Het Risico**: Een short put verplicht tot de aankoop van 100 aandelen tegen de uitoefenprijs. Bij het per ongeluk verhogen van de contractgrootte (bijv. 12 contracten NVDA Put 217.5 in plaats van 6) ontstaat plotseling een potentiële afnameverplichting van:
