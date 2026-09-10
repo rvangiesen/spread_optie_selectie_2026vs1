@@ -3381,7 +3381,7 @@ class PortfolioAnalyzer:
                 t1_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 1.0 else f"Nog -${t1_dist_usd:.2f} (-{t1_dist_pct:.1f}%) daling nodig tot ${t1_stock:.2f}"
                 t5_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 5.0 else f"Nog -${t5_dist_usd:.2f} (-{t5_dist_pct:.1f}%) daling nodig tot ${t5_stock:.2f}"
 
-            elif strat == 'BullCall':
+            elif strat in ['BullCall', 'SyntheticCoveredCall']:
                 bep_price = round(bought_k + entry_p, 2)
                 bep_dist_usd = round(bep_price - und_p, 2)
                 bep_dist_pct = round((bep_dist_usd / und_p * 100.0), 1) if und_p > 0 else 0.0
@@ -3400,7 +3400,7 @@ class PortfolioAnalyzer:
                 t1_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 1.0 else f"Nog +${t1_dist_usd:.2f} (+{t1_dist_pct:.1f}%) nodig tot ${t1_stock:.2f}"
                 t5_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 5.0 else f"Nog +${t5_dist_usd:.2f} (+{t5_dist_pct:.1f}%) nodig tot ${t5_stock:.2f}"
 
-            elif strat == 'BearPut':
+            elif strat in ['BearPut', 'SyntheticCoveredPut']:
                 bep_price = round(bought_k - entry_p, 2)
                 bep_dist_usd = round(und_p - bep_price, 2)
                 bep_dist_pct = round((bep_dist_usd / und_p * 100.0), 1) if und_p > 0 else 0.0
@@ -3457,7 +3457,7 @@ class PortfolioAnalyzer:
         qty = int(pos.get('qty', 1))
         entry_price = float(pos.get('entry_price', 0.0) or 0.0)
         mkt_price = float(pos.get('market_price', 0.0) or 0.0)
-        is_credit_strat = strat in ['BullPut', 'BearCall', 'ShortPut', 'ShortCall', 'IronCondor']
+        is_credit_strat = strat in ['BullPut', 'BearCall', 'ShortPut', 'ShortCall', 'IronCondor', 'SyntheticCoveredCall', 'SyntheticCoveredPut']
 
         triggers = []
         risk_level = "SAFE"

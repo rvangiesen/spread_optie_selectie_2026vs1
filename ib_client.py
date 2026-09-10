@@ -1586,15 +1586,42 @@ class IBClient:
                 'legs': [s_item]
             })
 
-        # Group by (symbol, expiration)
-        grouped = {}
+        # Group by symbol first to identify Diagonal Spreads (different expirations)
+        sym_map = {}
         for item in opt_items:
-            key = (item.contract.symbol, item.contract.lastTradeDateOrContractMonth)
-            if key not in grouped:
-                grouped[key] = []
-            grouped[key].append(item)
+            s = item.contract.symbol
+            if s not in sym_map:
+                sym_map[s] = []
+            sym_map[s].append(item)
 
-        for (sym, expiry), items in grouped.items():
+        grouped = {}
+        for sym, items in sym_map.items():
+            if len(items) == 2:
+                p1, p2 = items[0], items[1]
+                c1, c2 = p1.contract, p2.contract
+                # If different expirations, opposite positions (one long, one short), and same right
+                if c1.lastTradeDateOrContractMonth != c2.lastTradeDateOrContractMonth and (p1.position * p2.position < 0) and (c1.right.upper() == c2.right.upper()):
+                    grouped[(sym, 'DIAGONAL')] = items
+                    continue
+            for item in items:
+                key = (sym, item.contract.lastTradeDateOrContractMonth)
+                if key not in grouped:
+                    grouped[key] = []
+                grouped[key].append(item)
+
+        for (sym, exp_key), items in grouped.items():
+            is_diagonal = (exp_key == 'DIAGONAL')
+            if is_diagonal:
+                p1, p2 = items[0], items[1]
+                short_item = p1 if p1.position < 0 else p2
+                long_item = p1 if p1.position > 0 else p2
+                short_c = short_item.contract
+                long_c = long_item.contract
+                expiry = short_c.lastTradeDateOrContractMonth
+                leap_expiry = long_c.lastTradeDateOrContractMonth
+            else:
+                expiry = exp_key
+
             # Calculate DTE
             try:
                 exp_dt = pd.to_datetime(expiry)
@@ -1610,7 +1637,51 @@ class IBClient:
                 snap = self.get_market_data_snapshot(Stock(symbol=sym, exchange='SMART', currency='USD'), use_yf=True)
                 und_price = snap.get('price', 0.0)
 
-            if len(items) == 1:
+            if is_diagonal:
+                # Diagonal Spread: Synthetic Covered Call or Synthetic Covered Put
+                qty = int(abs(short_item.position))
+                right = short_c.right.upper()
+                sold_strike = float(short_c.strike)
+                bought_strike = float(long_c.strike)
+                strat = "SyntheticCoveredCall" if right == 'C' else "SyntheticCoveredPut"
+                strikes_str = f"Long {bought_strike:.0f}{right} ({leap_expiry}) / Short {sold_strike:.0f}{right} ({expiry})"
+
+                long_cost = (float(long_item.averageCost or 0.0) / 100.0)
+                short_cost = (float(short_item.averageCost or 0.0) / 100.0)
+                long_mkt = float(long_item.marketPrice or 0.0)
+                short_mkt = float(short_item.marketPrice or 0.0)
+                net_entry = abs(long_cost - short_cost)
+                net_mkt = (long_mkt - short_mkt)
+                pnl_usd = float(long_item.unrealizedPNL or 0.0) + float(short_item.unrealizedPNL or 0.0)
+                total_cost = abs(long_cost * 100.0 * qty)
+                pnl_pct = (pnl_usd / total_cost * 100.0) if total_cost > 0 else 0.0
+                short_p = short_mkt
+                short_delta = 0.0
+                if hasattr(short_item, 'modelGreeks') and short_item.modelGreeks:
+                    short_delta = float(getattr(short_item.modelGreeks, 'delta', 0.0) or 0.0)
+
+                positions_list.append({
+                    'symbol': sym,
+                    'strategy': strat,
+                    'expiry': expiry,
+                    'dte': dte,
+                    'qty': qty,
+                    'is_long': False,
+                    'strikes_str': strikes_str,
+                    'sold_strike': sold_strike,
+                    'bought_strike': bought_strike,
+                    'right': right,
+                    'market_price': round(net_mkt, 3),
+                    'entry_price': round(net_entry, 3),
+                    'short_leg_price': short_p,
+                    'short_delta': short_delta,
+                    'unrealized_pnl': pnl_usd,
+                    'pnl_pct': pnl_pct,
+                    'underlying_price': und_price,
+                    'legs': [short_item, long_item]
+                })
+
+            elif len(items) == 1:
                 # Single Leg Option (Long Call, Short Call, Long Put, Short Put)
                 item = items[0]
                 c = item.contract
@@ -1744,6 +1815,8 @@ class IBClient:
                     'underlying_price': und_price,
                     'legs': items
                 })
+
+        return positions_list
 
     def is_us_options_market_open(self):
         """

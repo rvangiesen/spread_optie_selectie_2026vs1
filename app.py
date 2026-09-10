@@ -471,7 +471,7 @@ def render_portfolio_management_dashboard(tws_host, tws_port):
                         bought_k = item.get('bought_strike', 0.0)
                         pos_qty = item['pos_data'].get('qty', 1)
                         is_long_stock = is_stock and item['pos_data'].get('is_long', True)
-                        is_bullish = is_long_stock or strat in ['BullPut', 'BullCall', 'LongCall', 'ShortPut']
+                        is_bullish = is_long_stock or strat in ['BullPut', 'BullCall', 'LongCall', 'ShortPut', 'SyntheticCoveredCall']
                         is_credit_pos = strat in ['BullPut', 'BearCall', 'ShortPut', 'ShortCall', 'IronCondor']
 
                         csim1, csim2 = st.columns(2)
