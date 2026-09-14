@@ -2515,17 +2515,6 @@ with tab2:
         else:
             st.info("💡 **Geen contract aangevinkt:** Vink in de linkerkolom ('Selecteer') het contract aan dat je wilt kopen.")
 
-        if not selected_rows.empty:
-            bulk_put_obl = 0.0
-            for _, r in selected_rows.iterrows():
-                r_strat = str(r.get('strategy', ''))
-                if 'Put' in r_strat or 'PUT' in r_strat.upper():
-                    r_sell_k = float(r.get('strike_sell', 0.0) or 0.0)
-                    if r_sell_k > 0:
-                        bulk_put_obl += r_sell_k * 100.0 * bulk_qty
-            if bulk_put_obl > 0:
-                st.warning(f"⚖️ **Totale Potentiële Aankoopverplichting bij Uitoefening (Bulk):** **${bulk_put_obl:,.2f}** ({bulk_qty}x per positie). Voorkom overleverage!")
-
         col_b1, col_b2, col_b3, col_b4 = st.columns([1, 1.3, 1, 1.7])
         with col_b1:
             bulk_qty = st.number_input("Aantal stuks", min_value=1, value=1, key="bulk_order_qty")
@@ -2542,6 +2531,17 @@ with tab2:
             st.write("")
             btn_title = f"🚀 PLAATS ORDER(S) ({len(selected_rows)} stuks)" if not selected_rows.empty else "🚀 PLAATS ORDERS"
             btn_place_bulk = st.button(btn_title, type="primary", width='stretch', disabled=selected_rows.empty)
+
+        if not selected_rows.empty:
+            bulk_put_obl = 0.0
+            for _, r in selected_rows.iterrows():
+                r_strat = str(r.get('strategy', ''))
+                if 'Put' in r_strat or 'PUT' in r_strat.upper():
+                    r_sell_k = float(r.get('strike_sell', 0.0) or 0.0)
+                    if r_sell_k > 0:
+                        bulk_put_obl += r_sell_k * 100.0 * bulk_qty
+            if bulk_put_obl > 0:
+                st.warning(f"⚖️ **Totale Potentiële Aankoopverplichting bij Uitoefening (Bulk):** **${bulk_put_obl:,.2f}** ({bulk_qty}x per positie). Voorkom overleverage!")
 
         if btn_place_bulk:
             if selected_rows.empty:
