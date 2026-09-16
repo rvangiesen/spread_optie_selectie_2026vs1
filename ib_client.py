@@ -1201,9 +1201,13 @@ class IBClient:
             c_sell = make_opt(strikes_dict.get('strike_sell'), 'C')
             c_buy = make_opt(strikes_dict.get('strike_buy'), 'C')
             if c_sell and c_buy:
-                # Credit spread leg actions inside BAG:
-                legs_data.append((c_sell, 'SELL'))
-                legs_data.append((c_buy, 'BUY'))
+                # Credit spread: outer_action is SELL.
+                # In TWS API, submitting a SELL order on a BAG contract inverts all leg actions.
+                # To execute SELL c_sell and BUY c_buy upon opening (for a credit),
+                # the contract comboLegs must be defined as BUY for short leg and SELL for long leg.
+                # This ensures opening = SELL (credit) and bracket closing = BUY (debit) without Error 201.
+                legs_data.append((c_sell, 'BUY'))
+                legs_data.append((c_buy, 'SELL'))
         elif strategy == 'BullPut':
             s_sell = strikes_dict.get('strike_sell', 0)
             s_buy = strikes_dict.get('strike_buy', 0)
@@ -1212,9 +1216,12 @@ class IBClient:
             p_sell = make_opt(s_sell, 'P')
             p_buy = make_opt(s_buy, 'P')
             if p_sell and p_buy:
-                # Credit spread leg actions inside BAG:
-                legs_data.append((p_sell, 'SELL'))
-                legs_data.append((p_buy, 'BUY'))
+                # Credit spread: outer_action is SELL.
+                # In TWS API, submitting a SELL order on a BAG contract inverts all leg actions.
+                # To execute SELL p_sell and BUY p_buy upon opening (for a credit),
+                # the contract comboLegs must be defined as BUY for short leg and SELL for long leg.
+                legs_data.append((p_sell, 'BUY'))
+                legs_data.append((p_buy, 'SELL'))
         elif strategy == 'BearPut':
             p_buy = make_opt(strikes_dict.get('strike_buy'), 'P')
             p_sell = make_opt(strikes_dict.get('strike_sell'), 'P')
@@ -1249,10 +1256,11 @@ class IBClient:
             c_sell = make_opt(strikes_dict.get('strike_c_sell'), 'C')
             c_buy = make_opt(strikes_dict.get('strike_c_buy'), 'C')
             if p_buy and p_sell and c_sell and c_buy:
-                legs_data.append((p_buy, 'BUY'))
-                legs_data.append((p_sell, 'SELL'))
-                legs_data.append((c_sell, 'SELL'))
-                legs_data.append((c_buy, 'BUY'))
+                # Credit spread: outer_action is SELL.
+                legs_data.append((p_sell, 'BUY'))
+                legs_data.append((p_buy, 'SELL'))
+                legs_data.append((c_sell, 'BUY'))
+                legs_data.append((c_buy, 'SELL'))
 
         if not legs_data:
             if not self.last_error:
@@ -1328,6 +1336,7 @@ class IBClient:
                 tif=tif,
                 outsideRth=True
             )
+            order.smartComboRoutingParams = [TagValue('NonGuaranteed', '1')]
             if algo_strategy:
                 order.algoStrategy = algo_strategy
                 order.algoParams = algo_params
@@ -1362,6 +1371,8 @@ class IBClient:
                 outsideRth=True,
                 transmit=False
             )
+            if len(legs_data) > 1:
+                tp_order.smartComboRoutingParams = [TagValue('NonGuaranteed', '1')]
             print(f"DEBUG_LOG: Attaching Take Profit order: {exit_action} @ {tp_price} (parentId: {parent_id}, tif={bracket_tif})")
             self.ib.placeOrder(target_contract, tp_order)
 
@@ -1399,6 +1410,7 @@ class IBClient:
                     outsideRth=True,
                     transmit=True
                 )
+                sl_order.smartComboRoutingParams = [TagValue('NonGuaranteed', '1')]
             print(f"DEBUG_LOG: Attaching Stop Loss order ({sl_order.orderType}): {exit_action} @ aux={sl_price}, lmt={getattr(sl_order, 'lmtPrice', None)} (parentId: {parent_id}, tif={bracket_tif})")
             self.ib.placeOrder(target_contract, sl_order)
 

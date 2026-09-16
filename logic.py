@@ -3,7 +3,7 @@ import numpy as np
 import math
 from py_vollib.black_scholes.greeks.analytical import delta, gamma, vega, theta
 from py_vollib.black_scholes import black_scholes
-from risk_model import get_bs_risk_metrics
+from risk_model import get_bs_risk_metrics, AntiGravityGammaThetaEngine
 
 class BjerksundStensland2002:
     @staticmethod
@@ -91,6 +91,170 @@ class BjerksundStensland2002:
         d1 = (math.log(S / K) + (r - q + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
         d2 = d1 - sigma * math.sqrt(T)
         return S * math.exp(-q * T) * BjerksundStensland2002.norm_cdf(d1) - K * math.exp(-r * T) * BjerksundStensland2002.norm_cdf(d2)
+
+
+class AntiGravityOptionChainAnalyzer:
+    """
+    Implements the 4-Quadrant Option Chain Directional & Pinning Model
+    from Prathyush P. Gopinathan / AntiGravity Option Chain Analysis Spec V1 & V2.
+    Evaluates:
+    - Strike window +/- 10 strikes around spot
+    - Vested Value (Margin * OI)
+    - 4 Quadrants of Delta OI:
+        Area 1: ITM Calls (Strike < Spot)
+        Area 2: OTM Puts (Strike < Spot)
+        Area 3: OTM Calls (Strike > Spot)
+        Area 4: ITM Puts (Strike > Spot)
+    - Directional cues & recommended strategy types
+    """
+    def __init__(self, strike_window: int = 10):
+        self.strike_window = strike_window
+
+    def analyze_regime(self, chain_df: pd.DataFrame, spot_price: float) -> dict:
+        default_res = {
+            "cue": "NEUTRAL_RANGE",
+            "cue_nl": "Neutraal / Geen Ketendata",
+            "recommended_strategy": "Geen uitgesproken voorkeur",
+            "support_wall": 0.0,
+            "resistance_wall": 0.0,
+            "call_vested_wall": 0.0,
+            "put_vested_wall": 0.0,
+            "area1_itm_call": 0.0,
+            "area2_otm_put": 0.0,
+            "area3_otm_call": 0.0,
+            "area4_itm_put": 0.0,
+            "quadrants": {"area1": 0.0, "area2": 0.0, "area3": 0.0, "area4": 0.0}
+        }
+        if chain_df is None or chain_df.empty or 'strike' not in chain_df.columns:
+            return default_res
+
+        df = chain_df.copy()
+        spot = float(spot_price) if spot_price and spot_price > 0 else 100.0
+
+        if 'right' in df.columns:
+            df['right_clean'] = df['right'].astype(str).str.upper().str[0]
+        else:
+            df['right_clean'] = 'C'
+
+        if 'openInterest' not in df.columns:
+            df['openInterest'] = df.get('oi', 0)
+        df['openInterest'] = pd.to_numeric(df['openInterest'], errors='coerce').fillna(0)
+
+        # Delta OI proxy:
+        if 'chg_oi' in df.columns:
+            df['delta_oi'] = pd.to_numeric(df['chg_oi'], errors='coerce').fillna(0)
+        elif 'change_oi' in df.columns:
+            df['delta_oi'] = pd.to_numeric(df['change_oi'], errors='coerce').fillna(0)
+        elif 'changeInOpenInterest' in df.columns:
+            df['delta_oi'] = pd.to_numeric(df['changeInOpenInterest'], errors='coerce').fillna(0)
+        else:
+            vol = pd.to_numeric(df.get('volume', 0), errors='coerce').fillna(0)
+            bid_p = pd.to_numeric(df.get('bid', 0), errors='coerce').fillna(0)
+            ask_p = pd.to_numeric(df.get('ask', 0), errors='coerce').fillna(0)
+            p_mid = (bid_p + ask_p) / 2.0
+            p_last = pd.to_numeric(df.get('last', df.get('lastPrice', p_mid)), errors='coerce').fillna(p_mid)
+            p_close = pd.to_numeric(df.get('close', p_mid), errors='coerce').fillna(p_mid)
+            p_diff = p_last - p_close
+            flow_dir = np.where(p_diff > 0, 1.0, np.where(p_diff < 0, -1.0, 0.5))
+            df['delta_oi'] = vol * flow_dir
+
+        unique_strikes = sorted(df['strike'].unique())
+        if not unique_strikes:
+            return default_res
+
+        atm_strike = min(unique_strikes, key=lambda s: abs(s - spot))
+        atm_idx = unique_strikes.index(atm_strike)
+        start_idx = max(0, atm_idx - self.strike_window)
+        end_idx = min(len(unique_strikes), atm_idx + self.strike_window + 1)
+        active_strikes = unique_strikes[start_idx:end_idx]
+
+        active_window = df[df['strike'].isin(active_strikes)].copy()
+
+        # Vested Value: Margin * OI (Margin proxy: 20% spot + premium)
+        mid_p = (active_window.get('bid', 0) + active_window.get('ask', 0)) / 2.0
+        opt_price = active_window.get('last', active_window.get('lastPrice', mid_p))
+        opt_price = pd.to_numeric(opt_price, errors='coerce').fillna(1.0)
+        active_window['margin_req'] = np.maximum(opt_price * 100.0, (0.20 * spot * 100.0))
+        active_window['vested_val'] = active_window['margin_req'] * active_window['openInterest']
+
+        calls_win = active_window[active_window['right_clean'] == 'C']
+        puts_win = active_window[active_window['right_clean'] == 'P']
+
+        call_vested_wall = calls_win.loc[calls_win['vested_val'].idxmax()]['strike'] if not calls_win.empty and calls_win['vested_val'].max() > 0 else (spot * 1.05)
+        put_vested_wall = puts_win.loc[puts_win['vested_val'].idxmax()]['strike'] if not puts_win.empty and puts_win['vested_val'].max() > 0 else (spot * 0.95)
+
+        call_wall = calls_win.loc[calls_win['openInterest'].idxmax()]['strike'] if not calls_win.empty and calls_win['openInterest'].max() > 0 else call_vested_wall
+        put_wall = puts_win.loc[puts_win['openInterest'].idxmax()]['strike'] if not puts_win.empty and puts_win['openInterest'].max() > 0 else put_vested_wall
+
+        area1 = float(calls_win[calls_win['strike'] < spot]['delta_oi'].sum())
+        area2 = float(puts_win[puts_win['strike'] < spot]['delta_oi'].sum())
+        area3 = float(calls_win[calls_win['strike'] > spot]['delta_oi'].sum())
+        area4 = float(puts_win[puts_win['strike'] > spot]['delta_oi'].sum())
+
+        s1 = 1 if area1 > 0 else -1
+        s2 = 1 if area2 > 0 else -1
+        s3 = 1 if area3 > 0 else -1
+        s4 = 1 if area4 > 0 else -1
+
+        if s1 < 0 and s2 > 0 and s3 < 0 and s4 > 0:
+            cue = "CONFIDENT_UPTREND"
+            cue_nl = "🚀 Krachtige Uptrend (Call uitbraak & sterke put-steun)"
+            rec_strat = "Long Call / Bull Call Spread"
+        elif s1 > 0 and s2 < 0 and s3 > 0 and s4 < 0:
+            cue = "CONFIDENT_DOWNTREND"
+            cue_nl = "🔻 Krachtige Downtrend (Call-plafond & steun breekt)"
+            rec_strat = "Long Put / Bear Put Spread"
+        elif s1 > 0 and s2 > 0 and s3 > 0 and s4 > 0:
+            cue = "FLAT_PINNING"
+            cue_nl = "🎯 Range-Bound / Pinning (Marktmaker volatiliteitsdemping)"
+            rec_strat = "Iron Condor / Short Strangle"
+        elif s1 > 0 and s2 > 0 and s3 > 0 and s4 < 0:
+            cue = "MARKET_CORRECTION_DOWNSIDE"
+            cue_nl = "⚠️ Neerwaartse Correctie (Weerstand versterkt)"
+            rec_strat = "Bear Call Spread (Credit)"
+        elif s1 > 0 and s2 > 0 and s3 < 0 and s4 > 0:
+            cue = "MARKET_CORRECTION_UPSIDE"
+            cue_nl = "📈 Opwaartse Correctie (Bodem gevestigd)"
+            rec_strat = "Bull Put Spread (Credit)"
+        elif s1 < 0 and s2 < 0 and s3 < 0 and s4 < 0:
+            cue = "FAR_VOLATILITY_EXPANSION"
+            cue_nl = "⚡ Uitbraak / Hoge Volatiliteit (Posities worden ontbonden)"
+            rec_strat = "Long Straddle / Long Strangle"
+        else:
+            net_bull = (1 if s2 > 0 else 0) + (1 if s4 > 0 else 0) + (1 if s1 < 0 else 0) + (1 if s3 < 0 else 0)
+            if net_bull >= 3:
+                cue = "CONFIDENT_UPTREND"
+                cue_nl = "📈 Matig Bullish Bias (Accumulatie)"
+                rec_strat = "Bull Call / Bull Put Spread"
+            elif net_bull <= 1:
+                cue = "CONFIDENT_DOWNTREND"
+                cue_nl = "📉 Matig Bearish Bias (Distributie)"
+                rec_strat = "Bear Put / Bear Call Spread"
+            else:
+                cue = "FLAT_PINNING"
+                cue_nl = "⚖️ Neutrale Consolidatie (Range-bound)"
+                rec_strat = "Iron Condor / Credit Spreads"
+
+        return {
+            "cue": cue,
+            "cue_nl": cue_nl,
+            "recommended_strategy": rec_strat,
+            "call_wall": float(call_wall),
+            "put_wall": float(put_wall),
+            "call_vested_wall": float(call_vested_wall),
+            "put_vested_wall": float(put_vested_wall),
+            "area1_itm_call": round(area1, 1),
+            "area2_otm_put": round(area2, 1),
+            "area3_otm_call": round(area3, 1),
+            "area4_itm_put": round(area4, 1),
+            "quadrants": {
+                "area1": round(area1, 1),
+                "area2": round(area2, 1),
+                "area3": round(area3, 1),
+                "area4": round(area4, 1),
+            }
+        }
+
 
 class SpreadScanner:
     def __init__(self, ib_client=None):
@@ -1099,18 +1263,24 @@ class SpreadScanner:
 
         return pd.DataFrame(spreads)
 
-    def analyze_market_structure(self, chain_data):
+    def analyze_market_structure(self, chain_data, underlying_price=None):
         """
         Analyzes the option chain to find key market levels:
         - Max Pain: Strike with minimum total pain.
         - Call Wall: Strike with maximum Call Open Interest (Resistance).
         - Put Wall: Strike with maximum Put Open Interest (Support).
         - GEX Wall: Strike with maximum Gamma Exposure (Volatility Magnet).
+        - Call/Put Vested Value Wall: Institutional defense lines based on Margin * OI.
+        - 4-Quadrant Delta OI Regimes: Confident Uptrend/Downtrend, Pinning, etc.
         
         chain_data: DataFrame with columns [strike, right, oi, gamma]
-        Returns: dict with keys 'max_pain', 'call_wall', 'put_wall', 'gex_wall'
+        Returns: dict with market structure metrics and directional cues
         """
-        result = {'max_pain': 0.0, 'call_wall': 0.0, 'put_wall': 0.0, 'gex_wall': 0.0}
+        result = {
+            'max_pain': 0.0, 'call_wall': 0.0, 'put_wall': 0.0, 'gex_wall': 0.0,
+            'call_vested_wall': 0.0, 'put_vested_wall': 0.0,
+            'cue': 'NEUTRAL_RANGE', 'cue_nl': 'Neutraal', 'recommended_strategy': 'Geen voorkeur'
+        }
         
         if chain_data.empty or 'openInterest' not in chain_data.columns:
             return result
@@ -1178,6 +1348,15 @@ class SpreadScanner:
              # 5. Gamma Flip (Zero Gamma Level)
              result['gamma_flip'] = self.calculate_gamma_flip(chain_data)
         
+        # 6. AntiGravity 4-Quadrant & Vested Value Directional Model
+        try:
+            spot_ref = float(underlying_price) if underlying_price and underlying_price > 0 else (strikes[len(strikes)//2] if strikes else 100.0)
+            analyzer = AntiGravityOptionChainAnalyzer(strike_window=10)
+            regime_data = analyzer.analyze_regime(chain_data, spot_ref)
+            result.update(regime_data)
+        except Exception:
+            pass
+
         return result
 
     def calculate_gamma_flip(self, chain_data):
@@ -1211,9 +1390,10 @@ class SpreadScanner:
         flip_strike = min(net_gamma_by_strike, key=lambda k: abs(net_gamma_by_strike[k]))
         return flip_strike
 
-    def calculate_metrics(self, spreads_df, ib_client, symbol, underlying_price=None, chain_data=None, underlying_iv=0.0, hist_iv_df=None, log_func=None, koopadvies_p=0.01, atr_10=0.0, target_profit_usd=5.0):
+    def calculate_metrics(self, spreads_df, ib_client, symbol, underlying_price=None, chain_data=None, underlying_iv=0.0, hist_iv_df=None, log_func=None, koopadvies_p=0.01, atr_10=0.0, target_profit_usd=5.0, account_cash=None, force_bullcall_if_uncovered=False):
         """
         Enriches spreads using Real Prices (Bid/Ask) if available in chain_data.
+        Integrates Early Assignment Risk quantification and Capital Guardrail for credit spreads.
         OPTIMIZED: Uses dictionary lookups and avoids iterrows for high performance.
         """
         self.log_func = log_func
@@ -1226,7 +1406,12 @@ class SpreadScanner:
         # 1. Market Structure Analysis (cached)
         market_structure = {'max_pain': 0.0, 'call_wall': 0.0, 'put_wall': 0.0, 'gex_wall': 0.0}
         if chain_data is not None and not chain_data.empty:
-            market_structure = self.analyze_market_structure(chain_data)
+            market_structure = self.analyze_market_structure(chain_data, underlying_price=underlying_price)
+            if self.log_func and 'cue_nl' in market_structure:
+                try:
+                    self.log_func(f"      [Quant Regime] Cue: {market_structure['cue_nl']} | Vested: Put=${market_structure.get('put_vested_wall', 0):.1f}, Call=${market_structure.get('call_vested_wall', 0):.1f}")
+                except Exception:
+                    pass
         
         # 2. Preparation: Build Greek/Price Lookup Table
         # Key: (strike, right) -> (price, series_of_greeks)
@@ -1634,7 +1819,9 @@ class SpreadScanner:
         spreads_df['net_extrinsic'] = spreads_df['extrinsic_buy'] - spreads_df['extrinsic_sell']
 
         # Market Structure (Scalar)
-        for k, v in market_structure.items(): spreads_df[k] = v
+        for k, v in market_structure.items():
+            if not isinstance(v, dict):
+                spreads_df[k] = v
         
         # Center & Distances
         if 'strike_p_sell' in spreads_df.columns:
@@ -2000,6 +2187,99 @@ class SpreadScanner:
         spreads_df['TEI Score'] = tei_scores
         spreads_df['Efficient'] = is_efficient
 
+        # --- Part 6B: AntiGravity Gamma/Theta Quant Engine (dS_BE, PoP Adjusted, EV & Gamma Cliff) ---
+        gt_engine = AntiGravityGammaThetaEngine()
+        ds_be_arr = np.zeros(n)
+        gt_ratio_arr = np.zeros(n)
+        pop_bsm_arr = np.zeros(n)
+        pop_adj_arr = np.zeros(n)
+        ev_arr = np.zeros(n)
+        gamma_cliff_arr = np.zeros(n, dtype=bool)
+        verdict_arr = []
+
+        cue = str(market_structure.get('cue', 'NEUTRAL_RANGE'))
+        put_wall = float(market_structure.get('put_wall', 0.0))
+        call_wall = float(market_structure.get('call_wall', 0.0))
+        put_vested = float(market_structure.get('put_vested_wall', 0.0))
+        call_vested = float(market_structure.get('call_vested_wall', 0.0))
+
+        strat_col = spreads_df['strategy'].values
+        net_delta_col = spreads_df['delta'].values
+        net_gamma_col = spreads_df['gamma'].values
+        net_theta_col = spreads_df['theta'].values
+        profits_col = spreads_df['max_profit'].values
+        dte_col = spreads_df['dte'].values
+        s_buy_col = spreads_df['strike_buy'].values
+        s_sell_col = spreads_df['strike_sell'].values if 'strike_sell' in spreads_df.columns else np.zeros(n)
+
+        # Pre-compute max_loss for EV calculation
+        widths_col = spreads_df['width'].values
+        ev_max_loss = np.where(widths_col > 0, (widths_col * 100.0) - profits_col, 100.0)
+        ev_max_loss = np.maximum(1.0, ev_max_loss)
+
+        for i in range(n):
+            st_type = strat_col[i]
+            n_gamma = float(net_gamma_col[i])
+            n_theta = float(net_theta_col[i])
+            n_delta = float(net_delta_col[i])
+            m_profit = float(profits_col[i])
+            m_loss = float(ev_max_loss[i])
+            d_val = float(dte_col[i])
+
+            sb = float(s_buy_col[i])
+            ss = float(s_sell_col[i])
+            is_put_side = ('put' in st_type.lower()) or (st_type == 'IronCondor')
+            is_call_side = ('call' in st_type.lower()) or (st_type == 'IronCondor')
+
+            supp_prot = (ss <= put_wall) or (sb <= put_wall) if (put_wall > 0 and is_put_side) else False
+            res_prot = (ss >= call_wall) or (sb >= call_wall) if (call_wall > 0 and is_call_side) else False
+            vested_prot = (ss <= put_vested) or (ss >= call_vested) if (put_vested > 0 and call_vested > 0) else False
+
+            regime_dict = {
+                'cue': cue,
+                'support_protected': supp_prot,
+                'resistance_protected': res_prot,
+                'vested_wall_protected': vested_prot
+            }
+
+            if st_type == 'IronCondor' and 'strike_p_buy' in spreads_df.columns:
+                row_i = spreads_df.iloc[i]
+                strikes_list = [row_i.get('strike_p_buy', 0), row_i.get('strike_p_sell', 0), row_i.get('strike_c_sell', 0), row_i.get('strike_c_buy', 0)]
+            else:
+                strikes_list = [sb, ss]
+
+            ev_res = gt_engine.evaluate_strategy_ev_pop(
+                spot=underlying_price,
+                strategy_type=st_type,
+                net_delta=n_delta,
+                net_gamma=n_gamma,
+                net_theta_daily=n_theta,
+                max_profit=m_profit,
+                max_loss=m_loss,
+                chain_regime=regime_dict,
+                sigma_imp=float(underlying_iv) if underlying_iv > 0 else 0.20,
+                dte=d_val,
+                strikes=strikes_list,
+                atr_daily=float(atr_10) if atr_10 > 0 else 0.0,
+                commission=1.50
+            )
+
+            ds_be_arr[i] = ev_res['dS_breakeven_daily']
+            gt_ratio_arr[i] = ev_res['gamma_theta_ratio']
+            pop_bsm_arr[i] = ev_res['pop_bsm']
+            pop_adj_arr[i] = ev_res['pop_adjusted']
+            ev_arr[i] = ev_res['expected_value']
+            gamma_cliff_arr[i] = ev_res['gamma_cliff_warning']
+            verdict_arr.append(ev_res['trade_verdict'])
+
+        spreads_df['dS_BE'] = ds_be_arr
+        spreads_df['gamma_theta_ratio'] = gt_ratio_arr
+        spreads_df['pop_bsm'] = pop_bsm_arr
+        spreads_df['pop_adj'] = pop_adj_arr
+        spreads_df['expected_value'] = ev_arr
+        spreads_df['gamma_cliff_warning'] = gamma_cliff_arr
+        spreads_df['trade_verdict'] = verdict_arr
+
         # --- Part 7: AntiGravity Score (AG Score) ---
         # Combineert winstkans, TEI, EM85 veiligheidsdekking, Max Pain en Risk/Reward verhouding
         
@@ -2039,8 +2319,17 @@ class SpreadScanner:
         # Beloon de 'sweet spot' (10% - 50% rendement op risico) i.c.m. hoge EM85 dekking
         ror_multiplier = np.where((ror >= 0.10) & (ror <= 0.60), 1.25, np.where(ror < 0.04, 0.50, 1.0))
 
-        # Base Score
-        ag_score = spreads_df['pop'] * np.maximum(spreads_df['TEI Score'], 0.1) * em85_multiplier * ror_multiplier
+        # Base Score - incorporates Bayesian PoP
+        effective_pop = np.where(spreads_df['pop_adj'].values > 0, spreads_df['pop_adj'].values, spreads_df['pop'].values)
+        ag_score = effective_pop * np.maximum(spreads_df['TEI Score'], 0.1) * em85_multiplier * ror_multiplier
+        
+        # Quant Verdict & EV Multiplier
+        verdict_mult = np.where(
+            spreads_df['trade_verdict'] == "EXECUTE", 1.35,
+            np.where(spreads_df['trade_verdict'] == "GAMMA_CLIFF_RISK", 0.40,
+            np.where(spreads_df['expected_value'] > 0, 1.15, 0.75))
+        )
+        ag_score = ag_score * verdict_mult
         
         # Bonus voor 1% regel (koopadvies)
         ag_score = np.where(spreads_df['koopadvies'] == "✅", ag_score * 1.3, ag_score)
@@ -2058,6 +2347,72 @@ class SpreadScanner:
         # Penalty voor heel krappe afstand tot koers (strike_buy dicht op koers)
         dist_pct = np.abs(spreads_df['strike_buy'] - underlying_price) / max(0.001, underlying_price)
         ag_score = np.where(dist_pct < 0.01, ag_score * 0.8, ag_score)
+
+        # --- Part 8: Early Assignment Risk & Capital Guardrail ---
+        from risk_model import EarlyAssignmentRiskEngine
+        notional_cap_arr = np.zeros(n)
+        extrinsic_short_arr = np.zeros(n)
+        assign_prob_arr = np.zeros(n)
+        assign_badge_arr = []
+        cap_covered_arr = []
+
+        for i in range(n):
+            st_val = strat_vals[i]
+            s_sell = float(spreads_df['strike_sell'].iloc[i]) if 'strike_sell' in spreads_df.columns else 0.0
+            p_sell = float(spreads_df['price_sell'].iloc[i]) if 'price_sell' in spreads_df.columns else 0.0
+            r_val = 'P' if ('PUT' in str(st_val).upper() or 'P' in str(spreads_df['right'].iloc[i]).upper()) else 'C'
+            
+            if st_val in ['BullPut', 'BearCall', 'IronCondor'] and s_sell > 0:
+                notional_cap = s_sell * 100.0
+                notional_cap_arr[i] = notional_cap
+                eval_risk = EarlyAssignmentRiskEngine.evaluate_assignment_risk(
+                    spot=underlying_price,
+                    strike_sell=s_sell,
+                    short_option_price=p_sell,
+                    right=r_val,
+                    dte=float(spreads_df['dte'].iloc[i]) if 'dte' in spreads_df.columns else 30.0,
+                    account_cash=account_cash
+                )
+                extrinsic_short_arr[i] = eval_risk['extrinsic_value']
+                assign_prob_arr[i] = eval_risk['probability_assignment_pct']
+                cap_cov = eval_risk['capital_covered']
+                cap_covered_arr.append(cap_cov)
+
+                if eval_risk['risk_level'] == 'CRITICAL':
+                    assign_badge_arr.append("🚨 DIRECT SLUITEN (Tijdswaarde ≤ $0.05)")
+                elif eval_risk['risk_level'] == 'WARNING':
+                    assign_badge_arr.append("⚠️ GEVARENZONE (Tijdswaarde ≤ $0.10)")
+                elif not cap_cov:
+                    assign_badge_arr.append(f"⚠️ GEEN CASH-DEKKING (Vereist ${notional_cap:,.0f})")
+                else:
+                    assign_badge_arr.append("🟢 VEILIG (Volledig Gedekt)")
+            else:
+                notional_cap_arr[i] = 0.0
+                extrinsic_short_arr[i] = 0.0
+                assign_prob_arr[i] = 0.0
+                cap_covered_arr.append(True)
+                assign_badge_arr.append("🛡️ GEEN AANWIJZING (Debet Spread)")
+
+        spreads_df['notional_assignment_capital'] = notional_cap_arr
+        spreads_df['extrinsic_val_short'] = np.round(extrinsic_short_arr, 2)
+        spreads_df['early_assignment_risk_pct'] = np.round(assign_prob_arr, 1)
+        spreads_df['assignment_risk_badge'] = assign_badge_arr
+        spreads_df['capital_covered'] = cap_covered_arr
+
+        # Capital Guardrail Penalty:
+        # Als account_cash ontoereikend is om 100 aandelen af te nemen bij aanwijzing van een credit spread,
+        # verlaag de AG_Score van de credit spread drastisch zodat veilige Bull Calls bovenaan komen!
+        if account_cash is not None and account_cash > 0:
+            is_uncovered_credit = np.array([not c for c in cap_covered_arr])
+            if force_bullcall_if_uncovered:
+                cap_mult = np.where(is_uncovered_credit, 0.05, 1.0)
+            else:
+                cap_mult = np.where(is_uncovered_credit, 0.50, 1.0)
+            ag_score = ag_score * cap_mult
+
+        # Penalty if short leg is already ITM with low extrinsic value (<= 0.10)
+        low_extrinsic_penalty = np.where((extrinsic_short_arr > 0) & (extrinsic_short_arr <= 0.10), 0.50, 1.0)
+        ag_score = ag_score * low_extrinsic_penalty
         
         spreads_df['AG_Score'] = np.round(ag_score, 1)
         spreads_df['underlying_price'] = underlying_price
@@ -2228,6 +2583,16 @@ class SpreadScanner:
             if dropped > 0:
                 drop_stats['Koopadvies'] = dropped
                 if log_func: log_func(f"   🔻 Filter Niet-Koopadvies: {dropped} dropped")
+
+        # Filter Require Assignment Coverage (Alleen credit spreads tonen als er 100% cash dekking is voor eventuele aanwijzing)
+        if filters.get('require_assignment_coverage', False):
+            before = len(df)
+            if 'capital_covered' in df.columns:
+                df = df[df['capital_covered'] == True]
+                dropped = before - len(df)
+                if dropped > 0:
+                    drop_stats['Aanwijzingsdekking'] = dropped
+                    if log_func: log_func(f"   🔻 Filter Niet-gedekte Credit Spreads: {dropped} dropped (Bull Calls beschermd)")
             
         if log_func:
             if df.empty and drop_stats:
@@ -3657,8 +4022,32 @@ class PortfolioAnalyzer:
                 consequences = "Kopers van jouw short optie hebben tot 23:30 uur de tijd om alsnog aan te wijzen na beursnieuws."
                 action_code = "TIJDIG_SLUITEN"
                 action_title = "Noodsluiting op Marktprijs (Direct Flat Gaan)"
-                recommended_action = "Sluit de positie onmiddellijk om niet met aandelen het weekend in te gaan."
-                execution_type = "COMBO_CLOSE"
+        from risk_model import EarlyAssignmentRiskEngine
+        notional_cap = sold_strike * 100.0 * qty if (is_credit_strat and sold_strike > 0) else 0.0
+        short_p = float(pos.get('short_leg_price', 0.0) or (mkt_price if mkt_price > 0 else 0.50))
+        eval_risk = EarlyAssignmentRiskEngine.evaluate_assignment_risk(
+            spot=underlying_p,
+            strike_sell=sold_strike,
+            short_option_price=short_p,
+            right=right,
+            dte=dte,
+            short_delta=short_delta,
+            account_cash=None,
+            quantity=qty
+        )
+
+        if eval_risk.get('should_close_now') or eval_risk.get('risk_level') == 'CRITICAL':
+            risk_level = "CRITICAL"
+            triggers.append(f"🚨 CRITIEKE TIJDSWAARDE VERDAMPING (${eval_risk.get('extrinsic_value', 0.0):.2f} <= $0.05): Kans op vervroegde aanwijzing is {eval_risk.get('probability_assignment_pct', 0.0):.0f}%. Sluit de positie direct!")
+            consequences = "De optiehouder kan op elk moment uitoefenen zonder tijdswaarde te verliezen. Er volgt onmiddellijke levering van 100 aandelen per contract!"
+            action_code = "TIJDIG_SLUITEN"
+            action_title = "Direct Sluiten (Tijdswaarde Verdamping / Aanwijzingsgevaar)"
+            recommended_action = "Sluit direct de hele spread als combinatie (BUY combo) om toewijzing voor te zijn."
+            execution_type = "COMBO_CLOSE"
+        elif eval_risk.get('risk_level') == 'WARNING':
+            if risk_level in ["SAFE", "LOW"]:
+                risk_level = "WARNING"
+            triggers.append(f"⚠️ GEVARENZONE TIJDSWAARDE (${eval_risk.get('extrinsic_value', 0.0):.2f} <= $0.10): Kans op vervroegde aanwijzing is verhoogd ({eval_risk.get('probability_assignment_pct', 0.0):.0f}%).")
 
         return {
             'risk_level': risk_level,
@@ -3674,7 +4063,10 @@ class PortfolioAnalyzer:
             'is_pin_risk': is_pin,
             'is_between_strikes': is_between,
             'ex_dividend_risk': ex_div_risk,
-            'deadline_status': deadline_status
+            'deadline_status': deadline_status,
+            'notional_capital': notional_cap,
+            'assignment_probability_pct': eval_risk.get('probability_assignment_pct', 0.0),
+            'capital_warning': eval_risk.get('capital_warning', '')
         }
 
     @staticmethod

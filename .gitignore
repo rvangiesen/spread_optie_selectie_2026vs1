@@ -156,3 +156,5 @@ debug_log.txt
 *.wbk
 ~$*
 Opnemen youtube (achtigen) met geluid/
+Start_SpreadSelectie_LYNX_Paper.bat
+lynx_login_helper.ps1

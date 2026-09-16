@@ -706,4 +706,73 @@ Veel gebruikers met krachtige computers (snelle multicore CPU's en veel RAM) mer
 
 ---
 
+## 19. Kapitaalbewuste Selectie: Bull Put vs. Bull Call & Early Assignment Risico
+
+### ⚖️ De Vuistregel: *"Heb je genoeg geld staan dan bullputs, anders alleen maar bullcalls."*
+In een stijgende of neutrale markt heb je de keuze tussen twee strategieën:
+1. **Bull Put Spread (Credit Spread)**:
+   - Je ontvangt direct de netto premie op je rekening.
+   - De winstkans (PoP) ligt statistisch vaak hoog (75% - 85%).
+   - **Het Gevaar**: Je hebt een geschreven put (`short put`). Als de onderliggende waarde zakt en de optie in-the-money raakt, kan de optiehouder vervroegd uitoefenen (**Early Assignment**). De broker verplicht je dan direct om **100 aandelen per contract** af te nemen tegen de uitoefenprijs!
+   - Voor aandelen zoals NVDA ($130) of MSFT ($480) vereist dit **$13.000 tot $48.000 cash per contract**. Heb je die liquiditeit niet, dan volgt een margin call of gedwongen broker-liquidatie.
+2. **Bull Call Spread (Debet Spread)**:
+   - Je betaalt vooraf een debet.
+   - **Het Voordeel**: Er is **geen enkel aanwijzingsrisico**. Je maximale verlies is strikt beperkt tot het betaalde debet en je hoeft *nooit* 100 aandelen af te nemen.
+
+### 🛡️ Hoe de Spread Selector dit automatisch bewaakt:
+In de linker zijbalk onder **"🛡️ Kapitaalbescherming & Aanwijzingsdekking"**:
+* **Beschikbare Portefeuille Cash ($)**: Wordt automatisch uitgelezen uit TWS of kan handmatig worden ingevuld.
+* **Voorkeur Bull Call bij beperkt kapitaal**: Als de nominale afnameverplichting ($Strike_{sell} \times 100 \times Aantal$) groter is dan je cash, wordt de score van de Bull Put zwaar gedrukt (factor 0.05). Hierdoor komt de veilige **Bull Call debet spread** altijd als #1 winnaar naar voren!
+* **Strikt filteren: verberg ongedekte Bull Puts**: Filtert ongedekte Bull Puts zelfs voor 100% weg uit de resultatenlijst, zodat je uitsluitend veilige Bull Calls te zien krijgt.
+
+### ⏳ Resterende Tijdswaarde & De Gevarenzones:
+Vervroegde aanwijzing vindt in de praktijk uitsluitend plaats als de short optie in-the-money raakt én de **resterende tijdswaarde (extrinsieke waarde)** verdampt:
+* **Tijdswaarde $> \$0.25$**: Kans $\approx 1\%$ (`🟢 VEILIG`). Uitoefenen is irrationeel voor de tegenpartij.
+* **Tijdswaarde $\$0.05 - \$0.10$**: Kans stijgt naar $25\% - 45\%$ (`⚠️ GEVARENZONE`).
+* **Tijdswaarde $\le \$0.05$**: Kans stijgt naar $65\% - 85\%$ (`🚨 DIRECT SLUITEN`). De tegenpartij verliest vrijwel niets meer bij uitoefening. Sluit de spread direct in **Tab 0 (Portfolio Bewaking)** via de rode noodknop.
+
+---
+
+## 20. TWS Orderuitvoering, Error 201 en de Adaptive Algobot
+
+### ❓ Waarom zagen testers: *"Geweigerd wegens risicoloze combinatie (of te laag risico)"*?
+In de Nederlandse TWS vertaling heet Error 201:  
+*"Error 201: Gegarandeerd-verlies of risicoloze combinatie-orders zijn niet toegestaan. U heeft het maximum aantal actieve risicoloze combinatie-orders bereikt."*
+
+Dit trad op wanneer het vinkje **"Voeg Automatisch Exit-Plan toe (Bracket Order)"** aanstond bij credit spreads:
+1. De openingsorder opende de spread voor een netto credit (`SELL BAG`).
+2. De automatische Take Profit kind-order stuurde een `BUY` order naar TWS op hetzelfde contract om de winst te nemen.
+3. Doordat de poot-richtingen in het contract stonden als `SELL short / BUY long`, dacht TWS dat de klant geld wilde *betalen* om een duurdere optie te verkopen en een goedkopere te kopen. TWS weigerde dit als "gegarandeerd verlies / risicoloze arbitrage-fout".
+4. **Oplossing in de code**: We hebben de benen in [`ib_client.py`](file:///c:/Users/Gebruiker/Documents/Python%20selecties/AntiGravity%20Project%202_%20spreadselectie_%20setup%20via%20AG/spread_optie_selectie_2026vs1/ib_client.py) canoniek gedefinieerd (`p_sell` als `BUY`, `p_buy` als `SELL`). Zowel de openingsorder als de bracket kind-orders voeren nu direct foutloos uit zonder poot-inversie!
+
+### 🤖 Hoe prikkel je de TWS Algobot (Paper Trading vs. Live)?
+* **In Live Trading**: Wordt je order direct naar optiebeurzen gestuurd en vaak binnen enkele seconden gevuld door marktmakers.
+* **In Paper Trading**: Is er géén echte beurs. De TWS simulator vult combinatieorders pas als de *Natural Bid* of *Ask* geraakt wordt, waardoor mid-price orders lang ongevuld kunnen blijven staan.
+* **De Oplossing**:
+  1. **Gebruik IBKR Adaptive Algo**: Kies in **Tab 3 ("Orders")** bij *Order Type* voor **`Adaptive - Normal`** of **`Adaptive - Urgent`**. De TWS-bot start op het midden en schuift automatisch met kleine fracties van een cent op richting de markt tot de order gevuld is.
+  2. **Kleine prijsconcessie**: Geef bij een credit spread 2 à 3 cent toe op de berekende mid-prijs (bijv. $1.17 ipv $1.20). De Paper simulator vult dan direct!
+
+---
+
+## 21. Quant Option Chain Predictiemodel (V1 & V2)
+
+In Tab 2 (Resultaten) vind je geavanceerde quant-indicatoren gebaseerd op de twee technische specificaties (V1 & V2):
+
+1. **4-Kwadranten Delta Open Interest (Regime Cue)**:
+   Analyseert de openstaande contracten ($\Delta OI$) rond de geldende koers om de richting te voorspellen:
+   - `🚀 UPTREND`: Zware call-buying en put-steun.
+   - `🎯 PINNING`: Grote partijen verdedigen zowel calls als puts rond de huidige koers (ideaal voor Iron Condors).
+   - `🔻 DOWNTREND`: Zware verkoopdruk en afbraak van steun.
+2. **Vested Value Muren ($Margin \times OI$)**:
+   Toont de werkelijke institutionele verdedigingslijnen (`call_vested_wall` en `put_vested_wall`), gefilterd tegen illiquide uitschieters.
+3. **Breakeven Dagelijkse Beweging ($\delta S_{BE}$)**:
+   Berekend uit de Black-Scholes formule: $\delta S_{BE} = \sqrt{2 \cdot |\Theta| / |\Gamma|}$. Geeft exact aan hoeveel dollar het aandeel per dag mag bewegen voordat het tijdswaardeverval (Theta) omslaat in verlies (Gamma).
+4. **Quant Trade Verdict**:
+   - **🟢 EXECUTE**: Positieve Expected Value ($EV > 0$) én $PoP_{adj} \ge 65\%$.
+   - **🟡 SPEC**: Kansrijk maar hogere volatiliteit.
+   - **⚠️ CLIFF**: Naderende expiratie ($DTE \le 3$) met hoog gamma-risico.
+   - **❌ REJECT**: Onvoldoende statistisch voordeel.
+
+---
+
 *Succes met het scannen, bewaken, testen en selecteren van de beste optiecontracten!*

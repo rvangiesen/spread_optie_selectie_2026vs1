@@ -58,9 +58,20 @@ Er opent nu automatisch een browservenster op `http://localhost:8501` met de Ant
 
 ---
 
+### Optie C: Direct dubbelklikken via Batchbestand 🚀
+In de projectmap staat een kant-en-klaar batchbestand:
+* **`Start_SpreadSelectie_LYNX_Paper.bat`**: Start de virtuele omgeving en lanceert Streamlit automatisch met één dubbelklik!
+
+---
+
 ## 2. Wijzigingen bijwerken op GitHub (Git Handleiding)
 
 Als je code of de handleiding hebt aangepast en je wilt dit uploaden naar je GitHub repository (https://github.com/rvangiesen/spread_optie_selectie_2026vs1), volg dan deze stappen in de terminal van je projectmap.
+
+> [!TIP]
+> **Git niet herkend in PowerShell?**
+> Op deze computer is Git meegeleverd via **GitHub Desktop**. Als het commando `git` niet direct reageert, kun je het volledige pad gebruiken of het eenmalig toevoegen aan je PATH:
+> `& "$env:LOCALAPPDATA\GitHubDesktop\app-3.6.3\resources\app\git\cmd\git.exe" status`
 
 ### Stap 1: Controleer de status
 Kijk welke bestanden zijn gewijzigd of nieuw zijn toegevoegd:
@@ -80,9 +91,9 @@ Je ziet nu een lijst met gewijzigde bestanden (in het rood).
   ```
 
 ### Stap 3: De wijzigingen vastleggen (Commit)
-Geef een korte, beschrijvende boodschap mee aan je wijziging:
+Geef een duidelijke, beschrijvende boodschap mee aan je wijziging:
 ```bash
-git commit -m "Beschrijf hier kort wat je hebt aangepast (bijv: Update handleiding)"
+git commit -m "feat: early assignment risk engine, capital-aware bullput/bullcall selection, and tws error 201 fix"
 ```
 
 ### Stap 4: Uploaden naar GitHub (Push)
@@ -108,3 +119,24 @@ Je wijzigingen staan nu live op GitHub!
   ```bash
   git stash pop
   ```
+
+---
+
+## 4. Belangrijkste Recente Updates in de Codebase
+
+1. **🛡️ Early Assignment Risk Engine & Tijdswaardebewaking**:
+   - Monitort continu de resterende extrinsieke waarde van de geschreven poot.
+   - Bij $\le \$0.10$ verschijnt een waarschuwing (`⚠️ GEVARENZONE`), bij $\le \$0.05$ slaat het systeem alarm (`🚨 DIRECT SLUITEN`) en adviseert het direct sluiten als combinatieorder.
+2. **⚖️ Kapitaalbewuste Selectie: Bull Put vs Bull Call**:
+   - *Vuistregel: "Heb je genoeg geld staan dan bullputs, anders alleen maar bullcalls."*
+   - Vergelijkt het nominale toewijzingskapitaal ($Strike \times 100$) met je beschikbare cash.
+   - Bij onvoldoende cash krijgen veilige Bull Call debet spreads (maximaal risico beperkt tot debet) voorrang boven Bull Puts.
+   - Met het nieuwe zijbalkfilter *'Strikt filteren: verberg ongedekte Bull Puts'* worden ongedekte Bull Puts zelfs 100% verborgen.
+3. **🔧 TWS Error 201 Oplossing (Canonieke Pootdefinitie)**:
+   - Verhelpt de melding *"Gegarandeerd-verlies of risicoloze combinatie-orders zijn niet toegestaan"*.
+   - Bracket orders (Take Profit & Stop Loss) voeren nu direct uit zonder poot-inversie.
+4. **📊 Option Chain Predictiemodel & Gamma/Theta Engine (V1 & V2)**:
+   - 4-Kwadranten Delta OI analyse voor trendvoorspelling (`🚀 UPTREND`, `🎯 PINNING`, etc.).
+   - Vested Value steun- en weerstandsmuren ($Margin \times OI$).
+   - Breakeven dagelijkse koersbeweging $\delta S_{BE}$, Bayesiaanse $PoP_{adj}$ en Expected Value ($EV$).
+

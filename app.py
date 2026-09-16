@@ -388,10 +388,40 @@ def render_portfolio_management_dashboard(tws_host, tws_port):
 
             st.markdown("---")
 
+            # Early Assignment Risk & Toewijzingskapitaal Indicatoren
+            anti_assign = item.get('anti_assignment', {})
+            is_credit_p = strat in ['BullPut', 'BearCall', 'ShortPut', 'ShortCall', 'IronCondor']
+            if is_credit_p:
+                notional_cap = anti_assign.get('notional_capital', 0.0)
+                ext_val = anti_assign.get('extrinsic_val', 0.0)
+                prob_assign = anti_assign.get('assignment_probability_pct', 0.0)
+                
+                st.markdown("##### 🛡️ Toewijzingsrisico & Kapitaalbeslag (Early Assignment):")
+                as_col1, as_col2, as_col3 = st.columns(3)
+                with as_col1:
+                    st.metric("📦 Toewijzingsverplichting", f"${notional_cap:,.0f}", help="Benodigde cash om 100 aandelen per contract af te nemen indien aangewezen")
+                with as_col2:
+                    st.metric(
+                        "⏳ Tijdswaarde Short Leg", 
+                        f"${ext_val:.2f}", 
+                        delta="Gevarenzone (≤ $0.10)" if ext_val <= 0.10 else "Veilige buffer (> $0.10)",
+                        delta_color="inverse" if ext_val <= 0.10 else "normal",
+                        help="Bij tijdswaarde ≤ $0.10 verliest de tegenpartij vrijwel niets bij uitoefening en stijgt toewijzingskans!"
+                    )
+                with as_col3:
+                    st.metric(
+                        "⚠️ Toewijzingskans", 
+                        f"{prob_assign:.1f}%",
+                        delta="Direct Sluiten!" if prob_assign >= 50 else ("Let op" if prob_assign >= 10 else "Verwaarloosbaar"),
+                        delta_color="inverse" if prob_assign >= 10 else "normal",
+                        help="Wiskundige kans op vervroegde uitoefening door tegenpartij"
+                    )
+                if anti_assign.get('capital_warning'):
+                    st.warning(anti_assign.get('capital_warning'))
+
             c1, c2 = st.columns([2, 1])
             with c1:
                 # 1. Anti-Assignment Risicomelding (Conform Gemini / Roland van Giesen PDF)
-                anti_assign = item.get('anti_assignment', {})
                 triggers = anti_assign.get('triggers', [])
                 consequences = anti_assign.get('consequences', '')
                 rec_action = anti_assign.get('recommended_action', '')
@@ -1260,6 +1290,40 @@ ranking_criteria = st.sidebar.multiselect(
     default=["AG Score"]
 )
 
+# --- Kapitaalbescherming & Early Assignment Guardrail ---
+with st.sidebar.expander("🛡️ Kapitaalbescherming & Aanwijzingsdekking", expanded=True):
+    enable_capital_guardrail = st.checkbox(
+        "Activeer Toewijzingsbescherming", 
+        value=True, 
+        help="Controleert of je account voldoende cash heeft om bij een onverwachte aanwijzing van een short put de 100 aandelen (Strike x 100) af te nemen."
+    )
+    default_account_cash = 25000.0
+    if 'portfolio_acc_summary' in st.session_state and st.session_state['portfolio_acc_summary']:
+        live_cash = float(st.session_state['portfolio_acc_summary'].get('TotalCashValue', st.session_state['portfolio_acc_summary'].get('NetLiquidation', 25000.0)) or 25000.0)
+        if live_cash > 0:
+            default_account_cash = live_cash
+
+    account_cash_input = st.number_input(
+        "Beschikbare Portefeuille Cash ($)", 
+        min_value=1000.0, 
+        max_value=10000000.0, 
+        value=float(default_account_cash), 
+        step=5000.0,
+        help="Het beschikbare kapitaal. Wordt vergeleken met de aankoopverplichting (Strike * 100) van credit spreads."
+    ) if enable_capital_guardrail else None
+
+    force_bullcall_preference = st.checkbox(
+        "Voorkeur Bull Call bij beperkt kapitaal", 
+        value=True, 
+        help="Als de aandelen-afname bij aanwijzing (Strike x 100) groter is dan je cash, krijgt de Bull Call debet spread (max risico beperkt tot debet) voorrang boven de Bull Put."
+    ) if enable_capital_guardrail else False
+
+    strict_cash_coverage_only = st.checkbox(
+        "Strikt filteren: verberg ongedekte Bull Puts",
+        value=False,
+        help="Verbergt credit spreads (Bull Puts) volledig als je account-cash ontoereikend is voor eventuele aanwijzing (Strike x 100). Er worden dan uitsluitend veilige Bull Calls getoond."
+    ) if enable_capital_guardrail else False
+
 # Technical Filters (EMA & 1-Maands Trend)
 st.sidebar.subheader("Technische Filters (EMA & Trend)")
 use_ema = st.sidebar.checkbox("Filter op EMA Trend (Prijs > EMA)")
@@ -1684,7 +1748,8 @@ with tab1:
                                          'min_gamma': min_gamma, 'max_dte': max_dte, 'min_dte': min_dte, 
                                          'min_short_dte': synth_pmcc_min_short_dte, 'max_short_dte': synth_pmcc_max_short_dte,
                                          'synth_min_premium': synth_min_premium, 'synth_min_roc': synth_min_roc,
-                                         'koopadvies_p': koopadvies_p, 'only_koopadvies': only_koopadvies
+                                         'koopadvies_p': koopadvies_p, 'only_koopadvies': only_koopadvies,
+                                         'require_assignment_coverage': strict_cash_coverage_only
                                      }
                                      if use_max_pain_filter: current_filters['max_pain_dist'] = max_pain_dist
                                      
@@ -1999,7 +2064,7 @@ with tab1:
                                                          chain_data = pd.concat([chain_data, cd_long], ignore_index=True)
 
                                          if not chain_data.empty:
-                                             m_struct = scanner.analyze_market_structure(chain_data)
+                                             m_struct = scanner.analyze_market_structure(chain_data, underlying_price=price)
                                              mp = m_struct.get('max_pain', 0)
                                              cw = m_struct.get('call_wall', 0)
                                              pw = m_struct.get('put_wall', 0)
@@ -2018,7 +2083,9 @@ with tab1:
                                              chain_data=chain_data,
                                              underlying_iv=underlying_iv,
                                              hist_iv_df=hist_iv_df,
-                                             log_func=log, koopadvies_p=koopadvies_p
+                                             log_func=log, koopadvies_p=koopadvies_p,
+                                             account_cash=account_cash_input,
+                                             force_bullcall_if_uncovered=force_bullcall_preference
                                          )
 
                                          if scan_mode == "BarChart Optie Flow (CSV)" and not barchart_df_parsed.empty:
@@ -2039,7 +2106,8 @@ with tab1:
                                              'min_dte': d_min_dt, 
                                              'min_short_dte': synth_pmcc_min_short_dte, 'max_short_dte': synth_pmcc_max_short_dte,
                                              'synth_min_premium': synth_min_premium, 'synth_min_roc': synth_min_roc,
-                                             'koopadvies_p': koopadvies_p, 'only_koopadvies': only_koopadvies
+                                             'koopadvies_p': koopadvies_p, 'only_koopadvies': only_koopadvies,
+                                             'require_assignment_coverage': strict_cash_coverage_only
                                          }
                                          if use_max_pain_filter:
                                              current_filters['max_pain_dist'] = max_pain_dist
@@ -2319,15 +2387,15 @@ with tab2:
             ]
         else:
             display_cols = [
-                'Selecteer', 'koopadvies', 'symbol', 'underlying_price', 'AG_Score', 'strategy', 'expiry', 'strike_buy', 'strike_sell', 'width', 
+                'Selecteer', 'koopadvies', 'trade_verdict', 'symbol', 'underlying_price', 'AG_Score', 'expected_value', 'pop_adj', 'pop', 'dS_BE', 'gamma_theta_ratio', 'strategy', 'assignment_risk_badge', 'notional_assignment_capital', 'extrinsic_val_short', 'cue', 'expiry', 'strike_buy', 'strike_sell', 'width', 
                 'strike_p_buy', 'strike_p_sell', 'strike_c_sell', 'strike_c_buy',
-                'spread_mid_abs', 'spread_ask_abs', 'b_l_verschil', 'max_profit', 'sluitingswinst', 'sluitingswinst_em85', 'pop',
+                'spread_mid_abs', 'spread_ask_abs', 'b_l_verschil', 'max_profit', 'sluitingswinst', 'sluitingswinst_em85',
                 'TTP (D)', 'TEI Score', 'Efficient',
                 'BEP', 'bep_afstand_pct', 'req_bep_move_pct', 'extrinsic_pct', 'capital_risk_flat_pct', 'capital_risk_dip5_pct', 'em85_dekking_pct', 'supports', 'resistances',
                 'Sentiment', 'price_buy', 'price_sell', 'net_extrinsic', 'EM68', 'EM85',
                 'delta_buy', 'delta_sell', 'delta', 'delta_koers', 'gamma', 'theta', 'dte', 
                 'EMA_Cross', 'Stoch_RSI', 'iv_percentile', 'iv_rank', 'underlying_iv', 
-                'gamma_flip', 'call_wall', 'put_wall', 'gex_wall'
+                'gamma_flip', 'call_vested_wall', 'put_vested_wall', 'call_wall', 'put_wall', 'gex_wall'
             ]
 
         # Ensure columns exist before displaying
@@ -2337,11 +2405,41 @@ with tab2:
         if 'Efficient' in results.columns:
             results['Efficient'] = np.where(results['Efficient'] == True, "🟦", "⬜")
 
+        # Format Trade Verdict visually
+        if 'trade_verdict' in results.columns:
+            results['trade_verdict'] = np.where(
+                results['trade_verdict'] == 'EXECUTE', "🟢 EXECUTE",
+                np.where(results['trade_verdict'] == 'GAMMA_CLIFF_RISK', "⚠️ CLIFF",
+                np.where(results['trade_verdict'] == 'SPECULATIVE', "🟡 SPEC", "❌ REJECT"))
+            )
+
+        # Format Cue visually
+        if 'cue' in results.columns:
+            results['cue'] = results['cue'].replace({
+                'CONFIDENT_UPTREND': '🚀 UPTREND',
+                'CONFIDENT_DOWNTREND': '🔻 DOWNTREND',
+                'FLAT_PINNING': '🎯 PINNING',
+                'MARKET_CORRECTION_DOWNSIDE': '⚠️ CORR DOWN',
+                'MARKET_CORRECTION_UPSIDE': '📈 CORR UP',
+                'FAR_VOLATILITY_EXPANSION': '⚡ VOL EXP',
+                'NEUTRAL_RANGE': '⚖️ NEUTRAL'
+            })
 
         # Column Configuration for Streamlit (Autosizing & Formatting)
         # Note: Removing most 'width' params to allow Streamlit's internal autosizing.
         col_cfg = {
             "Selecteer": st.column_config.CheckboxColumn("Selecteer", default=False, help="Vink aan om op te nemen in 'Plaats orders'", pinned=True),
+            "trade_verdict": st.column_config.TextColumn("Verdict", help="Quant Oordeel: EXECUTE (EV>0 & PoP>=65%), SPECULATIVE of REJECT / GAMMA_CLIFF_RISK", pinned=True),
+            "assignment_risk_badge": st.column_config.TextColumn("Aanwijzingsstatus", help="Kans op vervroegde toewijzing (early assignment) en tijdswaarde-status van de short leg"),
+            "notional_assignment_capital": st.column_config.NumberColumn("Toewijzingskapitaal ($)", format="$%d", help="Benodigd cash-kapitaal (Strike * 100) om 100 aandelen af te nemen bij toewijzing"),
+            "extrinsic_val_short": st.column_config.NumberColumn("Tijdswaarde Short ($)", format="$%.2f", help="Resterende extrinsieke waarde van de geschreven poot. Bij <= $0.10 stijgt aanwijzingsgevaar!"),
+            "expected_value": st.column_config.NumberColumn("EV ($)", format="$%.2f", help="Wiskundige verwachte waarde per spread: (PoP_adj * MaxWinst) - ((1-PoP_adj) * MaxVerlies) - transactiekosten"),
+            "pop_adj": st.column_config.NumberColumn("PoP Adj %", format="%.1f%%", help="Bayesiaans gecorrigeerde winstkans incl. steun/weerstand muren, pinning en headwind/tailwind"),
+            "dS_BE": st.column_config.NumberColumn("dS BE ($)", format="$%.2f", help="Breakeven dagelijkse koersuitslag onderliggende: sqrt(2 * |Theta| / |Gamma|)"),
+            "gamma_theta_ratio": st.column_config.NumberColumn("Γ/Θ Ratio", format="%.4f", help="Gamma/Theta verhouding per positie"),
+            "cue": st.column_config.TextColumn("Regime Cue", help="4-Kwadranten Delta OI marktregime"),
+            "call_vested_wall": st.column_config.NumberColumn("Call Vested Wall", format="$%.2f", help="Institutionele verdedigingsmuur bovenkant (Margin * OI)"),
+            "put_vested_wall": st.column_config.NumberColumn("Put Vested Wall", format="$%.2f", help="Institutionele verdedigingsmuur onderkant (Margin * OI)"),
             "symbol": st.column_config.TextColumn("Symbool"),
             "underlying_price": st.column_config.NumberColumn("Koers", format="$%.2f"),
             "spread_last_abs": st.column_config.NumberColumn("Laatste Prijs", format="$%.2f"),
@@ -2838,10 +2936,20 @@ with tab3:
 
                     if bracket_mode == "Dollar Bedrag ($)":
                         c_tp, c_sl = st.columns(2)
+                        max_possible_credit_dollar = (p_entry * 100.0 * qty) if is_credit else 10000.0
+                        default_tp = min(200.0, max(5.0, round(p_entry * 100.0 * qty * 0.50, 0))) if is_credit else 200.0
+                        default_sl = min(500.0, max(5.0, round(p_entry * 100.0 * qty * 1.0, 0))) if is_credit else 100.0
                         with c_tp:
-                            tp_dollar = st.number_input("Winstdoel (Take Profit $)", min_value=5.0, max_value=10000.0, value=200.0, step=10.0, help="Automatisch sluiten bij dit winstbedrag in USD.")
+                            tp_dollar = st.number_input(
+                                "Winstdoel (Take Profit $)", 
+                                min_value=5.0, 
+                                max_value=float(max(10.0, max_possible_credit_dollar)), 
+                                value=float(min(default_tp, max_possible_credit_dollar)), 
+                                step=10.0, 
+                                help=f"Automatisch sluiten bij dit winstbedrag in USD.{' (Max credit is $' + str(round(max_possible_credit_dollar)) + ')' if is_credit else ''}"
+                            )
                         with c_sl:
-                            sl_dollar = st.number_input("Stop Loss (Max. Verlies $)", min_value=5.0, max_value=10000.0, value=100.0, step=10.0, help="Automatisch sluiten bij dit verliesbedrag in USD.")
+                            sl_dollar = st.number_input("Stop Loss (Max. Verlies $)", min_value=5.0, max_value=10000.0, value=float(default_sl), step=10.0, help="Automatisch sluiten bij dit verliesbedrag in USD.")
 
                         tp_per_share = (tp_dollar / qty) / 100.0
                         sl_per_share = (sl_dollar / qty) / 100.0

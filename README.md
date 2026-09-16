@@ -16,10 +16,15 @@ Zie de volledige stap-voor-stap handleiding: **[Handleiding_Project2_Laptop_Inst
 ---
 
 ## 🌟 Nieuwste Functies & Validaties
-* **🛡️ Anti-Assignment Verdedigingsroutine (TWS Protocol)**: 3-traps risicosignalering (Groen/Geel/Rood) met geautomatiseerde combo-verdediging (doorrollen voor credit of $2\times$ credit stoploss) om toewijzing van aandelen te voorkomen.
-* **⚡ 1-Klik Optimalisatie (Sidebar vs. Standaard Benchmark)**: Evalueer sidebar-instellingen direct tegen de gevalideerde EM85 benchmark en synchroniseer met 1 klik.
-* **🧪 Uitgebreid Strategie Validatie Filter**: Backtest moeiteloos BullPut, BearCall, BullCall, BearPut, én losse contracten (Long Call, Long Put, Cash-Secured Short Put) op echte Amerikaanse beursstrikes ($0.50, $1.00, $2.50, $5.00).
-* **🎯 Aangepaste Symbolen Invoer**: Eenvoudig eigen lijstjes tickers testen met live validatie.
+* **⚖️ Kapitaalbewuste Selectie: Bull Put vs Bull Call**: Automatische bescherming tegen aandelen-toewijzing (Early Assignment). Berekent het benodigde kapitaal ($Strike \times 100$) en geeft bij beperkte cash automatisch voorrang aan risico-gelimiteerde Bull Call debet spreads.
+* **🛡️ Early Assignment Risk Engine**: Real-time berekening van resterende tijdswaarde (extrinsieke waarde) en toewijzingskans op geschreven opties. Waarschuwing bij $\le \$0.10$ en direct noodsluitingsalarm bij $\le \$0.05$.
+* **🔧 TWS Error 201 Fix**: Canonieke pootdefinitie voor credit spreads, waardoor bracket orders (Take Profit & Stop Loss) direct en foutloos worden geaccepteerd door Interactive Brokers zonder "risicoloze order" afwijzingen.
+* **📊 Option Chain Predictiemodel (Spec V1 & V2)**:
+  - 4-Kwadranten Delta OI analyse voor richting- en regimedetectie (`🚀 UPTREND`, `🎯 PINNING`, etc.).
+  - Vested Value muren ($Margin \times OI$) als werkelijke institutionele steun- en weerstandslijnen.
+  - Black-Scholes Gamma/Theta kwantificering ($\delta S_{BE}$ dagelijkse breakeven beweging), Bayesiaanse $PoP_{adj}$ en Expected Value ($EV$).
+* **🛡️ Anti-Assignment Verdedigingsroutine (Tab 0: Portfolio Bewaking)**: Live monitoring van alle openstaande TWS optieposities met 1-klik noodsluiting als combinatieorder.
+* **⚡ 1-Klik Optimalisatie & Benchmark**: Evalueer instellingen tegen de gevalideerde benchmark en backtest met 1 klik.
 
 ---
 
