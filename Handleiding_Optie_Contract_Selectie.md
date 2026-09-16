@@ -14,6 +14,10 @@ Deze tool doet al het zware werk voor je. Hij maakt rechtstreeks verbinding met 
 De scanner zoekt voornamelijk naar **Vertical Spreads**. Dit is een beproefde methode waarbij je tegelijkertijd één optie koopt en één optie verkoopt op hetzelfde aandeel. 
 * **Waarom doen we dit?** Door een optie te verkopen, dek je de kosten van de gekochte optie grotendeels af. Hierdoor is je maximale verlies vooraf exact bekend en beperkt. Het is een veel veiliger manier van handelen dan het kopen van losse opties.
 
+> [!TIP]
+> **Direct naar de Resultatenpagina & Beslisregels?**  
+> Zie **[Sectie 22: De Complete Resultatenpagina Gids (Tab 2) & Het Gouden A-B-C-D Besluitvormingsmodel](#22-de-complete-resultatenpagina-gids-tab-2-resultaten)** voor een gedetailleerde uitleg van alle kolommen (zoals `trade_verdict`, `expected_value`, `dS_BE`, `gamma_theta_ratio`) en hoe je per strategie met 4 concrete checks een veilige, winstgevende trade selecteert.
+
 ---
 
 ## 2. Uitleg van de Knoppen en Instellingen (Sidebar)
@@ -772,6 +776,175 @@ In Tab 2 (Resultaten) vind je geavanceerde quant-indicatoren gebaseerd op de twe
    - **🟡 SPEC**: Kansrijk maar hogere volatiliteit.
    - **⚠️ CLIFF**: Naderende expiratie ($DTE \le 3$) met hoog gamma-risico.
    - **❌ REJECT**: Onvoldoende statistisch voordeel.
+
+---
+
+## 22. De Complete Resultatenpagina Gids (Tab 2: Resultaten)
+
+In **Tab 2 (📊 Resultaten)** toont de Spread Selector alle geëvalueerde optiecombinaties. Deze pagina bevat geavanceerde parameters uit kwantitatieve analysemodellen. Hieronder volgt de **volledige encyclopedie van alle kolommen**, wat ze betekenen, hoe ze samenhangen en het concrete **A-B-C-D besluitvormingsmodel** waarmee je met grote zekerheid winstgevende trades selecteert.
+
+---
+
+### 📋 A. Volledig Kolommenoverzicht, Betekenis & Richtwaarden
+
+De kolommen zijn logisch onderverdeeld in 5 functionele clusters:
+
+#### Cluster 1: Het Quant Oordeel & Wiskundig Voordeel (De Beslissers)
+| Kolom | Wat betekent het? | Gewenste Richtwaarde | Hoe gebruik je dit? |
+| :--- | :--- | :--- | :--- |
+| **`trade_verdict`** | Het integrale oordeel van de Quant Engine: `🟢 EXECUTE`, `🟡 SPEC`, `⚠️ CLIFF` of `❌ REJECT`. | **`🟢 EXECUTE`** | **Eerste filter**: Handel bij voorkeur uitsluitend trades met `🟢 EXECUTE`. Dit garandeert dat zowel de wiskundige winstverwachting ($EV > 0$) als de gecorrigeerde winstkans ($PoP_{adj} \ge 65\%$) groen zijn. |
+| **`expected_value` ($EV$)** | De **wiskundige verwachte winst in dollars** per trade over duizend herhalingen na aftrek van transactiekosten: $(PoP_{adj} \times Winst) - ((1 - PoP_{adj}) \times Verlies) - Kosten$. | **$> +\$20.00$** | Dit is het casino-voordeel: als dit getal groter is dan $0, speel je met de statistiek aan jouw kant. Is EV negatief? Nooit handelen! |
+| **`pop_adj` (%)** | De **Bayesiaans gecorrigeerde winstkans**. Neemt de theoretische formule en telt daar de bonus/straf bij op van institutionele muren, marketmaker pinning en markttrend. | **$\ge 70.0\%$** (Credit Spreads)<br>**$\ge 50.0\%$** (Debet Spreads) | Veel betrouwbaarder dan de standaard BSM PoP omdat rekening wordt gehouden met de werkelijke verdedigingslinies van optieschrijvers. |
+| **`pop` (%)** | De klassieke wiskundige **Black-Scholes Probability of Profit**. | $\ge 60.0\%$ | Dient als referentiepunt om te zien hoeveel bonus de trade krijgt ten opzichte van de standaard formule. |
+| **`AG_Score`** | De **hoofdscore van AntiGravity**. Weegt PoP, EV, BEP-afstand, kapitaaldekking, liquiditeit en markttrend integraal af in één getal. | **$\ge 80.0$** (hoe hoger, hoe beter) | Ideaal om de tabel direct van hoog naar laag op te sorteren (`Ranking`). |
+| **`cue` (Regime Cue)** | Het marktregime op basis van openstaande contracten ($\Delta OI$): `🚀 UPTREND`, `🎯 PINNING`, `🔻 DOWNTREND`, `⚠️ CORR DOWN`, `📈 CORR UP`. | Passend bij strategie | Zorgt dat je strategie synchroon loopt met de markt: Bull Put / Bull Call bij `UPTREND`, Iron Condor bij `PINNING`. |
+| **`dS_BE` ($)** | **Breakeven Dagelijkse Koersuitslag**: $\delta S_{BE} = \sqrt{\frac{2 \cdot \|\Theta\|}{\|\Gamma\|}}$. Geeft in dollars aan hoeveel het aandeel per dag mag bewegen voordat het tijdvoordeel omslaat in verlies. | **$\ge 1.0 \times \text{ATR}_{10}$** | Zie de diepgaande uitleg hieronder in Sectie B! |
+| **`gamma_theta_ratio`** | De verhouding tussen koersversnellingsrisico ($\Gamma$) en dagelijks tijdswaardeverval ($\Theta$). | **$\le 0.08$** (Credit Spreads)<br>**$0.10 - 0.25$** (Debet Spreads) | Zie de diepgaande uitleg hieronder in Sectie B! |
+
+---
+
+#### Cluster 2: Kapitaalbescherming & Toewijzingsveiligheid (Early Assignment)
+| Kolom | Wat betekent het? | Gewenste Richtwaarde | Hoe gebruik je dit? |
+| :--- | :--- | :--- | :--- |
+| **`assignment_risk_badge`** | Toont de veiligheidsstatus van de geschreven poot: `🟢 VEILIG (Volledig Gedekt)`, `⚠️ GEEN CASH-DEKKING`, `🚨 DIRECT SLUITEN` of `🛡️ GEEN AANWIJZING`. | **`🟢 VEILIG`** of **`🛡️ GEEN AANWIJZING`** | Voorkomt dat je verrast wordt door verplichte levering van 100 aandelen per contract. |
+| **`notional_assignment_capital`** | Het **totale cash-kapitaal** dat nodig is als de geschreven put wordt aangewezen: $Strike_{sell} \times 100 \times \text{Aantal}$. | $\le$ Beschikbare cash op rekening | Vergelijk dit direct met je rekeningsaldo. Heb je minder cash dan dit bedrag? Kies dan voor een Bull Call debet spread! |
+| **`extrinsic_val_short` ($)** | De **resterende zuivere tijdswaarde** van de geschreven poot. | **$> \$0.25$ (Veilig)**<br>$\le \$0.10$ (Gevarenzone)<br>$\le \$0.05$ (Aanwijzingsalarm) | Zolang de tijdswaarde ruim boven $\$0.10$ ligt, zal de tegenpartij de optie vrijwel nooit uitoefenen omdat hij dan zijn eigen tijdswaarde weggooit. |
+
+---
+
+#### Cluster 3: Prijzen, Liquiditeit & Winstpotentieel
+| Kolom | Wat betekent het? | Gewenste Richtwaarde | Hoe gebruik je dit? |
+| :--- | :--- | :--- | :--- |
+| **`b_l_verschil` ($)** | Het verschil tussen de bied- en laatprijs op de spread (Bid-Ask Spread). | **$\le \$0.05 - \$0.08$** | **Cruciale liquiditeitsfilter!** Een krap verschil betekent dat de optie liquide is en je order direct tegen een eerlijke prijs gevuld wordt zonder verborgen verlies. |
+| **`spread_mid_abs` ($)** | De theoretische middenprijs van de spread. | Afhankelijk van strategie | Dit is je basisprijs voor de limietorder in TWS. |
+| **`spread_ask_abs` ($)** | De laatprijs (Natural Ask). | - | Geeft inzicht in de wijdte van de markt. |
+| **`max_profit` ($)** | De **maximale winst in dollars per contract** als de trade 100% succesvol verloopt. | $\ge \$50$ per contract | Bij credit spreads is dit de ontvangen premie $\times 100$; bij debet spreads is dit $(\text{Breedte} - \text{Debet}) \times 100$. |
+| **`sluitingswinst` ($)** | De winst als je de trade vroegtijdig sluit op 80% van de maximale winst. | - | Onze vuistregel: sluit credit spreads zodra 80% van de winst binnen is om expiratierisico te vermijden. |
+| **`TTP (D)`** | *Time To Profitability*: het geschatte aantal kalenderdagen tot de positie 80% van zijn winst heeft bereikt. | $10 - 25$ dagen | Hoe lager, hoe sneller het geld weer vrijkomt voor een volgende trade. |
+| **`TEI Score`** | *Theta Efficiency Index*: verhouding tussen dagelijkse tijdswinst en maximaal risico. | $\ge 1.0$ | Meet hoe efficiënt het kapitaal rendeert per verstreken dag. |
+
+---
+
+#### Cluster 4: Veiligheidsbuffers & Institutionele Niveaus
+| Kolom | Wat betekent het? | Gewenste Richtwaarde | Hoe gebruik je dit? |
+| :--- | :--- | :--- | :--- |
+| **`BEP` ($)** | Het **Break-Even Point** van de combinatie bij expiratie. | - | De koers waarop winst exact omslaat in verlies. |
+| **`bep_afstand_pct` (%)** | De **veiligheidsmarge in procenten**: de afstand tussen de huidige aandelenkoers en het Break-Even Point. | **$\ge 5.0\% - 8.0\%$** (Credit Spreads) | Dit is je stootkussen: het aandeel mag met dit percentage tegen je in bewegen zonder dat je een cent verliest! |
+| **`call_vested_wall` / `put_vested_wall`** | De **institutionele verdedigingsmuren**: strikes met de hoogste kapitaalallocatie van grote optieschrijvers ($Margin \times OI$). | Short strike achter de muur | Biedt enorme bescherming: grote partijen verdedigen deze niveaus fel om geen marginedekking te verliezen. |
+| **`supports` / `resistances`** | Automatisch berekende technische steun- en weerstandsniveaus uit koersgrafieken. | - | Controleer of de short strike onder een sterke steun (Bull Put) of boven een weerstand (Bear Call) ligt. |
+
+---
+
+#### Cluster 5: Grieken & Technische Indicatoren
+| Kolom | Wat betekent het? | Gewenste Richtwaarde | Hoe gebruik je dit? |
+| :--- | :--- | :--- | :--- |
+| **`delta` / `delta_sell`** | Richtingsgevoeligheid en benadering van de uitoefenkans van de verkochte poot. | `delta_sell` tussen **$0.10$ en $0.25$** | Een delta van $0.15$ op de short put betekent circa 85% kans dat de optie waardeloos afloopt (in jouw voordeel). |
+| **`theta` ($)** | Het dagelijkse tijdswaardeverval in dollars. | Positief bij credit spreads ($> +0.05$) | Elke ochtend dat je wakker wordt, is dit bedrag automatisch aan winst bijgeschreven door het verstrijken van de tijd. |
+| **`gamma`** | De versnelling van Delta bij een koersbeweging van 1 dollar. | Negatief bij credit spreads | Dient zo dicht mogelijk bij 0 te liggen om koersschokken op te vangen. |
+| **`dte`** | Dagen tot expiratie. | **$14 - 45$ dagen** | De ideale looptijd: Theta decay versnelt maximaal, terwijl er voldoende tijd is om te managen. |
+| **`EMA_Cross` / `Stoch_RSI`** | Technische momentum- en trendindicatoren (EMA 8/20/50 en Stochastics). | `BULLISH` of `CROSS_UP` bij stijgende trades | Bevestigt dat de onderliggende trend de trade ondersteunt. |
+
+---
+
+### 🔬 B. Diepgaande Interpretatie: Gamma/Theta Verhouding ($\Gamma/\Theta$) en $\delta S_{BE}$
+
+Veel handelaren vinden Grieken abstract. Hieronder volgt de **praktische, wiskundige vertaling** naar dagelijkse handelsbeslissingen:
+
+#### 1. Wat is de Gamma/Theta Ratio (`gamma_theta_ratio`)?
+In de optiewetenschap (Black-Scholes) vechten twee krachten constant tegen elkaar:
+$$\Theta + \frac{1}{2} \sigma^2 S^2 \Gamma \approx 0$$
+* **Theta ($\Theta$)** is de **tijd**: elke dag tikt er winst binnen zolang de koers stilstaat.
+* **Gamma ($\Gamma$)** is het **bewegingsrisico**: hoe harder het aandeel beweegt, hoe sneller Delta tegen je keert en verliezen kunnen exploderen.
+
+De verhouding $\Gamma/\Theta$ meet: **"Hoeveel koersversnellingsrisico loop ik voor elke dollar tijdswinst?"**
+
+* **Voor Credit Spreads (Bull Put / Bear Call)**:
+  * **Wat wil je zien?** Een zo **LAAG MOGELIJKE** ratio (**$\le 0.05 - 0.08$**)!
+  * **Waarom?** Dit betekent dat de tijdswaarde (Theta) dominant is over de koersschommelingen (Gamma). Zelfs als het aandeel wat wiebelt, vreet de tijdsfactor de spread sneller leeg dan dat de koersbeweging schade aanricht.
+  * **Wanneer is het gevaarlijk?** Bij ratio's $> 0.15$ of in de laatste week voor expiratie ($DTE \le 3$). Dit noemen we de **Gamma Cliff**: de tijd levert nog maar een paar cent op, maar één felle koersuitslag kan in één klap het hele saldo wegvagen. De software markeert dit automatisch als **`⚠️ CLIFF`**.
+
+* **Voor Debet Spreads & Long Opties (Bull Call / Long Call)**:
+  * **Wat wil je zien?** Hier zoek je juist een gezonde **positieve Gamma** ten opzichte van Theta ($0.10 - 0.25$). Je wilt dat bij een koersstijging de winst sneller accelereert dan dat de tijdswaarde wegtikt.
+
+---
+
+#### 2. Wat is de Breakeven Beweging (`dS_BE` in dollars)?
+$$\delta S_{BE} = \pm \sqrt{\frac{2 \cdot |\Theta_{dag}|}{|\Gamma|}}$$
+Dit is één van de meest waardevolle getallen op het hele scherm. Het geeft exact aan: **"Hoeveel dollar mag het aandeel vandaag maximaal bewegen voordat het tijdvoordeel omslaat in verlies?"**
+
+* **Rekenvoorbeeld uit de praktijk**:
+  Stel, je overweegt een Bull Put op **NVDA** (koers $\$125.00$):
+  - In de kolom staat: `dS_BE = $3.80`.
+  - De normale gemiddelde dagelijkse beweging van NVDA ($ATR_{10}$) is bijvoorbeeld $\$2.50$.
+  - **Interpretatie**: Omdat $\delta S_{BE}$ ($\$3.80$) beduidend groter is dan de normale dagelijkse uitslag ($\$2.50$), bevindt deze trade zich in de **wiskundig veilige winstzone**. Het aandeel kan zijn normale dagelijkse beweging maken zonder dat de optiecombinatie in het rood raakt; de Theta-opbrengst wint het van de koersbeweging!
+  - **Waarschuwingssignaal**: Is `dS_BE` veel kleiner dan de normale dagelijkse beweging (bijv. slechts $\$0.80$ bij een $ATR$ van $\$3.00$)? Dan is de spread te krap of te dicht bij de koers, en zal normale dagelijkse marktruis direct tot stress leiden.
+
+---
+
+### 🏆 C. Het Gouden A-B-C-D Besluitvormingsmodel
+
+Om niet te verdrinken in alle cijfers, hanteert de AntiGravity methodiek **vier gouden pijlers**. Als aan alle vier de voorwaarden is voldaan, kun je de order met **maximale gemoedsrust en statistische superioriteit** inleggen:
+
+```mermaid
+graph TD
+    A["Pilaar A: Quant Voordeel (Verdict = EXECUTE & EV > 0)"] --> B["Pilaar B: Veiligheidsbuffer (PoP >= 70% & BEP >= 6%)"]
+    B --> C["Pilaar C: Gamma/Theta Balans (dS_BE > ATR & Ratio <= 0.08)"]
+    C --> D["Pilaar D: Kapitaal & Liquiditeit (Cash gedekt & Bid-Ask <= $0.08)"]
+    D --> E["🚀 PLAATS TRADE MET HOGE ZEKERHEID"]
+```
+
+---
+
+#### 🟢 1. Het A-B-C-D Model voor Credit Spreads (Bull Put & Bear Call)
+
+| Pilaar | Naam | Vereiste Kolomwaarden | Waarom is dit onmisbaar? |
+| :---: | :--- | :--- | :--- |
+| **A** | **Wiskundig Quant Voordeel** | `trade_verdict` = **`🟢 EXECUTE`**<br>`expected_value` $> +\$20.00$ | Garandeert dat het statistische voordeel na transactiekosten aan jouw kant staat. |
+| **B** | **Winstkans & Stootkussen** | `pop_adj` $\ge \mathbf{70.0\%}$<br>`bep_afstand_pct` $\ge \mathbf{6.0\%}$ | De short strike ligt ver genoeg van de koers en wordt beschermd door Vested Value steunmuren. |
+| **C** | **Gamma/Theta Veiligheid** | `gamma_theta_ratio` $\le \mathbf{0.08}$<br>`dS_BE` $\ge \mathbf{1.0 \times \text{ATR}}$ | Theta tikt sneller aan dan de markt beweegt. Geen expiratie-gevaar (`⚠️ CLIFF`). |
+| **D** | **Kapitaaldekking & Liquiditeit** | `assignment_risk_badge` = **`🟢 VEILIG`**<br>`b_l_verschil` $\le \mathbf{\$0.08}$ | Je account heeft voldoende cash om een eventuele aanwijzing op te vangen, en de order vult direct zonder slippage. |
+
+> ⭐ **Beslisregel Credit Spreads**: Voldoet een Bull Put of Bear Call aan **A + B + C + D**? Dan is de kans op een succesvolle, winstgevende afronding **groter dan 85%**. Dit zijn de 'no-brainer' kwaliteitskandidaten.
+
+---
+
+#### 🔵 2. Het A-B-C-D Model voor Debet Spreads (Bull Call & Bear Put)
+
+| Pilaar | Naam | Vereiste Kolomwaarden | Waarom is dit onmisbaar? |
+| :---: | :--- | :--- | :--- |
+| **A** | **Trend & Marktregime** | `cue` = **`🚀 UPTREND`** (Bull Call)<br>`Sentiment` = **`Bullish`** | Je vecht nooit tegen de markt; je vaart mee op de golven van institutionele optie-aankopen. |
+| **B** | **Wiskundige Winstverwachting** | `expected_value` $> \mathbf{+\$0.00}$<br>`pop_adj` $\ge \mathbf{45.0\% - 55.0\%}$ | Zelfs bij een lagere nominale winstkans zorgt de hefboom voor een positieve wiskundige verwachting. |
+| **C** | **Asymmetrische Risk/Reward** | `max_profit` / $\text{Betaald Debet} \ge \mathbf{1.0}$ | Je potentiële winst moet minstens gelijk zijn aan of groter zijn dan je maximale inleg (bijv. $\$550$ winst vs $\$450$ inleg). |
+| **D** | **Liquiditeit & Vrijwaring** | `b_l_verschil` $\le \mathbf{\$0.08}$<br>`assignment_risk_badge` = **`🛡️ GEEN AANWIJZING`** | 100% risicogelimiteerd debet: je kunt *nooit* worden aangewezen om aandelen af te nemen. |
+
+> ⭐ **Beslisregel Debet Spreads**: Zie je een aandeel met beperkt saldo in portefeuille? Kies dan voor een Bull Call die voldoet aan **A + B + C + D**. Zo profiteer je van de opwaartse rit zonder gigantisch marginbeslag.
+
+---
+
+#### 🟣 3. Het A-B-C-D Model voor Neutrale Strategieën (Iron Condor)
+
+| Pilaar | Naam | Vereiste Kolomwaarden | Waarom is dit onmisbaar? |
+| :---: | :--- | :--- | :--- |
+| **A** | **Zijwaarts Pinning Regime** | `cue` = **`🎯 FLAT_PINNING`** | Zowel calls als puts worden door marktmakers vastgezet; er is geen uitbraakgevaar. |
+| **B** | **Dubbele Muurbescherming** | Short Call $>$ `call_vested_wall`<br>Short Put $<$ `put_vested_wall` | De trade ligt ingeklemd tussen twee betonnen muren van grote institutionele partijen. |
+| **C** | **Ruime Breakeven Bandbreedte** | `dS_BE` $\ge \mathbf{1.5 \times \text{ATR}}$<br>$DTE$ tussen **$20$ en $40$ dagen** | Voldoende speling voor dagelijkse uitschieters met optimale Theta-acceleratie. |
+| **D** | **Hoge Winstkans & Rendement** | `pop_adj` $\ge \mathbf{75.0\%}$<br>`max_profit` $\ge \mathbf{\$100}$ | Geeft een ijzersterke statistische buffer met gezonde premieontvangst aan beide zijden. |
+
+---
+
+### 💡 Samenvattende Beslissingsmatrix voor Testers
+
+Als je 's ochtends of 's middags de scan draait, doorloop je simpelweg deze 3 stappen:
+
+1. **Sorteren**: Klik op de kolomkop **`AG_Score`** (of **`expected_value`**) om de tabel van hoog naar laag te sorteren.
+2. **Kwalificeren (De A-B-C-D Check)**:
+   - Staat er **`🟢 EXECUTE`** bij `trade_verdict`? *(Check A)*
+   - Is de winstkans **`pop_adj` $\ge 70\%$** en `bep_afstand_pct` ruim? *(Check B)*
+   - Ligt de ratio **`gamma_theta_ratio` onder $0.08$** en is `dS_BE` groter dan de dagschommeling? *(Check C)*
+   - Staat er **`🟢 VEILIG`** bij `assignment_risk_badge` en is `b_l_verschil` krap? *(Check D)*
+3. **Vinken & Handelen**: Vink de spread aan via **`Selecteer`** en stuur de order via **Tab 3** naar TWS met order type **`Adaptive - Normal`**.
+
+*Met dit model handel je niet op onderbuikgevoel, maar als een professioneel kwantitatief hedgefonds.*
 
 ---
 

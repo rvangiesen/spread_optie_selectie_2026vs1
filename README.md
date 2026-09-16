@@ -30,7 +30,7 @@ Zie de volledige stap-voor-stap handleiding: **[Handleiding_Project2_Laptop_Inst
 
 ## 📖 Gebruikershandleidingen
 * **Laptop Installatie**: [Handleiding_Project2_Laptop_Installatie.md](Handleiding_Project2_Laptop_Installatie.md) (1-klik setup, `.venv` herstel & agent instructies).
-* **Gebruik van de App**: [Handleiding_Optie_Contract_Selectie.md](Handleiding_Optie_Contract_Selectie.md) (uitleg van knoppen, EM85, filters, sentimentmodel, ranking en orderplaatsing).
+* **Gebruik van de App & Resultaten Gids**: [Handleiding_Optie_Contract_Selectie.md](Handleiding_Optie_Contract_Selectie.md) (volledige uitleg van alle knoppen, EM85, filters, sentiment, orderplaatsing, en in **Sectie 22** een complete gids van alle resultatenkolommen, Gamma/Theta ratio en het A-B-C-D besluitvormingsmodel).
 * **Project Opstarten & GitHub**: [Handleiding_Project2_Opstarten_en_Git.md](Handleiding_Project2_Opstarten_en_Git.md).
 
 ---
