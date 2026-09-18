@@ -384,7 +384,7 @@ def render_portfolio_management_dashboard(tws_host, tws_port):
                         "Huidige Marktprijs": f"${l['market_price']:.2f}",
                         "Ongerealiseerde P&L": f"${l['pnl_usd']:+,.2f} ({l['pnl_pct']:+.1f}%)"
                     })
-                st.dataframe(pd.DataFrame(legs_rows), use_container_width=True, hide_index=True)
+                st.dataframe(pd.DataFrame(legs_rows), width='stretch', hide_index=True)
 
             st.markdown("---")
 
@@ -1301,7 +1301,7 @@ with st.sidebar.expander("🛡️ Kapitaalbescherming & Aanwijzingsdekking", exp
     if 'portfolio_acc_summary' in st.session_state and st.session_state['portfolio_acc_summary']:
         live_cash = float(st.session_state['portfolio_acc_summary'].get('TotalCashValue', st.session_state['portfolio_acc_summary'].get('NetLiquidation', 25000.0)) or 25000.0)
         if live_cash > 0:
-            default_account_cash = live_cash
+            default_account_cash = max(live_cash, 1000.0)
 
     account_cash_input = st.number_input(
         "Beschikbare Portefeuille Cash ($)", 
@@ -2326,7 +2326,7 @@ with tab2:
                         m_col2.metric(f"{comp_matrix['atm_multiplier']}x ATM Investering", f"${comp_matrix['atm_total_cost']:.2f}", f"Strike ${comp_matrix['atm_contract']['strike_buy']:.1f} (Delta {comp_matrix['atm_delta_total']:.2f})")
                         m_col3.metric("BEP Vereiste Beweging", f"+{comp_matrix['itm_bep_move_pct']:.1f}% (ITM)", f"+{comp_matrix['atm_bep_move_pct']:.1f}% (ATM)", delta_color="inverse")
                         m_col4.metric("Risico bij -5% Dip", f"-{comp_matrix['itm_capital_risk_dip5']:.1f}% (ITM)", f"-{comp_matrix['atm_capital_risk_dip5']:.1f}% (ATM)", delta_color="inverse")
-                        st.dataframe(comp_matrix['scenario_df'], use_container_width=True, hide_index=True)
+                        st.dataframe(comp_matrix['scenario_df'], width='stretch', hide_index=True)
                         st.caption("💡 **Conclusie**: De Deep ITM optie biedt kapitaalbescherming (bodemwaarde blijft behouden bij stilstand of dip) en is al quitte bij een kleine koersstap. De meervoudige ATM opties geven een veel grotere hefboom bij een sterke koersuitbraak, maar verliezen 100% van het kapitaal als de koers niet ver genoeg beweegt.")
                         sc_df = comp_matrix['scenario_df'].copy()
                         sc_df.insert(0, 'Symbool', sym_val)
