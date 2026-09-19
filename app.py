@@ -2387,7 +2387,7 @@ with tab2:
             ]
         else:
             display_cols = [
-                'Selecteer', 'koopadvies', 'trade_verdict', 'symbol', 'underlying_price', 'AG_Score', 'expected_value', 'pop_adj', 'pop', 'dS_BE', 'gamma_theta_ratio', 'strategy', 'assignment_risk_badge', 'notional_assignment_capital', 'extrinsic_val_short', 'cue', 'expiry', 'strike_buy', 'strike_sell', 'width', 
+                'Selecteer', 'koopadvies', 'trade_verdict', 'symbol', 'underlying_price', 'AG_Score', 'score_pop', 'score_roc', 'score_ttp', 'score_safety', 'score_flow', 'expected_value', 'pop_adj', 'pop', 'dS_BE', 'gamma_theta_ratio', 'strategy', 'assignment_risk_badge', 'notional_assignment_capital', 'extrinsic_val_short', 'cue', 'expiry', 'strike_buy', 'strike_sell', 'width', 
                 'strike_p_buy', 'strike_p_sell', 'strike_c_sell', 'strike_c_buy',
                 'spread_mid_abs', 'spread_ask_abs', 'b_l_verschil', 'max_profit', 'sluitingswinst', 'sluitingswinst_em85',
                 'TTP (D)', 'TEI Score', 'Efficient',
@@ -2446,7 +2446,12 @@ with tab2:
             "winst_laat": st.column_config.NumberColumn("Winst (Laat)", format="$%.2f"),
             "winst_midden": st.column_config.NumberColumn("Winst (Midden)", format="$%.2f"),
             "winst_laatste": st.column_config.NumberColumn("Winst (Laatste)", format="$%.2f"),
-            "AG_Score": st.column_config.NumberColumn("AG Score", format="⭐ %.1f"),
+            "AG_Score": st.column_config.NumberColumn("AG Score (0-100)", format="⭐ %.1f", help="Ultieme Master Selector (0-100) over 5 Pijlers: PoP, ROC/EV, TTP Snelheid, BEP/Gamma Buffer en Flow"),
+            "score_pop": st.column_config.NumberColumn("P1: Slaagkans", format="%.1f pt", help="Pilaar 1: Slaagkans & Statistisch Voordeel (max 25 pt)"),
+            "score_roc": st.column_config.NumberColumn("P2: ROC/EV", format="%.1f pt", help="Pilaar 2: Rendement op Investering & EV (max 20 pt)"),
+            "score_ttp": st.column_config.NumberColumn("P3: TTP Snelheid", format="%.1f pt", help="Pilaar 3: Tijdswaarde & Verzilveringssnelheid (max 15 pt)"),
+            "score_safety": st.column_config.NumberColumn("P4: Buffer/Gamma", format="%.1f pt", help="Pilaar 4: Koersbuffer & Gamma/Theta Veiligheid (max 20 pt)"),
+            "score_flow": st.column_config.NumberColumn("P5: Flow/Regime", format="%.1f pt", help="Pilaar 5: Institutionele Flow & Sentiment (max 20 pt)"),
             "strategy": st.column_config.TextColumn("Strategie"),
             "expiry": st.column_config.TextColumn("Expiratie (Kort)", help="Expiratiedatum van de korte geschreven optie"),
             "expiry_long": st.column_config.TextColumn("Expiratie Long (LEAPS)", help="Expiratiedatum van de diep ITM long optie (LEAPS)"),
@@ -2618,9 +2623,10 @@ with tab2:
             bulk_qty = st.number_input("Aantal stuks", min_value=1, value=1, key="bulk_order_qty")
         with col_b2:
             bulk_order_type = st.selectbox("Order Type (Executie)", 
-                ["Adaptive - Normal", "LMT (Standaard Limiet)", "Adaptive - Urgent", "Adaptive - Patient"],
+                ["LMT (Standaard Limiet)", "Adaptive - Normal", "Adaptive - Urgent", "Adaptive - Patient"],
                 index=0,
-                key="bulk_order_type"
+                key="bulk_order_type",
+                help="Voor multi-leg optiespreads gebruikt IBKR altijd een standaard Limietorder (LMT). Voor single-leg opties onderhandelt Adaptive automatisch de beste prijs."
             )
         with col_b3:
             bulk_bracket_tif = st.selectbox("Exit TIF", ["GTC", "DAY"], index=0, key="bulk_bracket_tif", help="GTC (Good 'Til Canceled) voor Take Profit en Stop Loss orders.")
@@ -2904,8 +2910,8 @@ with tab3:
                 with c_ot1:
                     order_type_ui = st.selectbox("Order Type (Executie)", 
                         ["LMT (Standaard Limiet)", "Adaptive - Normal", "Adaptive - Urgent", "Adaptive - Patient"],
-                        index=1,
-                        help="Kies Adaptive Algo om TWS de beste prijs binnen de spread te laten onderhandelen zonder de max limiet te overschrijden."
+                        index=0,
+                        help="Kies LMT voor optiespreads (IBKR ondersteunt geen Adaptive op multi-leg combos). Voor single-leg opties kan Adaptive gebruikt worden om de scherpste prijs binnen de spread te onderhandelen."
                     )
                 with c_ot2:
                     order_tif_ui = st.selectbox("Geldigheid Hoofdorder (TIF)", 

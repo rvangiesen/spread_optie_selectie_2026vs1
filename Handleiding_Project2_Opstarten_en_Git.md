@@ -12,12 +12,12 @@ Er zijn twee manieren om het project te laden: de moderne en snelle methode met 
 Als je **uv** (een moderne Python package manager) hebt geïnstalleerd, is het opstarten heel eenvoudig:
 
 1. Open de commandline (PowerShell of Command Prompt) in de projectmap:
-   `c:\Users\Gebruiker\Documents\Python_Projecten\AntiGravity Project 2_ spreadselectie_ setup via AG`
+ `c:\Users\Gebruiker\Documents\Python_Projecten\AntiGravity Project 2_ spreadselectie_ setup via AG`
 2. Run de app direct met:
-   ```bash
-   uv run streamlit run app.py
-   ```
-   *Dit commando zorgt er automatisch voor dat alle benodigde bibliotheken uit `pyproject.toml` in een tijdelijke, schone omgeving worden geladen en start Streamlit.*
+ ```bash
+ uv run streamlit run app.py
+ ```
+ *Dit commando zorgt er automatisch voor dat alle benodigde bibliotheken uit `pyproject.toml` in een tijdelijke, schone omgeving worden geladen en start Streamlit.*
 
 ---
 
@@ -31,13 +31,13 @@ Open je favoriete editor (VS Code, PyCharm) en kies **Open Folder** (Map openen)
 #### Stap 2: Virtuele Omgeving activeren
 Open de terminal in je editor. Als er al een `.venv` map bestaat, activeer deze dan:
 * **In Windows (PowerShell)**:
-  ```powershell
-  .venv\Scripts\Activate.ps1
-  ```
+ ```powershell
+ .venv\Scripts\Activate.ps1
+ ```
 * **In Windows (CMD)**:
-  ```cmd
-  .venv\Scripts\activate.bat
-  ```
+ ```cmd
+ .venv\Scripts\activate.bat
+ ```
 *Zie je `(.venv)` voor je prompt staan? Dan is de activatie gelukt!*
 
 *Als er nog geen virtuele omgeving is, maak er dan eerst een aan:*
@@ -82,13 +82,13 @@ Je ziet nu een lijst met gewijzigde bestanden (in het rood).
 
 ### Stap 2: Bestanden klaarzetten voor de commit (Staging)
 * **Alle wijzigingen selecteren**:
-  ```bash
-  git add .
-  ```
+ ```bash
+ git add .
+ ```
 * **Specifieke bestanden selecteren** (bijvoorbeeld alleen de handleiding en de app):
-  ```bash
-  git add Handleiding_Optie_Contract_Selectie.md app.py
-  ```
+ ```bash
+ git add Handleiding_Optie_Contract_Selectie.md app.py
+ ```
 
 ### Stap 3: De wijzigingen vastleggen (Commit)
 Geef een duidelijke, beschrijvende boodschap mee aan je wijziging:
@@ -108,35 +108,35 @@ Je wijzigingen staan nu live op GitHub!
 ## 3. Handige Git commando's bij problemen
 
 * **Wijzigingen ophalen van GitHub** (als je op een andere pc hebt gewerkt):
-  ```bash
-  git pull origin main
-  ```
+ ```bash
+ git pull origin main
+ ```
 * **Tijdelijk je werk aan de kant zetten** (bijvoorbeeld als je een foutmelding krijgt dat je werkruimte niet schoon is):
-  ```bash
-  git stash -u
-  ```
+ ```bash
+ git stash -u
+ ```
 * **Je stashed werk weer terugzetten**:
-  ```bash
-  git stash pop
-  ```
+ ```bash
+ git stash pop
+ ```
 
 ---
 
 ## 4. Belangrijkste Recente Updates in de Codebase
 
 1. **🛡️ Early Assignment Risk Engine & Tijdswaardebewaking**:
-   - Monitort continu de resterende extrinsieke waarde van de geschreven poot.
-   - Bij $\le \$0.10$ verschijnt een waarschuwing (`⚠️ GEVARENZONE`), bij $\le \$0.05$ slaat het systeem alarm (`🚨 DIRECT SLUITEN`) en adviseert het direct sluiten als combinatieorder.
+ - Monitort continu de resterende extrinsieke waarde van de geschreven poot.
+ - Bij 0,10 dollar of minder resterende tijdswaarde verschijnt een waarschuwing (`⚠️ GEVARENZONE`), bij 0,05 dollar of minder slaat het systeem alarm (`🚨 DIRECT SLUITEN`) en adviseert het direct sluiten als combinatieorder.
 2. **⚖️ Kapitaalbewuste Selectie: Bull Put vs Bull Call**:
-   - *Vuistregel: "Heb je genoeg geld staan dan bullputs, anders alleen maar bullcalls."*
-   - Vergelijkt het nominale toewijzingskapitaal ($Strike \times 100$) met je beschikbare cash.
-   - Bij onvoldoende cash krijgen veilige Bull Call debet spreads (maximaal risico beperkt tot debet) voorrang boven Bull Puts.
-   - Met het nieuwe zijbalkfilter *'Strikt filteren: verberg ongedekte Bull Puts'* worden ongedekte Bull Puts zelfs 100% verborgen.
+ - *Vuistregel: "Heb je genoeg geld staan dan bullputs, anders alleen maar bullcalls."*
+ - Vergelijkt het nominale toewijzingskapitaal (Uitoefenprijs x 100 aandelen) met je beschikbare cash.
+ - Bij onvoldoende cash krijgen veilige Bull Call debet spreads (maximaal risico beperkt tot debet) voorrang boven Bull Puts.
+ - Met het nieuwe zijbalkfilter *'Strikt filteren: verberg ongedekte Bull Puts'* worden ongedekte Bull Puts zelfs 100% verborgen.
 3. **🔧 TWS Error 201 Oplossing (Canonieke Pootdefinitie)**:
-   - Verhelpt de melding *"Gegarandeerd-verlies of risicoloze combinatie-orders zijn niet toegestaan"*.
-   - Bracket orders (Take Profit & Stop Loss) voeren nu direct uit zonder poot-inversie.
+ - Verhelpt de melding *"Gegarandeerd-verlies of risicoloze combinatie-orders zijn niet toegestaan"*.
+ - Bracket orders (Take Profit & Stop Loss) voeren nu direct uit zonder poot-inversie.
 4. **📊 Option Chain Predictiemodel & Gamma/Theta Engine (V1 & V2)**:
-   - 4-Kwadranten Delta OI analyse voor trendvoorspelling (`🚀 UPTREND`, `🎯 PINNING`, etc.).
-   - Vested Value steun- en weerstandsmuren ($Margin \times OI$).
-   - Breakeven dagelijkse koersbeweging $\delta S_{BE}$, Bayesiaanse $PoP_{adj}$ en Expected Value ($EV$).
+ - 4-Kwadranten Delta OI analyse voor trendvoorspelling (`🚀 UPTREND`, `🎯 PINNING`, etc.).
+ - Vested Value steun- en weerstandsmuren (Marge x Openstaande contracten).
+ - Breakeven dagelijkse koersbeweging (dS_BE), Bayesiaanse winstkans (winstkans (PoP_adj)) en Verwachte Winst (EV).
 

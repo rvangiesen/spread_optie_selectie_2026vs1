@@ -2283,7 +2283,7 @@ class SpreadScanner:
         # --- Part 7: AntiGravity Score (AG Score) ---
         # Combineert winstkans, TEI, EM85 veiligheidsdekking, Max Pain en Risk/Reward verhouding
         
-        # 1. Bereken EM85 Dekkingsverhouding (EM85 Coverage Ratio)
+        # 1. Bereken EM85 Dekkingsverhouding (EM85 Coverage Ratio) & BEP Afstand
         em85_vals = np.maximum(0.01, spreads_df['EM85'].values)
         bep_vals = spreads_df['BEP'].values if 'BEP' in spreads_df.columns else spreads_df['strike_buy'].values
         strat_vals = spreads_df['strategy'].values
@@ -2302,51 +2302,8 @@ class SpreadScanner:
                 
         em85_coverage_ratio = bep_dists / em85_vals
         spreads_df['em85_dekking_pct'] = np.round(em85_coverage_ratio * 100.0, 1)
-        
-        # EM85 Multiplier: Beloon trades waar BEP buiten het 85% EM bereik ligt (> 1.0)
-        # Bij ratio = 1.0 (BEP exact op 85% grens) -> 1.30x multiplier
-        # Bij ratio >= 1.5 (BEP diep beschermd achter EM85 & supports) -> 1.60x multiplier
-        em85_multiplier = 1.0 + np.clip((em85_coverage_ratio - 0.4) * 0.6, -0.3, 0.7)
-        
-        # 2. Risk/Reward Balans Multiplier (Winst vs Verlies)
-        # Voorkom extreem scheve verhoudingen (bijv. $5 winst vs $495 verlies = RoR < 0.05)
-        profits = spreads_df['max_profit'].values
-        widths = spreads_df['width'].values
-        max_loss = np.where(widths > 0, (widths * 100) - profits, 1.0)
-        max_loss = np.maximum(1.0, max_loss)
-        ror = profits / max_loss
-        
-        # Beloon de 'sweet spot' (10% - 50% rendement op risico) i.c.m. hoge EM85 dekking
-        ror_multiplier = np.where((ror >= 0.10) & (ror <= 0.60), 1.25, np.where(ror < 0.04, 0.50, 1.0))
-
-        # Base Score - incorporates Bayesian PoP
-        effective_pop = np.where(spreads_df['pop_adj'].values > 0, spreads_df['pop_adj'].values, spreads_df['pop'].values)
-        ag_score = effective_pop * np.maximum(spreads_df['TEI Score'], 0.1) * em85_multiplier * ror_multiplier
-        
-        # Quant Verdict & EV Multiplier
-        verdict_mult = np.where(
-            spreads_df['trade_verdict'] == "EXECUTE", 1.35,
-            np.where(spreads_df['trade_verdict'] == "GAMMA_CLIFF_RISK", 0.40,
-            np.where(spreads_df['expected_value'] > 0, 1.15, 0.75))
-        )
-        ag_score = ag_score * verdict_mult
-        
-        # Bonus voor 1% regel (koopadvies)
-        ag_score = np.where(spreads_df['koopadvies'] == "✅", ag_score * 1.3, ag_score)
-        
-        # Bonus voor Max Pain buffer
-        if 'max_pain_buffer_ok' in spreads_df.columns:
-            ag_score = np.where(spreads_df['max_pain_buffer_ok'], ag_score * 1.2, ag_score)
-            
-        # Bonus voor BEP Afstand
-        if 'bep_afstand_pct' in spreads_df.columns:
-            bep_buffer_pct = np.maximum(0, spreads_df['bep_afstand_pct'])
-            bep_bonus_multiplier = 1.0 + (bep_buffer_pct / 100.0) * 2.0
-            ag_score = ag_score * bep_bonus_multiplier
-        
-        # Penalty voor heel krappe afstand tot koers (strike_buy dicht op koers)
-        dist_pct = np.abs(spreads_df['strike_buy'] - underlying_price) / max(0.001, underlying_price)
-        ag_score = np.where(dist_pct < 0.01, ag_score * 0.8, ag_score)
+        bep_dist_pct = (bep_dists / max(0.01, underlying_price)) * 100.0
+        spreads_df['bep_afstand_pct'] = np.round(bep_dist_pct, 2)
 
         # --- Part 8: Early Assignment Risk & Capital Guardrail ---
         from risk_model import EarlyAssignmentRiskEngine
@@ -2399,22 +2356,88 @@ class SpreadScanner:
         spreads_df['assignment_risk_badge'] = assign_badge_arr
         spreads_df['capital_covered'] = cap_covered_arr
 
-        # Capital Guardrail Penalty:
-        # Als account_cash ontoereikend is om 100 aandelen af te nemen bij aanwijzing van een credit spread,
-        # verlaag de AG_Score van de credit spread drastisch zodat veilige Bull Calls bovenaan komen!
-        if account_cash is not None and account_cash > 0:
-            is_uncovered_credit = np.array([not c for c in cap_covered_arr])
-            if force_bullcall_if_uncovered:
-                cap_mult = np.where(is_uncovered_credit, 0.05, 1.0)
-            else:
-                cap_mult = np.where(is_uncovered_credit, 0.50, 1.0)
-            ag_score = ag_score * cap_mult
+        # --- Part 9: Ultieme AntiGravity Master Selector (AG Score 0 - 100) ---
+        # Berekent de genormaliseerde 5-Pijler Master Selector (0.0 tot 100.0)
+        ag_scores = np.zeros(n)
+        s_pop_arr = np.zeros(n)
+        s_roc_arr = np.zeros(n)
+        s_ttp_arr = np.zeros(n)
+        s_safe_arr = np.zeros(n)
+        s_flow_arr = np.zeros(n)
 
-        # Penalty if short leg is already ITM with low extrinsic value (<= 0.10)
-        low_extrinsic_penalty = np.where((extrinsic_short_arr > 0) & (extrinsic_short_arr <= 0.10), 0.50, 1.0)
-        ag_score = ag_score * low_extrinsic_penalty
-        
-        spreads_df['AG_Score'] = np.round(ag_score, 1)
+        # Laad eventuele aandeel-specifieke kalibratie uit backtests
+        sym_hit_factor = 1.0
+        try:
+            import json, os
+            calib_file = os.path.join(os.path.dirname(__file__), "symbol_calibration.json")
+            if os.path.exists(calib_file):
+                with open(calib_file, "r") as f_calib:
+                    calib_data = json.load(f_calib)
+                    sym_key = str(symbol).upper()
+                    if sym_key in calib_data and 'hitrate_factor' in calib_data[sym_key]:
+                        sym_hit_factor = float(calib_data[sym_key]['hitrate_factor'])
+        except Exception:
+            sym_hit_factor = 1.0
+
+        for i in range(n):
+            st_type = strat_vals[i]
+            pop_val = float(spreads_df['pop_adj'].iloc[i]) if 'pop_adj' in spreads_df.columns else float(spreads_df['pop'].iloc[i])
+            m_prof = float(spreads_df['max_profit'].iloc[i])
+            m_lss = float(ev_max_loss[i])
+            ev_v = float(spreads_df['expected_value'].iloc[i]) if 'expected_value' in spreads_df.columns else 0.0
+            tei_v = float(spreads_df['TEI Score'].iloc[i]) if 'TEI Score' in spreads_df.columns else 1.0
+            ttp_v = float(spreads_df['TTP (D)'].iloc[i]) if 'TTP (D)' in spreads_df.columns else 15.0
+            dte_v = float(spreads_df['dte'].iloc[i]) if 'dte' in spreads_df.columns else 30.0
+            bep_pct_v = float(bep_dist_pct[i])
+            ds_v = float(spreads_df['dS_BE'].iloc[i]) if 'dS_BE' in spreads_df.columns else 999.0
+            gc_v = bool(spreads_df['gamma_cliff_warning'].iloc[i]) if 'gamma_cliff_warning' in spreads_df.columns else False
+            mp_ok = bool(spreads_df['max_pain_buffer_ok'].iloc[i]) if 'max_pain_buffer_ok' in spreads_df.columns else False
+            kp_ok = bool(spreads_df['koopadvies'].iloc[i] == "✅") if 'koopadvies' in spreads_df.columns else False
+
+            score_dict = gt_engine.calculate_ultimate_ag_score(
+                pop_adj=pop_val,
+                max_profit=m_prof,
+                max_loss=m_lss,
+                expected_value=ev_v,
+                tei_score=tei_v,
+                ttp_days=ttp_v,
+                dte=dte_v,
+                bep_dist_pct=bep_pct_v,
+                ds_be=ds_v,
+                atr_10=float(atr_10) if atr_10 > 0 else 2.0,
+                gamma_cliff=gc_v,
+                cue=cue,
+                max_pain_ok=mp_ok,
+                koopadvies_ok=kp_ok,
+                strategy_type=st_type,
+                symbol_hitrate_factor=sym_hit_factor
+            )
+
+            final_score = score_dict['ultimate_ag_score']
+
+            # Capital Guardrail Penalty
+            if account_cash is not None and account_cash > 0:
+                if not cap_covered_arr[i]:
+                    final_score *= (0.05 if force_bullcall_if_uncovered else 0.50)
+
+            # Penalty bij krap ITM met lage tijdswaarde (<= 0.10)
+            if extrinsic_short_arr[i] > 0 and extrinsic_short_arr[i] <= 0.10:
+                final_score *= 0.50
+
+            final_score = round(float(np.clip(final_score, 0.0, 100.0)), 1)
+            ag_scores[i] = final_score
+            s_pop_arr[i] = score_dict['score_pop']
+            s_roc_arr[i] = score_dict['score_roc']
+            s_ttp_arr[i] = score_dict['score_ttp']
+            s_safe_arr[i] = score_dict['score_safety']
+            s_flow_arr[i] = score_dict['score_flow']
+
+        spreads_df['AG_Score'] = ag_scores
+        spreads_df['score_pop'] = s_pop_arr
+        spreads_df['score_roc'] = s_roc_arr
+        spreads_df['score_ttp'] = s_ttp_arr
+        spreads_df['score_safety'] = s_safe_arr
+        spreads_df['score_flow'] = s_flow_arr
         spreads_df['underlying_price'] = underlying_price
 
         return spreads_df

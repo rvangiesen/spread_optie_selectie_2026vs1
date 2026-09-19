@@ -1338,8 +1338,9 @@ class IBClient:
             )
             order.smartComboRoutingParams = [TagValue('NonGuaranteed', '1')]
             if algo_strategy:
-                order.algoStrategy = algo_strategy
-                order.algoParams = algo_params
+                # IBKR ondersteunt de Adaptive Algo NIET op non-guaranteed SMART combos (Error 201).
+                # Voor combos valt TWS daarom automatisch terug op de opgegeven lmtPrice als standaard LMT order.
+                print(f"DEBUG_LOG: Adaptive algo ({algo_strategy}) is niet ondersteund door IBKR voor non-guaranteed BAG combos. Order voor {symbol} ({len(legs_data)} legs) wordt veilig geplaatst als standaard LMT @ ${price}.")
             print(f"DEBUG_LOG: Placing BAG order ({len(legs_data)} legs): {outer_action} {quantity} combo @ {price} (tif={tif})...")
             trade = self.ib.placeOrder(bag, order)
 
@@ -1924,6 +1925,58 @@ class IBClient:
 
         return summary
 
+    def cancel_open_orders_for_contract(self, contract):
+        """
+        Annuleert bestaande actieve/openstaande orders (zoals Take Profit LMT of Stop Loss STP)
+        voor een specifiek contract voordat een nieuwe sluitingsorder wordt geplaatst.
+        Dit voorkomt Error 201 en 'No trading permissions' wegens dubbele verkoop / naakt optierisico.
+        """
+        if not self.is_connected() or not contract:
+            return 0
+        
+        canceled = 0
+        try:
+            target_con_id = getattr(contract, 'conId', None)
+            target_symbol = getattr(contract, 'symbol', '')
+            target_strike = getattr(contract, 'strike', None)
+            target_right = getattr(contract, 'right', None)
+            target_expiry = getattr(contract, 'lastTradeDateOrContractMonth', None)
+            
+            # Controleer alle actieve openstaande trades in TWS
+            for trade in self.ib.openTrades():
+                if trade.orderStatus.status in ('PreSubmitted', 'Submitted', 'PendingSubmit'):
+                    c = trade.contract
+                    match = False
+                    
+                    # 1. Match op conId als beide beschikbaar zijn
+                    if target_con_id and getattr(c, 'conId', None) and target_con_id == c.conId:
+                        match = True
+                    # 2. Match op contract specificaties
+                    elif (c.symbol == target_symbol and 
+                          c.secType in ('OPT', 'FOP', 'STK') and
+                          getattr(c, 'strike', None) == target_strike and
+                          getattr(c, 'right', None) == target_right and
+                          getattr(c, 'lastTradeDateOrContractMonth', None) == target_expiry):
+                        match = True
+                    # 3. Match als het een BAG combo order betreft die deze poot bevat
+                    elif c.secType == 'BAG' and getattr(c, 'comboLegs', None):
+                        for leg in c.comboLegs:
+                            if target_con_id and leg.conId == target_con_id:
+                                match = True
+                                break
+                    
+                    if match:
+                        print(f"DEBUG_LOG: Annuleren van actieve working order #{trade.order.orderId} ({trade.order.action} {trade.order.totalQuantity}x {trade.order.orderType}) voor {target_symbol} vóór sluiting...")
+                        self.ib.cancelOrder(trade.order)
+                        canceled += 1
+            
+            if canceled > 0:
+                self.ib.sleep(0.5) # Korte adempauze zodat TWS status update kan verwerken
+        except Exception as e:
+            print(f"DEBUG_LOG: Fout bij cancel_open_orders_for_contract: {e}")
+        
+        return canceled
+
     def execute_portfolio_adjustments(self, approved_actions):
         """
         Executes approved exit/management actions in TWS for portfolio positions.
@@ -1957,9 +2010,11 @@ class IBClient:
                     pos_qty = item.position
                     if pos_qty == 0: continue
                     q_contract = self.qualify_contract_safe(c) or c
+                    self.cancel_open_orders_for_contract(q_contract)
                     act = 'SELL' if pos_qty > 0 else 'BUY'
                     shares_qty = int(abs(pos_qty))
                     order = MarketOrder(action=act, totalQuantity=shares_qty)
+                    order.openClose = 'C'
                     trade = self.ib.placeOrder(q_contract, order)
                     closed_count += 1
                 results.append({
@@ -1973,6 +2028,7 @@ class IBClient:
                 short_leg = next((l for l in legs if getattr(l, 'position', 0) < 0), None)
                 if short_leg:
                     c = self.qualify_contract_safe(short_leg.contract) or short_leg.contract
+                    self.cancel_open_orders_for_contract(c)
                     short_order = LimitOrder(
                         action='BUY',
                         totalQuantity=qty,
@@ -1980,6 +2036,7 @@ class IBClient:
                         tif='DAY',
                         outsideRth=False
                     )
+                    short_order.openClose = 'C'
                     trade = self.ib.placeOrder(c, short_order)
                     results.append({
                         'symbol': sym,
@@ -1999,6 +2056,7 @@ class IBClient:
                         net_debit = 0.0
                         for item in legs:
                             c = self.qualify_contract_safe(item.contract) or item.contract
+                            self.cancel_open_orders_for_contract(c)
                             leg_act = 'BUY' if item.position < 0 else 'SELL'
                             combo_legs.append(ComboLeg(
                                 conId=c.conId,
@@ -2024,6 +2082,7 @@ class IBClient:
                                 combo_lmt_price = 0.50
 
                         bag = Contract(symbol=sym, secType='BAG', currency='USD', exchange='SMART', comboLegs=combo_legs)
+                        self.cancel_open_orders_for_contract(bag)
                         combo_order = LimitOrder(
                             action='BUY',
                             totalQuantity=qty,
@@ -2031,6 +2090,8 @@ class IBClient:
                             tif='DAY',
                             outsideRth=False
                         )
+                        combo_order.smartComboRoutingParams = [TagValue('NonGuaranteed', '1')]
+                        combo_order.openClose = 'C'
                         trade = self.ib.placeOrder(bag, combo_order)
                         
                         mkt_check = self.is_us_options_market_open()
@@ -2057,6 +2118,8 @@ class IBClient:
                     if pos_qty != 0:
                         close_act = 'BUY' if pos_qty < 0 else 'SELL'
                         close_qty = int(abs(pos_qty))
+                        # Annuleer eventuele actieve orders (zoals bracket TP/SL) op dit contract
+                        self.cancel_open_orders_for_contract(c)
                         m_p = float(getattr(item, 'marketPrice', 0.0) or 0.0)
                         if m_p <= 0:
                             m_p = self.get_market_price(c) or 0.0
@@ -2065,22 +2128,27 @@ class IBClient:
                             order = LimitOrder(action=close_act, totalQuantity=close_qty, lmtPrice=lmt_p, tif='DAY')
                         else:
                             order = MarketOrder(action=close_act, totalQuantity=close_qty)
+                        order.openClose = 'C'
                         trade = self.ib.placeOrder(c, order)
                         results.append({
                             'symbol': sym,
                             'status': 'SUCCESS',
-                            'message': f"Single leg sluitingsorder ({close_act} {close_qty}x) verzonden naar TWS."
+                            'message': f"Single leg sluitingsorder ({close_act} {close_qty}x @ ${getattr(order, 'lmtPrice', 'MKT')}) verzonden naar TWS."
                         })
                 else:
                     try:
                         combo_legs = []
                         for item in legs:
                             c = self.qualify_contract_safe(item.contract) or item.contract
+                            self.cancel_open_orders_for_contract(c)
                             leg_act = 'BUY' if item.position < 0 else 'SELL'
                             combo_legs.append(ComboLeg(conId=c.conId, ratio=1, action=leg_act, exchange='SMART'))
                         bag = Contract(symbol=sym, secType='BAG', currency='USD', exchange='SMART', comboLegs=combo_legs)
+                        self.cancel_open_orders_for_contract(bag)
                         lmt_p = round(float(action.get('lmt_price', action.get('market_price', 1.00))), 2)
                         combo_order = LimitOrder(action='BUY', totalQuantity=qty, lmtPrice=max(0.05, lmt_p), tif='DAY')
+                        combo_order.smartComboRoutingParams = [TagValue('NonGuaranteed', '1')]
+                        combo_order.openClose = 'C'
                         trade = self.ib.placeOrder(bag, combo_order)
                         results.append({
                             'symbol': sym,
@@ -2104,8 +2172,10 @@ class IBClient:
                     pos_qty = item.position
                     if pos_qty == 0: continue
                     q_c = self.qualify_contract_safe(c) or c
+                    self.cancel_open_orders_for_contract(q_c)
                     close_act = 'BUY' if pos_qty < 0 else 'SELL'
                     order = MarketOrder(action=close_act, totalQuantity=int(abs(pos_qty)))
+                    order.openClose = 'C'
                     self.ib.placeOrder(q_c, order)
                     placed_orders += 1
 

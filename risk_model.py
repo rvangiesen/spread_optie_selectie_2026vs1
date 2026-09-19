@@ -209,6 +209,100 @@ class AntiGravityGammaThetaEngine:
             "trade_verdict": verdict
         }
 
+    @staticmethod
+    def calculate_ultimate_ag_score(
+        pop_adj: float,
+        max_profit: float,
+        max_loss: float,
+        expected_value: float,
+        tei_score: float,
+        ttp_days: float,
+        dte: float,
+        bep_dist_pct: float,
+        ds_be: float,
+        atr_10: float,
+        gamma_cliff: bool,
+        cue: str,
+        max_pain_ok: bool,
+        koopadvies_ok: bool,
+        strategy_type: str = "BullPut",
+        symbol_hitrate_factor: float = 1.0
+    ) -> dict:
+        """
+        Calculates the normalized Ultimate AG-Score (0.0 to 100.0) across 5 core pillars:
+        - Pillar 1: Slaagkans & Statistiek (max 25 pts)
+        - Pillar 2: Rendement op Investering & EV (max 20 pts)
+        - Pillar 3: Tijdswaarde & Verzilveringssnelheid (max 15 pts)
+        - Pillar 4: Koersbuffer & Gamma/Theta Veiligheid (max 20 pts)
+        - Pillar 5: Institutionele Flow & Sentiment (max 20 pts)
+        """
+        # --- Pillar 1: Slaagkans & Statistiek (Max 25 pts) ---
+        pop_val = float(pop_adj) / 100.0 if float(pop_adj) > 1.0 else float(pop_adj)
+        pop_val = float(np.clip(pop_val, 0.0, 1.0))
+        hit_factor = float(np.clip(symbol_hitrate_factor, 0.80, 1.20))
+        s1 = 25.0 * pop_val * hit_factor
+        s1 = float(np.clip(s1, 0.0, 25.0))
+
+        # --- Pillar 2: Rendement op Investering & EV (Max 20 pts) ---
+        profit_val = max(0.0, float(max_profit))
+        loss_val = max(1.0, float(max_loss))
+        roc = profit_val / loss_val # Return on Capital / Risk
+        s2_roc = 10.0 * min(1.0, roc / 0.25)
+        ev_val = float(expected_value)
+        s2_ev = 10.0 * max(0.0, min(1.0, (ev_val + 10.0) / 40.0)) if ev_val > 0 else 0.0
+        s2 = float(np.clip(s2_roc + s2_ev, 0.0, 20.0))
+
+        # --- Pillar 3: Tijdswaarde & Verzilveringssnelheid (Max 15 pts) ---
+        tei = max(0.1, float(tei_score))
+        s3_tei = 7.5 * min(1.0, tei / 1.5)
+        dte_safe = max(1.0, float(dte))
+        ttp_safe = max(0.0, float(ttp_days))
+        speed_ratio = max(0.0, 1.0 - (ttp_safe / (dte_safe * 1.5)))
+        s3_speed = 7.5 * min(1.0, speed_ratio)
+        s3 = float(np.clip(s3_tei + s3_speed, 0.0, 15.0))
+
+        # --- Pillar 4: Koersbuffer & Gamma/Theta Veiligheid (Max 20 pts) ---
+        if gamma_cliff:
+            s4 = 0.0
+        else:
+            bep_dist = max(0.0, float(bep_dist_pct))
+            s4_bep = 10.0 * min(1.0, bep_dist / 8.0)
+            atr_safe = max(0.1, float(atr_10))
+            ds_val = float(ds_be) if ds_be != float('inf') else 999.0
+            coverage = ds_val / (atr_safe * 1.5)
+            s4_gt = 10.0 * min(1.0, coverage)
+            s4 = float(np.clip(s4_bep + s4_gt, 0.0, 20.0))
+
+        # --- Pillar 5: Institutionele Flow & Sentiment (Max 20 pts) ---
+        cue_upper = str(cue).upper()
+        strat_upper = str(strategy_type).upper()
+        is_bull = any(x in strat_upper for x in ['BULL', 'LONG'])
+        is_bear = any(x in strat_upper for x in ['BEAR', 'SHORT'])
+        
+        if 'PINNING' in cue_upper or 'FLAT' in cue_upper:
+            s5_cue = 7.0 if 'CONDOR' in strat_upper else 5.5
+        elif 'UPTREND' in cue_upper:
+            s5_cue = 8.0 if is_bull else 2.0
+        elif 'DOWNTREND' in cue_upper:
+            s5_cue = 8.0 if is_bear else 2.0
+        else:
+            s5_cue = 5.0
+            
+        s5_mp = 6.0 if max_pain_ok else 2.0
+        s5_koop = 6.0 if koopadvies_ok else 3.0
+        s5 = float(np.clip(s5_cue + s5_mp + s5_koop, 0.0, 20.0))
+
+        total_score = round(float(np.clip(s1 + s2 + s3 + s4 + s5, 0.0, 100.0)), 1)
+
+        return {
+            'ultimate_ag_score': total_score,
+            'score_pop': round(s1, 1),
+            'score_roc': round(s2, 1),
+            'score_ttp': round(s3, 1),
+            'score_safety': round(s4, 1),
+            'score_flow': round(s5, 1)
+        }
+
 
 class EarlyAssignmentRiskEngine:
     """

@@ -2,6 +2,7 @@ import datetime
 import numpy as np
 import pandas as pd
 import yfinance as yf
+from risk_model import AntiGravityGammaThetaEngine
 
 def round_to_strike(price):
     """
@@ -291,6 +292,28 @@ class SpreadHitRateTester:
                         realized_pnl = -max_loss
                         status = "🔴 Verlies (ITM)"
 
+                # Bereken Ultieme AG-Score (0-100) voor de trade
+                ev_est = (pop_est / 100.0 * max_profit) - ((1.0 - pop_est / 100.0) * max_loss)
+                bep_dist_pct = (bep_dist / max(0.01, price_entry)) * 100.0
+                score_res = AntiGravityGammaThetaEngine.calculate_ultimate_ag_score(
+                    pop_adj=pop_est,
+                    max_profit=max_profit,
+                    max_loss=max_loss,
+                    expected_value=ev_est,
+                    tei_score=1.2,
+                    ttp_days=dte_val * 0.5,
+                    dte=dte_val,
+                    bep_dist_pct=bep_dist_pct,
+                    ds_be=em68 * 1.5,
+                    atr_10=max(0.1, price_entry * hv_val / np.sqrt(252)),
+                    gamma_cliff=(dte_val <= 3),
+                    cue="UPTREND" if is_bullish else "DOWNTREND",
+                    max_pain_ok=True,
+                    koopadvies_ok=(bep_dist_pct >= 5.0),
+                    strategy_type=strat
+                )
+                ag_score_val = score_res['ultimate_ag_score']
+
                 results.append({
                     'symbol': sym,
                     'entry_date': date_entry.strftime('%Y-%m-%d'),
@@ -312,6 +335,7 @@ class SpreadHitRateTester:
                     'em_multiplier_used': round(em_multiplier, 2),
                     'em85_dekking_pct': round(em85_dekking, 1),
                     'pop': round(pop_est, 1),
+                    'AG_Score': ag_score_val,
                     'status': status,
                     'win': win,
                     'em85_safe': em85_safe,
@@ -331,12 +355,24 @@ class SpreadHitRateTester:
         avg_pnl = float(df_res['realized_pnl'].mean())
         avg_pop = float(df_res['pop'].mean())
 
+        # Deciel en Categorie Validatie van de Ultieme AG-Score
+        ag_high = df_res[df_res['AG_Score'] >= 80.0]
+        ag_mid = df_res[(df_res['AG_Score'] >= 65.0) & (df_res['AG_Score'] < 80.0)]
+        ag_low = df_res[df_res['AG_Score'] < 65.0]
+
         summary = {
             'total_trades': total_count,
             'wins': win_count,
             'losses': total_count - win_count,
             'hit_rate': round(hit_rate, 1),
             'avg_pop': round(avg_pop, 1),
+            'avg_ag_score': round(float(df_res['AG_Score'].mean()), 1) if 'AG_Score' in df_res.columns else 0.0,
+            'hitrate_ag_80_plus': round((float(ag_high['win'].sum()) / len(ag_high) * 100.0), 1) if not ag_high.empty else 0.0,
+            'count_ag_80_plus': len(ag_high),
+            'hitrate_ag_65_80': round((float(ag_mid['win'].sum()) / len(ag_mid) * 100.0), 1) if not ag_mid.empty else 0.0,
+            'count_ag_65_80': len(ag_mid),
+            'hitrate_ag_sub_65': round((float(ag_low['win'].sum()) / len(ag_low) * 100.0), 1) if not ag_low.empty else 0.0,
+            'count_ag_sub_65': len(ag_low),
             'em85_safe_rate': round(em85_safe_rate, 1),
             'total_pnl': round(total_pnl, 2),
             'avg_pnl': round(avg_pnl, 2)
