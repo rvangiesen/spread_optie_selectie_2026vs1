@@ -1990,8 +1990,11 @@ with tab1:
                                                  if profile_mgr.is_expired(sym, max_age_days=30):
                                                      log(f"   🔄 Auto-Refresh: Geen recent profiel voor {sym} (>30d of nieuw). Snelle optimalisatiesweep wordt uitgevoerd...")
                                                      try:
-                                                         from hitrate_backtester import SpreadHitRateTester
-                                                         hr_tester = SpreadHitRateTester()
+                                                         import importlib
+                                                         import hitrate_backtester
+                                                         if not hasattr(hitrate_backtester.SpreadHitRateTester, 'quick_optimize_stock'):
+                                                             importlib.reload(hitrate_backtester)
+                                                         hr_tester = hitrate_backtester.SpreadHitRateTester()
                                                          fresh_prof = hr_tester.quick_optimize_stock(sym, trades_per_symbol=3, log_callback=log)
                                                          profile_mgr.save_profile(sym, fresh_prof)
                                                          log(f"   ✅ Auto-Refresh voltooid voor {sym}: Optimaal profiel opgeslagen ({fresh_prof.get('best_em_multiplier')}x EM, ${fresh_prof.get('best_width')} breedte, winstdoel {fresh_prof.get('profit_target_pct')}%)")
