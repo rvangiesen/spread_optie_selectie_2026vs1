@@ -86,6 +86,10 @@ class IBClient:
             import time
             self.last_pacing_violation = time.time()
             print(f"[IBClient] ⚠️ TWS Pacing limit/rate-limit gedetecteerd (Code {errorCode}): {errorString}. Schakel tijdelijk over naar snelle fallback.")
+        elif errorCode in [10147]:
+            # Error 10147: OrderId that needs to be cancelled is not found.
+            # Treedt op als de order reeds door TWS via de OCA-groep is opgeruimd of al geannuleerd is.
+            pass
 
     def log_debug(self, msg):
         """Helper for logging debug information."""
@@ -105,8 +109,8 @@ class IBClient:
                 import random
                 loop = util.getLoop()
                 
-                # Primary attempt
-                target_cid = client_id if client_id and client_id > 0 else random.randint(1000, 9999)
+                # Primary attempt (respecteer client_id=0 als master client ID)
+                target_cid = client_id if client_id is not None and client_id >= 0 else random.randint(1000, 9999)
                 
                 if loop.is_running():
                     async def _do_connect():
@@ -1362,19 +1366,22 @@ class IBClient:
                     sl_price = round(p_val * (1.0 + sl_pct), 2)
 
             # 1. Take Profit Order
+            oca_id = str(parent_id)
             tp_order = Order(
                 action=exit_action,
                 totalQuantity=quantity,
                 orderType='LMT',
                 lmtPrice=tp_price,
                 parentId=parent_id,
+                ocaGroup=oca_id,
+                ocaType=1,
                 tif=bracket_tif,
                 outsideRth=True,
                 transmit=False
             )
             if len(legs_data) > 1:
                 tp_order.smartComboRoutingParams = [TagValue('NonGuaranteed', '1')]
-            print(f"DEBUG_LOG: Attaching Take Profit order: {exit_action} @ {tp_price} (parentId: {parent_id}, tif={bracket_tif})")
+            print(f"DEBUG_LOG: Attaching Take Profit order: {exit_action} @ {tp_price} (parentId: {parent_id}, ocaGroup: {oca_id}, tif={bracket_tif})")
             self.ib.placeOrder(target_contract, tp_order)
 
             # 2. Stop Loss Order - Transmits full bracket
@@ -1386,6 +1393,8 @@ class IBClient:
                     orderType='STP',
                     auxPrice=sl_price,
                     parentId=parent_id,
+                    ocaGroup=oca_id,
+                    ocaType=1,
                     tif=bracket_tif,
                     outsideRth=True,
                     transmit=True
@@ -1407,12 +1416,14 @@ class IBClient:
                     auxPrice=sl_price,
                     lmtPrice=sl_lmt,
                     parentId=parent_id,
+                    ocaGroup=oca_id,
+                    ocaType=1,
                     tif=bracket_tif,
                     outsideRth=True,
                     transmit=True
                 )
                 sl_order.smartComboRoutingParams = [TagValue('NonGuaranteed', '1')]
-            print(f"DEBUG_LOG: Attaching Stop Loss order ({sl_order.orderType}): {exit_action} @ aux={sl_price}, lmt={getattr(sl_order, 'lmtPrice', None)} (parentId: {parent_id}, tif={bracket_tif})")
+            print(f"DEBUG_LOG: Attaching Stop Loss order ({sl_order.orderType}): {exit_action} @ aux={sl_price}, lmt={getattr(sl_order, 'lmtPrice', None)} (parentId: {parent_id}, ocaGroup: {oca_id}, tif={bracket_tif})")
             self.ib.placeOrder(target_contract, sl_order)
 
         # 3. Wait for Submit - Wacht specifiek totdat TWS de order verwerkt en PendingSubmit verlaat
@@ -1925,17 +1936,64 @@ class IBClient:
 
         return summary
 
+    def _cancel_trades_safely(self, trades_to_cancel):
+        """
+        Annuleert een lijst trades op een veilige manier via de juiste eigenaar-clientId.
+        In TWS API kan een niet-master client alleen orders annuleren die door diezelfde clientId
+        zijn geplaatst. Indien trade.order.clientId != self.client_id, verbindt deze methode
+        tijdelijk met die specifieke clientId om de order zonder Error 10147 te annuleren.
+        """
+        if not trades_to_cancel:
+            return
+
+        by_cid = {}
+        for trade in trades_to_cancel:
+            cid = getattr(trade.order, 'clientId', self.client_id)
+            by_cid.setdefault(cid, []).append(trade)
+
+        for cid, trades_for_cid in by_cid.items():
+            if cid == self.client_id:
+                for tr in trades_for_cid:
+                    try:
+                        self.ib.cancelOrder(tr.order)
+                    except Exception as e_c:
+                        print(f"DEBUG_LOG: Fout bij cancelOrder #{tr.order.orderId}: {e_c}")
+            else:
+                try:
+                    from ib_insync import IB
+                    temp_ib = IB()
+                    temp_ib.connect(self.host, self.port, clientId=cid, timeout=3.0)
+                    temp_ib.reqOpenOrders()
+                    temp_ib.sleep(0.3)
+                    target_ids = {tr.order.orderId for tr in trades_for_cid}
+                    for t in temp_ib.openTrades():
+                        if t.order.orderId in target_ids and not t.isDone():
+                            print(f"DEBUG_LOG: Annuleren order #{t.order.orderId} via eigenaar-clientId #{cid}...")
+                            temp_ib.cancelOrder(t.order)
+                    temp_ib.sleep(0.4)
+                    temp_ib.disconnect()
+                except Exception as e_cid:
+                    print(f"DEBUG_LOG: Fout bij annuleren via clientId #{cid}: {e_cid}, probeer via self.ib...")
+                    for tr in trades_for_cid:
+                        try:
+                            self.ib.cancelOrder(tr.order)
+                        except Exception:
+                            pass
+
     def cancel_open_orders_for_contract(self, contract):
         """
         Annuleert bestaande actieve/openstaande orders (zoals Take Profit LMT of Stop Loss STP)
         voor een specifiek contract voordat een nieuwe sluitingsorder wordt geplaatst.
+        Detecteert tevens het OCA group id van de actieve bracket orders.
+        Wacht actief totdat TWS de annulering heeft verwerkt.
         Dit voorkomt Error 201 en 'No trading permissions' wegens dubbele verkoop / naakt optierisico.
         """
         if not self.is_connected() or not contract:
             return 0
         
-        canceled = 0
+        canceled_trades = []
         try:
+            import time
             target_con_id = getattr(contract, 'conId', None)
             target_symbol = getattr(contract, 'symbol', '')
             target_strike = getattr(contract, 'strike', None)
@@ -1964,18 +2022,143 @@ class IBClient:
                             if target_con_id and leg.conId == target_con_id:
                                 match = True
                                 break
+                    # 4. Match als contract zelf een BAG is en symbool matcht
+                    elif getattr(contract, 'secType', '') == 'BAG' and getattr(c, 'symbol', '') == target_symbol:
+                        match = True
                     
                     if match:
-                        print(f"DEBUG_LOG: Annuleren van actieve working order #{trade.order.orderId} ({trade.order.action} {trade.order.totalQuantity}x {trade.order.orderType}) voor {target_symbol} vóór sluiting...")
-                        self.ib.cancelOrder(trade.order)
-                        canceled += 1
+                        if getattr(trade.order, 'ocaGroup', ''):
+                            self.last_detected_oca_group = str(trade.order.ocaGroup)
+                        elif getattr(trade.order, 'parentId', 0) and not getattr(self, 'last_detected_oca_group', None):
+                            self.last_detected_oca_group = str(trade.order.parentId)
+
+                        print(f"DEBUG_LOG: Gevonden te annuleren order #{trade.order.orderId} ({trade.order.action} {trade.order.totalQuantity}x {trade.order.orderType}, ocaGroup={getattr(trade.order, 'ocaGroup', None)}) voor {target_symbol}...")
+                        canceled_trades.append(trade)
             
-            if canceled > 0:
-                self.ib.sleep(0.5) # Korte adempauze zodat TWS status update kan verwerken
+            if canceled_trades:
+                self._cancel_trades_safely(canceled_trades)
+                try:
+                    self.ib.reqAllOpenOrders()
+                except Exception:
+                    pass
+                start_wait = time.time()
+                while time.time() - start_wait < 3.0:
+                    self.ib.sleep(0.25)
+                    open_order_ids = {tr.order.orderId for tr in self.ib.openTrades() if not tr.isDone()}
+                    still_working = [t for t in canceled_trades if t.order.orderId in open_order_ids and not t.isDone()]
+                    if not still_working:
+                        break
+                self.ib.sleep(0.2)
         except Exception as e:
             print(f"DEBUG_LOG: Fout bij cancel_open_orders_for_contract: {e}")
         
-        return canceled
+        return len(canceled_trades)
+
+    def cancel_all_orders_for_symbol(self, symbol, legs=None):
+        """
+        Annuleert ALLE actieve orders voor een symbool/positie, inclusief bracket SELL/BUY orders (TP/SL)
+        die gekoppeld zijn aan de positie of een BAG parent order.
+        Detecteert tevens het OCA group id van de actieve bracket orders zodat de nieuwe sluitingsorder
+        hetzelfde OCA group id kan krijgen.
+        Wacht actief totdat TWS bevestigt dat de annuleringen zijn voltooid vóór het retourneren.
+        Dit is essentieel vóór het plaatsen van een openClose='C' sluitingsorder: IB geeft anders Error 201
+        omdat actieve bracket SELL orders als conflicterende verkooporders worden gezien die de positie al claimen.
+        """
+        if not self.is_connected() or not symbol:
+            return 0, None
+
+        canceled_trades = []
+        detected_oca_group = None
+        try:
+            import time
+            # Zorg dat alle open orders van alle clients bekend zijn
+            try:
+                self.ib.reqAllOpenOrders()
+                self.ib.sleep(0.4)
+            except Exception:
+                pass
+
+            target_con_ids = set()
+            if legs:
+                for item in legs:
+                    c_leg = getattr(item, 'contract', item)
+                    cid = getattr(c_leg, 'conId', 0)
+                    if cid:
+                        target_con_ids.add(cid)
+
+            open_trades = self.ib.openTrades()
+            parent_ids_for_symbol = set()
+            for trade in open_trades:
+                c = trade.contract
+                if getattr(c, 'symbol', '') == symbol:
+                    parent_ids_for_symbol.add(trade.order.orderId)
+
+            for trade in open_trades:
+                if trade.orderStatus.status not in ('PreSubmitted', 'Submitted', 'PendingSubmit'):
+                    continue
+                c = trade.contract
+                order = trade.order
+                should_cancel = False
+
+                c_sym = getattr(c, 'symbol', '')
+                c_id = getattr(c, 'conId', 0)
+
+                # Match op conId van één der benen
+                if target_con_ids and c_id in target_con_ids:
+                    should_cancel = True
+                # Match als het een BAG combo order betreft die een van de benen bevat
+                elif getattr(c, 'secType', '') == 'BAG' and getattr(c, 'comboLegs', None):
+                    if target_con_ids:
+                        for leg in c.comboLegs:
+                            if leg.conId in target_con_ids:
+                                should_cancel = True
+                                break
+                    if not should_cancel and c_sym == symbol:
+                        should_cancel = True
+                # Direct symbool-match
+                elif c_sym == symbol:
+                    should_cancel = True
+                # Child bracket order van een parent die op dit symbool staat
+                elif getattr(order, 'parentId', 0) and order.parentId in parent_ids_for_symbol:
+                    should_cancel = True
+
+                if should_cancel:
+                    # Detecteer OCA group id van de te annuleren bracket order
+                    if not detected_oca_group:
+                        if getattr(order, 'ocaGroup', ''):
+                            detected_oca_group = str(order.ocaGroup)
+                        elif getattr(order, 'parentId', 0):
+                            detected_oca_group = str(order.parentId)
+
+                    print(f"DEBUG_LOG: Gevonden te annuleren working order #{order.orderId} "
+                          f"(action={order.action}, qty={order.totalQuantity}, type={order.orderType}, "
+                          f"parentId={getattr(order, 'parentId', 0)}, ocaGroup={getattr(order, 'ocaGroup', None)}) voor {symbol}...")
+                    canceled_trades.append(trade)
+
+            if canceled_trades:
+                self._cancel_trades_safely(canceled_trades)
+                try:
+                    self.ib.reqAllOpenOrders()
+                except Exception:
+                    pass
+                start_wait = time.time()
+                while time.time() - start_wait < 3.5:
+                    self.ib.sleep(0.25)
+                    open_order_ids = {tr.order.orderId for tr in self.ib.openTrades() if not tr.isDone()}
+                    still_working = [t for t in canceled_trades if t.order.orderId in open_order_ids and not t.isDone()]
+                    if not still_working:
+                        print(f"DEBUG_LOG: [cancel_all] Alle {len(canceled_trades)} orders voor {symbol} succesvol geannuleerd in TWS.")
+                        break
+                else:
+                    print(f"DEBUG_LOG: [cancel_all] Let op: Na 3.5s wachten waren niet alle orders afgemeld.")
+                # Extra korte adempauze voor TWS orderboek synchronisatie
+                self.ib.sleep(0.3)
+
+        except Exception as e:
+            print(f"DEBUG_LOG: Fout bij cancel_all_orders_for_symbol({symbol}): {e}")
+
+        self.last_detected_oca_group = detected_oca_group
+        return len(canceled_trades), detected_oca_group
 
     def execute_portfolio_adjustments(self, approved_actions):
         """
@@ -1988,6 +2171,13 @@ class IBClient:
         from ib_insync import Option, MarketOrder, LimitOrder, Contract, ComboLeg
         import pandas as pd
 
+        # 0. Ververs alle actieve openstaande orders vanuit TWS
+        try:
+            self.ib.reqAllOpenOrders()
+            self.ib.sleep(0.5)
+        except Exception as e_req:
+            print(f"DEBUG_LOG: Fout bij reqAllOpenOrders in execute_portfolio_adjustments: {e_req}")
+
         results = []
 
         for action in approved_actions:
@@ -1999,6 +2189,14 @@ class IBClient:
             if not legs:
                 results.append({'symbol': sym, 'status': 'SKIPPED', 'message': f"Geen optiebenen gevonden voor {sym}."})
                 continue
+
+            # Cruciaal: Eerst alle actieve bracket orders (TP/SL SELL orders) voor dit symbool/positie annuleren
+            # en het OCA group id detecteren, en wachten op bevestiging van TWS vóór de sluitingsorder wordt verzonden.
+            canceled_cnt, oca_group = self.cancel_all_orders_for_symbol(sym, legs=legs)
+            if not oca_group:
+                oca_group = getattr(self, 'last_detected_oca_group', None)
+            if oca_group:
+                print(f"DEBUG_LOG: Gevonden OCA group '{oca_group}' voor {sym}, wordt gekoppeld aan de sluitingsorder.")
 
             # --- CASE 0: HERSTEL AANDELEN TOEWIJZING (Scenario B, Pg 19) ---
             if any(k in code for k in ['HERSTEL_AANDELEN', 'Verkoop Aandelen', 'Terugkopen', 'STOCK_CLOSE']) or action.get('strategy') == 'Stock':
@@ -2014,7 +2212,10 @@ class IBClient:
                     act = 'SELL' if pos_qty > 0 else 'BUY'
                     shares_qty = int(abs(pos_qty))
                     order = MarketOrder(action=act, totalQuantity=shares_qty)
-                    # Geen openClose='C' nodig voor aandelen: IB herkent sluitingsorder automatisch
+                    order.openClose = 'C'
+                    if oca_group:
+                        order.ocaGroup = oca_group
+                        order.ocaType = 1
                     trade = self.ib.placeOrder(q_contract, order)
                     closed_count += 1
                 results.append({
@@ -2036,7 +2237,10 @@ class IBClient:
                         tif='DAY',
                         outsideRth=False
                     )
-                    # Geen openClose='C': BUY order op short positie is altijd een sluiting
+                    short_order.openClose = 'C'
+                    if oca_group:
+                        short_order.ocaGroup = oca_group
+                        short_order.ocaType = 1
                     trade = self.ib.placeOrder(c, short_order)
                     results.append({
                         'symbol': sym,
@@ -2091,7 +2295,10 @@ class IBClient:
                             outsideRth=False
                         )
                         combo_order.smartComboRoutingParams = [TagValue('NonGuaranteed', '1')]
-                        # Geen openClose='C' op BAG orders: IB herkent sluiting automatisch
+                        combo_order.openClose = 'C'
+                        if oca_group:
+                            combo_order.ocaGroup = oca_group
+                            combo_order.ocaType = 1
                         trade = self.ib.placeOrder(bag, combo_order)
                         
                         mkt_check = self.is_us_options_market_open()
@@ -2128,10 +2335,10 @@ class IBClient:
                             order = LimitOrder(action=close_act, totalQuantity=close_qty, lmtPrice=lmt_p, tif='DAY')
                         else:
                             order = MarketOrder(action=close_act, totalQuantity=close_qty)
-                        # Geen openClose='C' op enkelvoudige optie-orders: veroorzaakt Error 201 op
-                        # paper trading accounts omdat IB een SELL op een call als nieuwe naked short
-                        # interpreteert i.p.v. als sluiting van een bestaande long positie.
-                        # IB herkent sluitingsorders automatisch o.b.v. de bestaande portefeuillepositie.
+                        order.openClose = 'C'
+                        if oca_group:
+                            order.ocaGroup = oca_group
+                            order.ocaType = 1
                         trade = self.ib.placeOrder(c, order)
                         results.append({
                             'symbol': sym,
@@ -2151,7 +2358,10 @@ class IBClient:
                         lmt_p = round(float(action.get('lmt_price', action.get('market_price', 1.00))), 2)
                         combo_order = LimitOrder(action='BUY', totalQuantity=qty, lmtPrice=max(0.05, lmt_p), tif='DAY')
                         combo_order.smartComboRoutingParams = [TagValue('NonGuaranteed', '1')]
-                        # Geen openClose='C': IB herkent sluitingsorder automatisch
+                        combo_order.openClose = 'C'
+                        if oca_group:
+                            combo_order.ocaGroup = oca_group
+                            combo_order.ocaType = 1
                         trade = self.ib.placeOrder(bag, combo_order)
                         results.append({
                             'symbol': sym,
@@ -2178,7 +2388,10 @@ class IBClient:
                     self.cancel_open_orders_for_contract(q_c)
                     close_act = 'BUY' if pos_qty < 0 else 'SELL'
                     order = MarketOrder(action=close_act, totalQuantity=int(abs(pos_qty)))
-                    # Geen openClose='C': veroorzaakt Error 201 op enkelvoudige option sluitingsorders
+                    order.openClose = 'C'
+                    if oca_group:
+                        order.ocaGroup = oca_group
+                        order.ocaType = 1
                     self.ib.placeOrder(q_c, order)
                     placed_orders += 1
 
