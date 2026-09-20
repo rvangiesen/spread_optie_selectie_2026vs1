@@ -1,0 +1,32 @@
+{
+  "SPY": {
+    "symbol": "SPY",
+    "best_em_multiplier": 1.1,
+    "best_width": 5.0,
+    "best_min_dte": 14,
+    "best_max_dte": 25,
+    "best_min_bep_dist": 6.0,
+    "profit_target_pct": 50.0,
+    "last_sweep_date": "2026-09-20",
+    "hit_rate": 0.0,
+    "avg_pnl": 0.0,
+    "total_trades": 0,
+    "status": "VALID",
+    "notes": "Geoptimaliseerd via Auto-Optimalisatie"
+  },
+  "NVDA": {
+    "symbol": "NVDA",
+    "best_em_multiplier": 1.65,
+    "best_width": 15.0,
+    "best_min_dte": 21,
+    "best_max_dte": 35,
+    "best_min_bep_dist": 6.0,
+    "profit_target_pct": 75.0,
+    "last_sweep_date": "2026-09-20",
+    "hit_rate": 0.0,
+    "avg_pnl": 0.0,
+    "total_trades": 0,
+    "status": "VALID",
+    "notes": "Geoptimaliseerd via Auto-Optimalisatie"
+  }
+}

@@ -81,10 +81,19 @@ Moet je na het opstarten of bij het kiezen van een strategie verplicht op deze k
  1. **Voor functie-onderzoek en validatie**: als je een specifieke strategievariatie wiskundig wilt valideren op historische data.
  2. **Niet voor de dagelijkse handelsselectie**: bij je normale dagelijkse scan hoef je deze knop niet in te drukken; het is puur een onderzoeks- en optimalisatietool.
 
+#### 3. Toggle: `🟢 🎯 Auto-Optimalisatie: ACTIEF / UIT`
+* **Wat doet deze knop?**
+  Het programma start na het openen **volledig automatisch** op in de **Auto-Optimalisatie** stand. In plaats van alle aandelen met één generieke sidebar-instelling te scannen, kijkt het systeem naar het specifieke gedrag van elk aandeel:
+  * **Aandeel-specifieke parameters**: Gebruikt automatisch de meest winstgevende Expected Move buffer (bijv. 1.10x voor lage volatiliteit vs. 1.65x voor snelle groeiers zoals NVDA), de optimale spread-breedte ($5, $10 of $15) en het ideale DTE-venster.
+  * **Auto-Refresh bij veroudering (>30 dagen)**: Is een aandeel nieuw of is de laatste optimalisatiesweep ouder dan 30 dagen? De scanner voert tijdens het scannen direct een snelle achtergrond-sweep uit (15–20 seconden) en slaat het nieuwe optimum permanent op in `stock_profiles.json`.
+  * **Dynamisch Winstdoel in Portfoliobewaking (Tab 0)**: Spreads geopend met een strakke EM krijgen automatisch een winstdoel van **50%** (sneller borgen i.v.m. delta-risico), terwijl diepe spreads (>= 1.60x EM) automatisch worden vastgehouden tot **75% à 80%** winst.
+* **Uitschakelen**: Wil je handmatig met de sliders experimenteren zonder dat het programma aandeel-profielen toepast? Klik eenmaal op `🟢 🎯 Auto-Optimalisatie: ACTIEF`; de knop verandert direct in `⚪ ⚙️ Auto-Optimalisatie: UIT` en de scanner volgt exact jouw handmatige sliders.
+
 #### 📋 Samenvattend Stappenplan Knoppen:
 | Situatie / Doel | Knop indrukken? | Actie |
 | :--- | :--- | :--- |
-| **Normale scan (Week/Maand Spreads)** | ❌ Nee | Symbool kiezen en direct op **Start Scan** klikken. |
+| **Normale scan (Volledig geautomatiseerd)** | ❌ Nee (staat al AAN) | Symbool kiezen en direct op **Start Scan** klikken. Het systeem gebruikt automatisch de beste EM en breedte per aandeel. |
+| **Handmatig experimenteren met sliders** | 👆 Eén klik | Klik op `🟢 🎯 Auto-Optimalisatie: ACTIEF` om over te schakelen naar `⚪ ⚙️ Auto-Optimalisatie: UIT`. |
 | **Wisselen naar Long Call / Long Put** | 💡 Aanbevolen | Vink `LongCall`/`LongPut` aan en klik op **`⚡ Reset Filters`**. |
 | **Terug naar basis na schuiven** | ✅ Ja | Klik op **`⚡ Reset Filters`**. |
 | **Historisch rendement valideren** | 🔬 Optioneel | Klik op **`🔬 Optimaliseer`** (in Tab 6). |

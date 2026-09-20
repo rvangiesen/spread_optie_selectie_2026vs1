@@ -4,6 +4,7 @@ import math
 from py_vollib.black_scholes.greeks.analytical import delta, gamma, vega, theta
 from py_vollib.black_scholes import black_scholes
 from risk_model import get_bs_risk_metrics, AntiGravityGammaThetaEngine
+from stock_profile_manager import StockProfileManager
 
 class BjerksundStensland2002:
     @staticmethod
@@ -4261,6 +4262,11 @@ class PortfolioAnalyzer:
         bought_strike = pos.get('bought_strike', 0.0)
         underlying_p = pos.get('underlying_price', 0.0)
 
+        # Haal dynamisch aandeel-profiel en winstdoel op
+        profile_mgr = StockProfileManager()
+        stock_prof = profile_mgr.get_profile(sym)
+        dyn_profit_target = profile_mgr.get_profit_target_pct(sym)
+
         # Technical Indicators on hist_df
         ema8_val, ema20_val = 0.0, 0.0
         ema_bullish = False
@@ -4375,12 +4381,13 @@ class PortfolioAnalyzer:
                 result_desc = "Volgt de OmniTrader BarToBar dynamische risicobewaking."
                 urgency = "CRITICAL"
 
-        # Check standard conditions
-        elif (strat != 'Stock' and (pnl_pct >= 60.0 or (pnl_pct >= 40.0 and dte <= 7))) or (strat == 'Stock' and pnl_pct >= 40.0):
+        # Check standard conditions met dynamisch aandeel-specifiek winstdoel
+        elif (strat != 'Stock' and (pnl_pct >= dyn_profit_target or (pnl_pct >= (dyn_profit_target * 0.65) and dte <= 7))) or (strat == 'Stock' and pnl_pct >= 40.0):
             action_code = "WINST_BORGEN"
-            action_title = "Winst Borgen & Positie Sluiten"
+            action_title = f"Winst Borgen ({dyn_profit_target:.0f}% Target Bereikt)"
             old_to_new = f"Lopende Winstpositie ({pnl_pct:.0f}% winst)" + " → " + "Winst Borgen & Positie Sluiten op Marktprijs"
-            reasoning = f"Ruim {pnl_pct:.0f}% winst behaald. Borg het behaalde rendement."
+            target_info = f" (EM {stock_prof.get('best_em_multiplier'):.2f}x profiel)" if stock_prof else ""
+            reasoning = f"Behaalde winst van {pnl_pct:.0f}% heeft het dynamische doel van {dyn_profit_target:.0f}% bereikt{target_info}. Borg het behaalde rendement."
             result_desc = f"Borg de winst van ${pnl_usd:.2f} direct en maak kapitaal vrij."
             urgency = "HIGH"
 
@@ -4476,6 +4483,8 @@ class PortfolioAnalyzer:
             'anti_assignment': anti_assign,
             'omnitrader_b2b': omni_res,
             'financials': self.calculate_position_financials(pos),
+            'profit_target_pct': dyn_profit_target,
+            'stock_profile': stock_prof,
             'technical_summary': f"OmniStop=${omni_res['stop_price']:.2f}, Coral={'Bull' if omni_res['marketstate']==1 else 'Bear'}, EMA8/20={'Bull' if ema_bullish else 'Bear'}, StochRSI={stoch_k_val:.1f}"
         }
 

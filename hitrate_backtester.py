@@ -622,6 +622,101 @@ class SpreadHitRateTester:
             'best_hit_rate': best_row['hit_rate'] if best_row is not None else 0.0
         }
 
+    def quick_optimize_stock(self, symbol: str, trades_per_symbol: int = 3, log_callback=None) -> dict:
+        """
+        Voert een snelle, aandeel-specifieke sweep uit (in ca. 10-20 sec) over 5 EM-niveaus
+        en geschikte breedtes om het optimale handelsprofiel voor dit aandeel te bepalen.
+        Retourneert een kant-en-klaar profiel-dictionary voor StockProfileManager.
+        """
+        def log(msg):
+            if log_callback:
+                log_callback(msg)
+            else:
+                try:
+                    print(msg)
+                except UnicodeEncodeError:
+                    print(msg.encode('ascii', 'ignore').decode('ascii'))
+
+        sym = symbol.upper().strip()
+        log(f"⚡ Snelle optimalisatiesweep starten voor {sym}...")
+
+        # 1. Haal koers op om verstandige breedte-range te bepalen
+        best_width = 10.0
+        try:
+            t = yf.Ticker(sym)
+            hist = t.history(period="5d")
+            if not hist.empty:
+                cur_price = float(hist['Close'].iloc[-1])
+                if cur_price < 30:
+                    best_width = 2.5
+                elif cur_price < 60:
+                    best_width = 5.0
+                elif cur_price > 350:
+                    best_width = 15.0
+                else:
+                    best_width = 10.0
+        except Exception:
+            best_width = 10.0
+
+        # 2. Sweep over 5 representatieve EM-multipliers
+        multipliers = [1.0, 1.20, 1.44, 1.65, 1.85]
+        best_mult = 1.44
+        best_pnl = -99999.0
+        best_hit_rate = 0.0
+
+        for mult in multipliers:
+            try:
+                res = self.run_backtest(
+                    symbols=[sym], 
+                    trades_per_symbol=trades_per_symbol, 
+                    em_multiplier=mult, 
+                    spread_width=best_width,
+                    dte=21
+                )
+                s = res.get('summary', {})
+                pnl = s.get('avg_pnl', 0.0)
+                hr = s.get('hit_rate', 0.0)
+                
+                # Winst maximaliseren met minstens 60% hit rate als voorkeur
+                if (pnl > best_pnl and hr >= 60.0) or (best_pnl == -99999.0):
+                    best_pnl = pnl
+                    best_mult = mult
+                    best_hit_rate = hr
+                elif pnl > (best_pnl + 15.0):
+                    best_pnl = pnl
+                    best_mult = mult
+                    best_hit_rate = hr
+            except Exception as e:
+                log(f"   ⚠️ Fout tijdens sweep {mult}x EM voor {sym}: {e}")
+
+        # 3. Bereken dynamisch winstdoel (profit target)
+        if best_mult <= 1.20:
+            profit_target = 50.0
+        elif best_mult >= 1.60:
+            profit_target = 75.0
+        else:
+            profit_target = 65.0
+
+        today_str = datetime.date.today().strftime('%Y-%m-%d')
+        profile_data = {
+            'symbol': sym,
+            'best_em_multiplier': round(float(best_mult), 2),
+            'best_width': float(best_width),
+            'best_min_dte': 14,
+            'best_max_dte': 25,
+            'best_min_bep_dist': 6.0 if best_mult <= 1.44 else 7.5,
+            'profit_target_pct': float(profit_target),
+            'last_sweep_date': today_str,
+            'hit_rate': round(float(best_hit_rate), 1),
+            'avg_pnl': round(float(best_pnl if best_pnl != -99999.0 else 0.0), 2),
+            'total_trades': int(trades_per_symbol),
+            'status': 'VALID',
+            'notes': f'Geoptimaliseerd via snelle sweep ({best_mult:.2f}x EM, ${best_width:.1f} breedte)'
+        }
+
+        log(f"🎯 Optimum voor {sym}: {best_mult:.2f}x EM, ${best_width:.1f} breedte, winstdoel {profit_target:.0f}% (Hit Rate: {best_hit_rate:.1f}%, Gem PnL: ${best_pnl:.2f})")
+        return profile_data
+
 if __name__ == '__main__':
     tester = SpreadHitRateTester()
     opt_res = tester.optimize_em_multipliers()

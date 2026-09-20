@@ -363,6 +363,12 @@ def render_portfolio_management_dashboard(tws_host, tws_port):
 
             # 2. Break-Even & Winstdoelen (1% en 5%) Card
             st.info(f"🎯 **Break-Even Point (BEP):** {bep_status}")
+
+            # Dynamisch Aandeel-Winstdoel
+            dyn_target = item.get('profit_target_pct', 60.0)
+            stock_prof = item.get('stock_profile')
+            prof_info = f" (Gebaseerd op {stock_prof.get('best_em_multiplier'):.2f}x EM profiel)" if stock_prof else " (Standaard baseline)"
+            st.caption(f"🏆 **Dynamisch Winstdoel:** **{dyn_target:.0f}%** winst{prof_info} — Positie sluiten zodra dit doel wordt bereikt.")
             tg_col1, tg_col2 = st.columns(2)
             with tg_col1:
                 st.markdown(f"**🎯 1% Winstdoel**: Aandeel naar **`${t1_stock:,.2f}`**")
@@ -1063,6 +1069,26 @@ if 'use_stock_profiles' not in st.session_state:
     st.session_state['use_stock_profiles'] = True
 if 'optimal_stock_configs' not in st.session_state:
     st.session_state['optimal_stock_configs'] = {}
+if 'auto_optimization_active' not in st.session_state:
+    st.session_state['auto_optimization_active'] = True
+
+from stock_profile_manager import StockProfileManager
+profile_mgr = StockProfileManager()
+
+# --- AUTO-OPTIMALISATIE TOGGLE & STATUS ---
+auto_opt_active = st.session_state.get('auto_optimization_active', True)
+if auto_opt_active:
+    if st.sidebar.button("🟢 🎯 Auto-Optimalisatie: ACTIEF", help="Auto-Optimalisatie staat AAN (standaard). Instellingen worden per aandeel automatisch geoptimaliseerd en bij veroudering (>30d) ververst. Klik om UIT te schakelen.", width='stretch', key="btn_toggle_auto_opt"):
+        st.session_state['auto_optimization_active'] = False
+        st.rerun()
+else:
+    if st.sidebar.button("⚪ ⚙️ Auto-Optimalisatie: UIT", help="Auto-Optimalisatie staat UIT. De scanner gebruikt generieke sidebar-instellingen voor alle aandelen. Klik om IN te schakelen.", width='stretch', key="btn_toggle_auto_opt"):
+        st.session_state['auto_optimization_active'] = True
+        st.rerun()
+
+all_profs = profile_mgr.get_all_profiles()
+if all_profs and auto_opt_active:
+    st.sidebar.caption(f"🎯 **{len(all_profs)} aandeel-profielen actief** (Persistent)")
 
 # Filters & Profile Selector
 st.sidebar.subheader("🎯 Beleggingsprofiel & Horizon")
@@ -1954,7 +1980,36 @@ with tab1:
                                          
                                          if res.empty:
                                              widths_to_check = [int(width)]
-                                             if st.session_state.get('use_stock_profiles', True) and sym in st.session_state.get('optimal_stock_configs', {}):
+                                             cur_min_dte = min_dte
+                                             cur_max_dte = d_max
+                                             cur_bep_dist = min_bep_dist_pct
+                                             
+                                             use_auto_opt = st.session_state.get('auto_optimization_active', True)
+                                             if use_auto_opt:
+                                                 # Stap 4: Auto-Refresh bij veroudering (>30d of nieuw)
+                                                 if profile_mgr.is_expired(sym, max_age_days=30):
+                                                     log(f"   🔄 Auto-Refresh: Geen recent profiel voor {sym} (>30d of nieuw). Snelle optimalisatiesweep wordt uitgevoerd...")
+                                                     try:
+                                                         from hitrate_backtester import SpreadHitRateTester
+                                                         hr_tester = SpreadHitRateTester()
+                                                         fresh_prof = hr_tester.quick_optimize_stock(sym, trades_per_symbol=3, log_callback=log)
+                                                         profile_mgr.save_profile(sym, fresh_prof)
+                                                         log(f"   ✅ Auto-Refresh voltooid voor {sym}: Optimaal profiel opgeslagen ({fresh_prof.get('best_em_multiplier')}x EM, ${fresh_prof.get('best_width')} breedte, winstdoel {fresh_prof.get('profit_target_pct')}%)")
+                                                     except Exception as sweep_err:
+                                                         log(f"   ⚠️ Auto-Refresh sweep fout voor {sym}: {sweep_err}")
+
+                                                 opt_prof = profile_mgr.get_profile(sym)
+                                                 if opt_prof:
+                                                     opt_w = opt_prof.get('best_width')
+                                                     if opt_w:
+                                                         widths_to_check = [int(opt_w)]
+                                                     opt_em = opt_prof.get('best_em_multiplier', 1.44)
+                                                     cur_min_dte = opt_prof.get('best_min_dte', min_dte)
+                                                     cur_max_dte = opt_prof.get('best_max_dte', d_max)
+                                                     cur_bep_dist = opt_prof.get('best_min_bep_dist', min_bep_dist_pct)
+                                                     opt_target = opt_prof.get('profit_target_pct', 65.0)
+                                                     log(f"   🎯 [AUTO-OPTIMALISATIE] {sym}: Aandeel-profiel actief ({opt_em}x EM, ${widths_to_check[0]} breedte, DTE {cur_min_dte}-{cur_max_dte}d, Winstdoel: {opt_target:.0f}%)")
+                                             elif st.session_state.get('use_stock_profiles', True) and sym in st.session_state.get('optimal_stock_configs', {}):
                                                  opt_prof = st.session_state['optimal_stock_configs'][sym]
                                                  opt_w = opt_prof.get('winning_params', {}).get('spread_width')
                                                  if opt_w:
@@ -1969,7 +2024,7 @@ with tab1:
                                                      widths_to_check.append(15)
                                                      
                                              for w in widths_to_check:
-                                                p = {'symbol': sym, 'min_dte': min_dte, 'koopadvies_p': koopadvies_p, 'only_koopadvies': only_koopadvies, 'max_dte': d_max, 
+                                                p = {'symbol': sym, 'min_dte': cur_min_dte, 'koopadvies_p': koopadvies_p, 'only_koopadvies': only_koopadvies, 'max_dte': cur_max_dte, 
                                                     'width': w, 'iv': underlying_iv, 'strike_range_pct': strike_range_pct, 'min_strike_pct': min_strike_pct,
                                                     'itm_support_level': itm_support_level, 'long_focus': long_focus_mode,
                                                     'min_long_dte': synth_pmcc_min_long_dte, 'min_short_dte': synth_pmcc_min_short_dte, 'max_short_dte': synth_pmcc_max_short_dte,
@@ -2378,16 +2433,25 @@ with tab2:
         if 'Selecteer' not in results.columns:
             results.insert(0, 'Selecteer', False)
 
+        # Profiel-status toevoegen aan resultaten
+        if 'Profiel' not in results.columns:
+            def format_profiel_badge(s):
+                p = profile_mgr.get_profile(s)
+                if p:
+                    return f"🎯 {p.get('best_em_multiplier', 1.44):.2f}x EM (${p.get('best_width', 10.0):.0f})"
+                return "⚙️ Standaard"
+            results['Profiel'] = results['symbol'].apply(format_profiel_badge)
+
         is_fast_atm = (scan_mode == "Super-Fast ATM Long Scan (1% Koop)") or (scan_mode == "Auto-Pilot (Downloads map)" and st.session_state.get('auto_pilot_type') == "Super-Fast ATM Long Scan (1% Koop)")
         if is_fast_atm:
             display_cols = [
-                'Selecteer', 'koopadvies', 'symbol', 'underlying_price', 'strategy', 'expiry', 'strike_buy',
+                'Selecteer', 'koopadvies', 'symbol', 'Profiel', 'underlying_price', 'strategy', 'expiry', 'strike_buy',
                 'spread_ask_abs', 'spread_mid_abs', 'spread_last_abs',
                 'winst_laat', 'winst_midden', 'winst_laatste', 'dte'
             ]
         else:
             display_cols = [
-                'Selecteer', 'koopadvies', 'trade_verdict', 'symbol', 'underlying_price', 'AG_Score', 'score_pop', 'score_roc', 'score_ttp', 'score_safety', 'score_flow', 'expected_value', 'pop_adj', 'pop', 'dS_BE', 'gamma_theta_ratio', 'strategy', 'assignment_risk_badge', 'notional_assignment_capital', 'extrinsic_val_short', 'cue', 'expiry', 'strike_buy', 'strike_sell', 'width', 
+                'Selecteer', 'koopadvies', 'trade_verdict', 'Profiel', 'symbol', 'underlying_price', 'AG_Score', 'score_pop', 'score_roc', 'score_ttp', 'score_safety', 'score_flow', 'expected_value', 'pop_adj', 'pop', 'dS_BE', 'gamma_theta_ratio', 'strategy', 'assignment_risk_badge', 'notional_assignment_capital', 'extrinsic_val_short', 'cue', 'expiry', 'strike_buy', 'strike_sell', 'width', 
                 'strike_p_buy', 'strike_p_sell', 'strike_c_sell', 'strike_c_buy',
                 'spread_mid_abs', 'spread_ask_abs', 'b_l_verschil', 'max_profit', 'sluitingswinst', 'sluitingswinst_em85',
                 'TTP (D)', 'TEI Score', 'Efficient',
@@ -2440,6 +2504,7 @@ with tab2:
             "cue": st.column_config.TextColumn("Regime Cue", help="4-Kwadranten Delta OI marktregime"),
             "call_vested_wall": st.column_config.NumberColumn("Call Vested Wall", format="$%.2f", help="Institutionele verdedigingsmuur bovenkant (Margin * OI)"),
             "put_vested_wall": st.column_config.NumberColumn("Put Vested Wall", format="$%.2f", help="Institutionele verdedigingsmuur onderkant (Margin * OI)"),
+            "Profiel": st.column_config.TextColumn("Profiel", help="Aandeel-specifiek optimalisatieprofiel (EM Multiplier & Breedte)"),
             "symbol": st.column_config.TextColumn("Symbool"),
             "underlying_price": st.column_config.NumberColumn("Koers", format="$%.2f"),
             "spread_last_abs": st.column_config.NumberColumn("Laatste Prijs", format="$%.2f"),
@@ -3766,6 +3831,22 @@ with tab6:
             
         st.session_state['comparison_results'] = comp_dict
         st.session_state['optimal_stock_configs'] = comp_dict['stock_profiles']
+        
+        # Sla gevalideerde profielen ook persistent op in StockProfileManager
+        for s_sym, s_prof in comp_dict.get('stock_profiles', {}).items():
+            win_p = s_prof.get('winning_params', {})
+            profile_mgr.save_profile(s_sym, {
+                'best_em_multiplier': win_p.get('em_multiplier', 1.44),
+                'best_width': win_p.get('spread_width', 10.0),
+                'best_min_dte': win_p.get('dte', 21) - 7,
+                'best_max_dte': win_p.get('dte', 21) + 7,
+                'hit_rate': s_prof.get('std_hr' if s_prof.get('winner') == 'Standaard' else 'sb_hr', 0.0),
+                'avg_pnl': s_prof.get('std_avg_pnl' if s_prof.get('winner') == 'Standaard' else 'sb_avg_pnl', 0.0),
+                'total_trades': len(test_symbols) * trades_per_sym,
+                'status': 'VALID',
+                'notes': f"Gevalideerd via Benchmark Vergelijkingstest ({s_prof.get('winner')})"
+            })
+            
         st.success(f"✅ Vergelijkingstest & Optimalisatie over {n_syms} aandeel/aandelen voltooid!")
 
     if start_hitrate_btn and n_syms > 0:
