@@ -2014,7 +2014,7 @@ class IBClient:
                     act = 'SELL' if pos_qty > 0 else 'BUY'
                     shares_qty = int(abs(pos_qty))
                     order = MarketOrder(action=act, totalQuantity=shares_qty)
-                    order.openClose = 'C'
+                    # Geen openClose='C' nodig voor aandelen: IB herkent sluitingsorder automatisch
                     trade = self.ib.placeOrder(q_contract, order)
                     closed_count += 1
                 results.append({
@@ -2036,7 +2036,7 @@ class IBClient:
                         tif='DAY',
                         outsideRth=False
                     )
-                    short_order.openClose = 'C'
+                    # Geen openClose='C': BUY order op short positie is altijd een sluiting
                     trade = self.ib.placeOrder(c, short_order)
                     results.append({
                         'symbol': sym,
@@ -2091,7 +2091,7 @@ class IBClient:
                             outsideRth=False
                         )
                         combo_order.smartComboRoutingParams = [TagValue('NonGuaranteed', '1')]
-                        combo_order.openClose = 'C'
+                        # Geen openClose='C' op BAG orders: IB herkent sluiting automatisch
                         trade = self.ib.placeOrder(bag, combo_order)
                         
                         mkt_check = self.is_us_options_market_open()
@@ -2128,7 +2128,10 @@ class IBClient:
                             order = LimitOrder(action=close_act, totalQuantity=close_qty, lmtPrice=lmt_p, tif='DAY')
                         else:
                             order = MarketOrder(action=close_act, totalQuantity=close_qty)
-                        order.openClose = 'C'
+                        # Geen openClose='C' op enkelvoudige optie-orders: veroorzaakt Error 201 op
+                        # paper trading accounts omdat IB een SELL op een call als nieuwe naked short
+                        # interpreteert i.p.v. als sluiting van een bestaande long positie.
+                        # IB herkent sluitingsorders automatisch o.b.v. de bestaande portefeuillepositie.
                         trade = self.ib.placeOrder(c, order)
                         results.append({
                             'symbol': sym,
@@ -2148,7 +2151,7 @@ class IBClient:
                         lmt_p = round(float(action.get('lmt_price', action.get('market_price', 1.00))), 2)
                         combo_order = LimitOrder(action='BUY', totalQuantity=qty, lmtPrice=max(0.05, lmt_p), tif='DAY')
                         combo_order.smartComboRoutingParams = [TagValue('NonGuaranteed', '1')]
-                        combo_order.openClose = 'C'
+                        # Geen openClose='C': IB herkent sluitingsorder automatisch
                         trade = self.ib.placeOrder(bag, combo_order)
                         results.append({
                             'symbol': sym,
@@ -2175,7 +2178,7 @@ class IBClient:
                     self.cancel_open_orders_for_contract(q_c)
                     close_act = 'BUY' if pos_qty < 0 else 'SELL'
                     order = MarketOrder(action=close_act, totalQuantity=int(abs(pos_qty)))
-                    order.openClose = 'C'
+                    # Geen openClose='C': veroorzaakt Error 201 op enkelvoudige option sluitingsorders
                     self.ib.placeOrder(q_c, order)
                     placed_orders += 1
 
