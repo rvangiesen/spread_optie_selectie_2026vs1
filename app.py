@@ -547,7 +547,7 @@ def render_portfolio_management_dashboard(tws_host, tws_port):
                             else:
                                 est_tp_pnl = (abs(tp_stock_p - und_p) if (is_bullish and tp_stock_p > und_p) else -abs(tp_stock_p - und_p)) * 100.0 * pos_qty
 
-                            st.success(f"💰 **Winst op Koers ${tp_stock_p:.2f}**: **+${est_tp_pnl:,.2f}**")
+                            st.success(f"💰 **Winst op Koers \\${tp_stock_p:.2f}**: **+\\${est_tp_pnl:,.2f}**")
 
                         with csim2:
                             if is_stock and is_bullish:
@@ -574,7 +574,7 @@ def render_portfolio_management_dashboard(tws_host, tws_port):
                             else:
                                 est_sl_pnl = -abs(und_p - sl_stock_p) * 100.0 * pos_qty
 
-                            st.error(f"🛑 **Verlies op Koers ${sl_stock_p:.2f}**: **-${abs(est_sl_pnl):,.2f}**")
+                            st.error(f"🛑 **Verlies op Koers \\${sl_stock_p:.2f}**: **-\\${abs(est_sl_pnl):,.2f}**")
                             
                         st.caption("🔒 *Pas Winstdoel Koers ($X) of Stoploss Koers ($Y) aan om de gestreepte lijnen op de grafiek hieronder direct te laten bewegen.*")
 

@@ -1385,13 +1385,23 @@ class IBClient:
             self.ib.placeOrder(target_contract, tp_order)
 
             # 2. Stop Loss Order - Transmits full bracket
+            # Slippage-buffer voor Stop Limit (STP LMT):
+            # 0.20 dollar buffer (of max 10% bij lage premies) garandeert uitvoering bij normale volatiliteit
+            # en beschermt tegen desastreuze opening spreads of flash-crashes.
+            sl_buffer = min(0.20, round(sl_price * 0.10, 2)) if sl_price > 0 else 0.20
+            if exit_action == 'SELL':
+                sl_lmt = round(max(0.01, sl_price - sl_buffer), 2)
+            else:
+                sl_lmt = round(sl_price + sl_buffer, 2)
+
             if len(legs_data) == 1:
-                # Single Leg: Standaard Stop Market Order
+                # Single Leg (Long Call / Long Put): Nu ALTIJD 'STP LMT' (Stop Limit) ipv gevaarlijke STP Market
                 sl_order = Order(
                     action=exit_action,
                     totalQuantity=quantity,
-                    orderType='STP',
+                    orderType='STP LMT',
                     auxPrice=sl_price,
+                    lmtPrice=sl_lmt,
                     parentId=parent_id,
                     ocaGroup=oca_id,
                     ocaType=1,
@@ -1401,14 +1411,6 @@ class IBClient:
                 )
             else:
                 # Multi-leg Combo (BAG): TWS vereist 'STP LMT' (Stop Limit)
-                # auxPrice = Stop Trigger koers (sl_price)
-                # lmtPrice = Uitvoeringslimiet (met 0.20 slippage buffer)
-                sl_buffer = 0.20
-                if exit_action == 'SELL':
-                    sl_lmt = round(max(0.01, sl_price - sl_buffer), 2)
-                else:
-                    sl_lmt = round(sl_price + sl_buffer, 2)
-                
                 sl_order = Order(
                     action=exit_action,
                     totalQuantity=quantity,
