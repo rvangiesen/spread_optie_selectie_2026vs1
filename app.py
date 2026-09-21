@@ -1990,8 +1990,11 @@ with tab1:
                                                  if profile_mgr.is_expired(sym, max_age_days=30):
                                                      log(f"   🔄 Auto-Refresh: Geen recent profiel voor {sym} (>30d of nieuw). Snelle optimalisatiesweep wordt uitgevoerd...")
                                                      try:
-                                                         from hitrate_backtester import SpreadHitRateTester
-                                                         hr_tester = SpreadHitRateTester()
+                                                         import importlib
+                                                         import hitrate_backtester
+                                                         if not hasattr(hitrate_backtester.SpreadHitRateTester, 'quick_optimize_stock'):
+                                                             importlib.reload(hitrate_backtester)
+                                                         hr_tester = hitrate_backtester.SpreadHitRateTester()
                                                          fresh_prof = hr_tester.quick_optimize_stock(sym, trades_per_symbol=3, log_callback=log)
                                                          profile_mgr.save_profile(sym, fresh_prof)
                                                          log(f"   ✅ Auto-Refresh voltooid voor {sym}: Optimaal profiel opgeslagen ({fresh_prof.get('best_em_multiplier')}x EM, ${fresh_prof.get('best_width')} breedte, winstdoel {fresh_prof.get('profit_target_pct')}%)")
@@ -2726,6 +2729,38 @@ with tab2:
                 else:
                     try:
                         placed_count = 0
+                        # --- PRE-FLIGHT CONFLICT VALIDATOR (Error 201 Preventie) ---
+                        # US Beursregels (CBOE/FINRA) verbieden retailbeleggers gelijktijdig een open BUY
+                        # én open SELL order te hebben op exact hetzelfde optiecontract.
+                        open_tws_legs = {} # (symbol, expiry, right, strike) -> 'BUY' of 'SELL'
+                        try:
+                            from ib_insync import Contract
+                            bulk_ib.ib.reqAllOpenOrders()
+                            bulk_ib.ib.sleep(0.3)
+                            for t in bulk_ib.ib.openTrades():
+                                if not t.isDone():
+                                    c = t.contract
+                                    o = t.order
+                                    if c.secType == 'BAG' and c.comboLegs:
+                                        for leg in c.comboLegs:
+                                            eff_action = leg.action
+                                            if o.action == 'SELL':
+                                                eff_action = 'SELL' if leg.action == 'BUY' else 'BUY'
+                                            det = bulk_ib.ib.reqContractDetails(Contract(conId=leg.conId))
+                                            if det:
+                                                leg_c = det[0].contract
+                                                exp_norm = str(leg_c.lastTradeDateOrContractMonth).replace('-', '').strip()
+                                                k = (c.symbol.upper(), exp_norm, leg_c.right.upper(), float(leg_c.strike))
+                                                open_tws_legs[k] = eff_action
+                                    elif c.secType == 'OPT':
+                                        exp_norm = str(c.lastTradeDateOrContractMonth).replace('-', '').strip()
+                                        k = (c.symbol.upper(), exp_norm, c.right.upper(), float(c.strike))
+                                        open_tws_legs[k] = o.action
+                        except Exception as e_scan:
+                            print(f"DEBUG_LOG: Fout bij ophalen open orders voor conflict-check: {e_scan}")
+
+                        batch_legs = {} # (symbol, expiry, right, strike) -> (action, order_num)
+
                         for idx_num, (orig_idx, row) in enumerate(selected_rows.iterrows()):
                             symbol = str(row['symbol']) if pd.notna(row.get('symbol')) else ''
                             strat = str(row['strategy']) if pd.notna(row.get('strategy')) else ''
@@ -2753,6 +2788,65 @@ with tab2:
                             if not raw_price or pd.isna(raw_price) or float(raw_price) <= 0:
                                 raw_price = 0.10
                             limit_price_val = abs(float(raw_price))
+
+                            # Bepaal benodigde poten en hun effectieve actie (BUY of SELL)
+                            exp_clean = str(expiry).replace('-', '').strip()
+                            candidate_legs = [] # list of (strike, right, eff_action)
+
+                            if strat == 'BullPut':
+                                s_sell = strikes_dict.get('strike_sell', 0.0)
+                                s_buy = strikes_dict.get('strike_buy', 0.0)
+                                if s_sell < s_buy: s_sell, s_buy = s_buy, s_sell
+                                candidate_legs.append((s_sell, 'P', 'SELL'))
+                                candidate_legs.append((s_buy, 'P', 'BUY'))
+                            elif strat == 'BearCall':
+                                s_sell = strikes_dict.get('strike_sell', 0.0)
+                                s_buy = strikes_dict.get('strike_buy', 0.0)
+                                if s_sell > s_buy: s_sell, s_buy = s_buy, s_sell
+                                candidate_legs.append((s_sell, 'C', 'SELL'))
+                                candidate_legs.append((s_buy, 'C', 'BUY'))
+                            elif strat == 'BullCall':
+                                s_buy = strikes_dict.get('strike_buy', 0.0)
+                                s_sell = strikes_dict.get('strike_sell', 0.0)
+                                candidate_legs.append((s_buy, 'C', 'BUY'))
+                                candidate_legs.append((s_sell, 'C', 'SELL'))
+                            elif strat == 'BearPut':
+                                s_buy = strikes_dict.get('strike_buy', 0.0)
+                                s_sell = strikes_dict.get('strike_sell', 0.0)
+                                candidate_legs.append((s_buy, 'P', 'BUY'))
+                                candidate_legs.append((s_sell, 'P', 'SELL'))
+                            elif strat == 'LongCall':
+                                candidate_legs.append((strikes_dict.get('strike_buy', 0.0), 'C', 'BUY'))
+                            elif strat == 'LongPut':
+                                candidate_legs.append((strikes_dict.get('strike_buy', 0.0), 'P', 'BUY'))
+
+                            # Controleer op conflicten met bestaande openstaande orders of eerdere orders in deze batch
+                            conflict_found = False
+                            conflict_reason = ""
+                            for (c_strike, c_right, c_act) in candidate_legs:
+                                if c_strike <= 0: continue
+                                k = (symbol.upper(), exp_clean, c_right.upper(), float(c_strike))
+                                opp_act = 'SELL' if c_act == 'BUY' else 'BUY'
+
+                                if k in open_tws_legs and open_tws_legs[k] == opp_act:
+                                    conflict_found = True
+                                    conflict_reason = f"Uitoefenprijs ${c_strike:.1f}{c_right} staat al als openstaande {opp_act}-order in TWS"
+                                    break
+                                if k in batch_legs and batch_legs[k][0] == opp_act:
+                                    conflict_found = True
+                                    prev_order = batch_legs[k][1]
+                                    conflict_reason = f"Uitoefenprijs ${c_strike:.1f}{c_right} ({c_act}) is tegengesteld aan Order #{prev_order} in deze batch ({opp_act})"
+                                    break
+
+                            if conflict_found:
+                                st.warning(f"⚠️ **Order #{idx_num+1} ({symbol} {strat} {expiry}) overgeslagen:** {conflict_reason}. Conform Amerikaanse beursregels (Error 201) mogen beleggers niet gelijktijdig een koop- én verkooporder hebben op hetzelfde contract.")
+                                continue
+
+                            # Geen conflict: leg poten vast in batch tracker
+                            for (c_strike, c_right, c_act) in candidate_legs:
+                                if c_strike > 0:
+                                    k = (symbol.upper(), exp_clean, c_right.upper(), float(c_strike))
+                                    batch_legs[k] = (c_act, idx_num + 1)
                             
                             trade = bulk_ib.place_strategy_order(
                                 symbol=symbol,
