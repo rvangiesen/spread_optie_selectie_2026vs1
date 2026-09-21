@@ -3099,17 +3099,23 @@ with tab3:
                         help="Geldigheid van de instaporder (DAY vervalt aan het einde van de beursdag als deze nog niet gevuld is; GTC blijft actief)."
                     )
 
+                trade_dte = int(selected_row.get('dte', 30)) if 'dte' in selected_row else 30
+                is_zero_dte = (trade_dte == 0)
+                def_bracket_tif_idx = 1 if is_zero_dte else 0  # 0="GTC", 1="DAY"
+
                 st.markdown("### 🎯 Exit-Plan & Risk Management (Bracket Order)")
                 c_brk1, c_brk2 = st.columns([3, 2])
                 with c_brk1:
                     single_bracket = st.checkbox("Voeg Automatisch Exit-Plan toe (Take Profit & Stop Loss Orders in TWS)", value=True, key="single_bracket")
+                    if is_zero_dte:
+                        st.caption("⚡ **0DTE Optie Gedetecteerd**: Omdat deze optie vandaag expireert, is de geldigheid van de exit-orders automatisch ingesteld op **DAY**.")
                 with c_brk2:
                     bracket_tif_ui = st.selectbox("Geldigheid Exit Orders (TIF)", 
                         ["GTC", "DAY"], 
-                        index=0, 
+                        index=def_bracket_tif_idx, 
                         key="single_bracket_tif",
-                        help="GTC (Good 'Til Canceled) zorgt dat de Take Profit en Stop Loss orders doorlopend actief blijven tot ze geraakt worden, ook op volgende beursdagen."
-                    ) if single_bracket else "GTC"
+                        help="GTC (Good 'Til Canceled) voor opties met looptijd. Bij 0DTE (vandaag expirerend) automatisch DAY."
+                    ) if single_bracket else ("DAY" if is_zero_dte else "GTC")
 
                 calc_tp_price = None
                 calc_sl_price = None

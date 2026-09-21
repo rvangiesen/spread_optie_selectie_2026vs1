@@ -1189,6 +1189,24 @@ class IBClient:
         
         is_credit_strategy = strategy in ['BullPut', 'BearCall', 'IronCondor']
 
+        # Automatische 0DTE detectie: Als de optie vandaag expireert (DTE == 0), MOET TIF 'DAY' zijn
+        is_zero_dte = False
+        try:
+            import datetime
+            exp_str = str(expiry).replace('-', '').strip()
+            if len(exp_str) == 8 and exp_str.isdigit():
+                exp_date = datetime.datetime.strptime(exp_str, '%Y%m%d').date()
+                today = datetime.date.today()
+                if exp_date <= today:
+                    is_zero_dte = True
+        except Exception:
+            pass
+
+        if is_zero_dte:
+            bracket_tif = 'DAY'
+            tif = 'DAY'
+            print(f"DEBUG_LOG: 0DTE gedetecteerd voor {symbol} (expiratie {expiry}). TIF voor zowel hoofdorder als exit orders automatisch ingesteld op 'DAY'.")
+
         if strategy == 'LongCall':
             c = make_opt(strikes_dict.get('strike_buy'), 'C')
             if c: legs_data.append((c, 'BUY'))
