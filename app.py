@@ -1177,10 +1177,10 @@ width = st.sidebar.number_input("Spread Breedte ($)", value=int(st.session_state
 min_bep_dist_pct = st.sidebar.number_input("Min. BEP Buffer Afstand %", min_value=0.0, max_value=30.0, value=float(st.session_state.get('preset_min_bep_dist', 6.0)), step=0.5, key='preset_min_bep_dist', help="Strikt filter: de koers moet minimaal dit percentage boven het Break-Even Punt liggen (bijv. 6.0%).")
 
 delta_range = st.sidebar.slider(
-    "Delta Bereik (Short Leg)", 0.01, 0.60, 
+    "Delta Bereik (Short Leg)", 0.01, 1.00, 
     (float(st.session_state.get('sb_min_delta', 0.10)), float(st.session_state.get('sb_max_delta', 0.30))), 
     step=0.01, 
-    help="Gewenste Delta bandbreedte voor de verkochte optie (standaard 0.10 tot 0.30). Voorkomt illiquide fantoom-trades met minieme delta."
+    help="Gewenste Delta bandbreedte voor de verkochte optie (standaard 0.10 tot 0.30). Voorkomt illiquide fantoom-trades met minieme delta. Maximum verhoogd naar 1.00 zodat ook hoge delta-waarden (zoals 0.77-0.96) geselecteerd kunnen worden."
 )
 min_delta, max_delta = delta_range
 
