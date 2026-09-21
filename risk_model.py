@@ -357,6 +357,21 @@ class EarlyAssignmentRiskEngine:
         r = str(right).upper()
         qty = max(1, int(quantity))
         
+        # Guard: Indien er geen verkochte (short) optiepoot is (k_sell <= 0), is er 0% aanwijzingsrisico
+        if k_sell <= 0:
+            return {
+                'risk_level': 'VEILIG',
+                'probability_assignment_pct': 0.0,
+                'status_desc': 'Geen geschreven (short) optiepoot aanwezig. Aanwijzingsrisico is niet van toepassing.',
+                'action_code': 'HANDHAVEN',
+                'extrinsic_value': 0.0,
+                'intrinsic_value': 0.0,
+                'notional_capital': 0.0,
+                'capital_covered': True,
+                'capital_warning': '',
+                'should_close_now': False
+            }
+        
         is_put = r.startswith('P')
         is_itm = (s < k_sell) if is_put else (s > k_sell)
         itm_amount = max(0.0, (k_sell - s) if is_put else (s - k_sell))

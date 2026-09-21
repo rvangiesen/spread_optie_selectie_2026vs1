@@ -3643,9 +3643,9 @@ class PortfolioAnalyzer:
                 bep_dist_usd = round(bep_price - und_p, 2)
                 bep_dist_pct = round((bep_dist_usd / und_p * 100.0), 1) if und_p > 0 else 0.0
                 if und_p >= bep_price:
-                    bep_status = f"✅ In winstzone (+${und_p - bep_price:.2f} / +{((und_p - bep_price)/bep_price)*100:.1f}% boven BEP)"
+                    bep_status = f"✅ In winstzone (+\\${und_p - bep_price:.2f} / +{((und_p - bep_price)/bep_price)*100:.1f}% boven BEP)"
                 else:
-                    bep_status = f"⚠️ Nog +${bep_dist_usd:.2f} (+{abs(bep_dist_pct):.1f}%) stijging nodig voor BEP (${bep_price:.2f})"
+                    bep_status = f"⚠️ Nog +\\${bep_dist_usd:.2f} (+{abs(bep_dist_pct):.1f}%) stijging nodig voor BEP (\\${bep_price:.2f})"
                 
                 t1_stock = round(entry_p * 1.01, 2)
                 t5_stock = round(entry_p * 1.05, 2)
@@ -3654,15 +3654,15 @@ class PortfolioAnalyzer:
                 t5_dist_usd = round(t5_stock - und_p, 2)
                 t5_dist_pct = round((t5_dist_usd / und_p * 100.0), 1) if und_p > 0 else 0.0
                 
-                t1_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 1.0 else f"Nog +${t1_dist_usd:.2f} (+{t1_dist_pct:.1f}%) stijging nodig tot ${t1_stock:.2f}"
-                t5_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 5.0 else f"Nog +${t5_dist_usd:.2f} (+{t5_dist_pct:.1f}%) stijging nodig tot ${t5_stock:.2f}"
+                t1_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 1.0 else f"Nog +\\${t1_dist_usd:.2f} (+{t1_dist_pct:.1f}%) stijging nodig tot \\${t1_stock:.2f}"
+                t5_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 5.0 else f"Nog +\\${t5_dist_usd:.2f} (+{t5_dist_pct:.1f}%) stijging nodig tot \\${t5_stock:.2f}"
             else:
                 bep_dist_usd = round(und_p - bep_price, 2)
                 bep_dist_pct = round((bep_dist_usd / und_p * 100.0), 1) if und_p > 0 else 0.0
                 if und_p <= bep_price:
-                    bep_status = f"✅ In winstzone (+${bep_price - und_p:.2f} / +{((bep_price - und_p)/bep_price)*100:.1f}% onder BEP)"
+                    bep_status = f"✅ In winstzone (+\\${bep_price - und_p:.2f} / +{((bep_price - und_p)/bep_price)*100:.1f}% onder BEP)"
                 else:
-                    bep_status = f"⚠️ Nog -${bep_dist_usd:.2f} (-{abs(bep_dist_pct):.1f}%) daling nodig voor BEP (${bep_price:.2f})"
+                    bep_status = f"⚠️ Nog -\\${bep_dist_usd:.2f} (-{abs(bep_dist_pct):.1f}%) daling nodig voor BEP (\\${bep_price:.2f})"
                 
                 t1_stock = round(entry_p * 0.99, 2)
                 t5_stock = round(entry_p * 0.95, 2)
@@ -3671,8 +3671,8 @@ class PortfolioAnalyzer:
                 t5_dist_usd = round(und_p - t5_stock, 2)
                 t5_dist_pct = round((t5_dist_usd / und_p * 100.0), 1) if und_p > 0 else 0.0
                 
-                t1_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 1.0 else f"Nog -${t1_dist_usd:.2f} (-{t1_dist_pct:.1f}%) daling nodig tot ${t1_stock:.2f}"
-                t5_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 5.0 else f"Nog -${t5_dist_usd:.2f} (-{t5_dist_pct:.1f}%) daling nodig tot ${t5_stock:.2f}"
+                t1_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 1.0 else f"Nog -\\${t1_dist_usd:.2f} (-{t1_dist_pct:.1f}%) daling nodig tot \\${t1_stock:.2f}"
+                t5_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 5.0 else f"Nog -\\${t5_dist_usd:.2f} (-{t5_dist_pct:.1f}%) daling nodig tot \\${t5_stock:.2f}"
 
         elif strat in ['LongCall', 'LongPut']:
             is_call = strat == 'LongCall'
@@ -3686,9 +3686,9 @@ class PortfolioAnalyzer:
                 bep_dist_usd = round(bep_price - und_p, 2)
                 bep_dist_pct = round((bep_dist_usd / und_p * 100.0), 1) if und_p > 0 else 0.0
                 if und_p >= bep_price:
-                    bep_status = f"✅ In winstzone (+${und_p - bep_price:.2f} / +{((und_p - bep_price)/bep_price)*100:.1f}% boven BEP van ${bep_price:.2f})"
+                    bep_status = f"✅ In winstzone (+\\${und_p - bep_price:.2f} / +{((und_p - bep_price)/bep_price)*100:.1f}% boven BEP van \\${bep_price:.2f})"
                 else:
-                    bep_status = f"⚠️ Nog +${bep_dist_usd:.2f} (+{abs(bep_dist_pct):.1f}%) stijging nodig voor BEP op expiratie (${bep_price:.2f})"
+                    bep_status = f"⚠️ Nog +\\${bep_dist_usd:.2f} (+{abs(bep_dist_pct):.1f}%) stijging nodig voor BEP op expiratie (\\${bep_price:.2f})"
                 
                 t1_opt = entry_p * 1.01
                 t5_opt = entry_p * 1.05
@@ -3699,15 +3699,15 @@ class PortfolioAnalyzer:
                 t5_dist_usd = round(t5_stock - und_p, 2)
                 t5_dist_pct = round((t5_dist_usd / und_p * 100.0), 1) if und_p > 0 else 0.0
                 
-                t1_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 1.0 else f"Nog +${t1_dist_usd:.2f} (+{t1_dist_pct:.1f}%) stijging nodig tot ${t1_stock:.2f}"
-                t5_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 5.0 else f"Nog +${t5_dist_usd:.2f} (+{t5_dist_pct:.1f}%) stijging nodig tot ${t5_stock:.2f}"
+                t1_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 1.0 else f"Nog +\\${t1_dist_usd:.2f} (+{t1_dist_pct:.1f}%) stijging nodig tot \\${t1_stock:.2f}"
+                t5_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 5.0 else f"Nog +\\${t5_dist_usd:.2f} (+{t5_dist_pct:.1f}%) stijging nodig tot \\${t5_stock:.2f}"
             else:
                 bep_dist_usd = round(und_p - bep_price, 2)
                 bep_dist_pct = round((bep_dist_usd / und_p * 100.0), 1) if und_p > 0 else 0.0
                 if und_p <= bep_price:
-                    bep_status = f"✅ In winstzone (+${bep_price - und_p:.2f} / +{((bep_price - und_p)/bep_price)*100:.1f}% onder BEP van ${bep_price:.2f})"
+                    bep_status = f"✅ In winstzone (+\\${bep_price - und_p:.2f} / +{((bep_price - und_p)/bep_price)*100:.1f}% onder BEP van \\${bep_price:.2f})"
                 else:
-                    bep_status = f"⚠️ Nog -${bep_dist_usd:.2f} (-{abs(bep_dist_pct):.1f}%) daling nodig voor BEP op expiratie (${bep_price:.2f})"
+                    bep_status = f"⚠️ Nog -\\${bep_dist_usd:.2f} (-{abs(bep_dist_pct):.1f}%) daling nodig voor BEP op expiratie (\\${bep_price:.2f})"
                 
                 t1_opt = entry_p * 1.01
                 t5_opt = entry_p * 1.05
@@ -3718,8 +3718,8 @@ class PortfolioAnalyzer:
                 t5_dist_usd = round(und_p - t5_stock, 2)
                 t5_dist_pct = round((t5_dist_usd / und_p * 100.0), 1) if und_p > 0 else 0.0
                 
-                t1_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 1.0 else f"Nog -${t1_dist_usd:.2f} (-{t1_dist_pct:.1f}%) daling nodig tot ${t1_stock:.2f}"
-                t5_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 5.0 else f"Nog -${t5_dist_usd:.2f} (-{t5_dist_pct:.1f}%) daling nodig tot ${t5_stock:.2f}"
+                t1_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 1.0 else f"Nog -\\${t1_dist_usd:.2f} (-{t1_dist_pct:.1f}%) daling nodig tot \\${t1_stock:.2f}"
+                t5_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 5.0 else f"Nog -\\${t5_dist_usd:.2f} (-{t5_dist_pct:.1f}%) daling nodig tot \\${t5_stock:.2f}"
 
         elif strat in ['BullPut', 'BearCall', 'BullCall', 'BearPut']:
             is_credit = strat in ['BullPut', 'BearCall']
@@ -3735,9 +3735,9 @@ class PortfolioAnalyzer:
                 bep_dist_usd = buffer_usd
                 bep_dist_pct = buffer_pct
                 if und_p >= bep_price:
-                    bep_status = f"🛡️ Veiligheidsbuffer: Koers ligt ${buffer_usd:+.2f} ({buffer_pct:+.1f}%) boven BEP van ${bep_price:.2f}"
+                    bep_status = f"🛡️ Veiligheidsbuffer: Koers ligt \\${buffer_usd:+.2f} ({buffer_pct:+.1f}%) boven BEP van \\${bep_price:.2f}"
                 else:
-                    bep_status = f"⚠️ Onder BEP: Koers moet nog +${abs(buffer_usd):.2f} (+{abs(buffer_pct):.1f}%) stijgen tot BEP (${bep_price:.2f})"
+                    bep_status = f"⚠️ Onder BEP: Koers moet nog +\\${abs(buffer_usd):.2f} (+{abs(buffer_pct):.1f}%) stijgen tot BEP (\\${bep_price:.2f})"
                 
                 t1_stock = round(bep_price + (0.01 * margin_risk), 2)
                 t5_stock = round(bep_price + (0.05 * margin_risk), 2)
@@ -3746,8 +3746,8 @@ class PortfolioAnalyzer:
                 t5_dist_usd = round(t5_stock - und_p, 2)
                 t5_dist_pct = round((t5_dist_usd / und_p * 100.0), 1) if und_p > 0 else 0.0
                 
-                t1_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 1.0 else f"Nog +${t1_dist_usd:.2f} (+{t1_dist_pct:.1f}%) stijging nodig tot ${t1_stock:.2f}"
-                t5_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 5.0 else f"Nog +${t5_dist_usd:.2f} (+{t5_dist_pct:.1f}%) stijging nodig tot ${t5_stock:.2f}"
+                t1_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 1.0 else f"Nog +\\${t1_dist_usd:.2f} (+{t1_dist_pct:.1f}%) stijging nodig tot \\${t1_stock:.2f}"
+                t5_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 5.0 else f"Nog +\\${t5_dist_usd:.2f} (+{t5_dist_pct:.1f}%) stijging nodig tot \\${t5_stock:.2f}"
 
             elif strat == 'BearCall':
                 bep_price = round(sold_k + entry_p, 2)
@@ -3756,9 +3756,9 @@ class PortfolioAnalyzer:
                 bep_dist_usd = buffer_usd
                 bep_dist_pct = buffer_pct
                 if und_p <= bep_price:
-                    bep_status = f"🛡️ Veiligheidsbuffer: Koers ligt ${buffer_usd:+.2f} ({buffer_pct:+.1f}%) onder BEP van ${bep_price:.2f}"
+                    bep_status = f"🛡️ Veiligheidsbuffer: Koers ligt \\${buffer_usd:+.2f} ({buffer_pct:+.1f}%) onder BEP van \\${bep_price:.2f}"
                 else:
-                    bep_status = f"⚠️ Boven BEP: Koers moet nog -${abs(buffer_usd):.2f} (-{abs(buffer_pct):.1f}%) dalen tot BEP (${bep_price:.2f})"
+                    bep_status = f"⚠️ Boven BEP: Koers moet nog -\\${abs(buffer_usd):.2f} (-{abs(buffer_pct):.1f}%) dalen tot BEP (\\${bep_price:.2f})"
                 
                 t1_stock = round(bep_price - (0.01 * margin_risk), 2)
                 t5_stock = round(bep_price - (0.05 * margin_risk), 2)
@@ -3767,17 +3767,17 @@ class PortfolioAnalyzer:
                 t5_dist_usd = round(und_p - t5_stock, 2)
                 t5_dist_pct = round((t5_dist_usd / und_p * 100.0), 1) if und_p > 0 else 0.0
                 
-                t1_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 1.0 else f"Nog -${t1_dist_usd:.2f} (-{t1_dist_pct:.1f}%) daling nodig tot ${t1_stock:.2f}"
-                t5_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 5.0 else f"Nog -${t5_dist_usd:.2f} (-{t5_dist_pct:.1f}%) daling nodig tot ${t5_stock:.2f}"
+                t1_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 1.0 else f"Nog -\\${t1_dist_usd:.2f} (-{t1_dist_pct:.1f}%) daling nodig tot \\${t1_stock:.2f}"
+                t5_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 5.0 else f"Nog -\\${t5_dist_usd:.2f} (-{t5_dist_pct:.1f}%) daling nodig tot \\${t5_stock:.2f}"
 
             elif strat in ['BullCall', 'SyntheticCoveredCall']:
                 bep_price = round(bought_k + entry_p, 2)
                 bep_dist_usd = round(bep_price - und_p, 2)
                 bep_dist_pct = round((bep_dist_usd / und_p * 100.0), 1) if und_p > 0 else 0.0
                 if und_p >= bep_price:
-                    bep_status = f"✅ In winstzone (+${und_p - bep_price:.2f} / +{((und_p - bep_price)/bep_price)*100:.1f}% boven BEP van ${bep_price:.2f})"
+                    bep_status = f"✅ In winstzone (+\\${und_p - bep_price:.2f} / +{((und_p - bep_price)/bep_price)*100:.1f}% boven BEP van \\${bep_price:.2f})"
                 else:
-                    bep_status = f"⚠️ Nog +${bep_dist_usd:.2f} (+{abs(bep_dist_pct):.1f}%) stijging nodig voor BEP op expiratie (${bep_price:.2f})"
+                    bep_status = f"⚠️ Nog +\\${bep_dist_usd:.2f} (+{abs(bep_dist_pct):.1f}%) stijging nodig voor BEP op expiratie (\\${bep_price:.2f})"
                 
                 t1_stock = round(bep_price + (0.01 * entry_p), 2)
                 t5_stock = round(bep_price + (0.05 * entry_p), 2)
@@ -3786,17 +3786,17 @@ class PortfolioAnalyzer:
                 t5_dist_usd = round(t5_stock - und_p, 2)
                 t5_dist_pct = round((t5_dist_usd / und_p * 100.0), 1) if und_p > 0 else 0.0
                 
-                t1_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 1.0 else f"Nog +${t1_dist_usd:.2f} (+{t1_dist_pct:.1f}%) nodig tot ${t1_stock:.2f}"
-                t5_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 5.0 else f"Nog +${t5_dist_usd:.2f} (+{t5_dist_pct:.1f}%) nodig tot ${t5_stock:.2f}"
+                t1_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 1.0 else f"Nog +\\${t1_dist_usd:.2f} (+{t1_dist_pct:.1f}%) nodig tot \\${t1_stock:.2f}"
+                t5_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 5.0 else f"Nog +\\${t5_dist_usd:.2f} (+{t5_dist_pct:.1f}%) nodig tot \\${t5_stock:.2f}"
 
             elif strat in ['BearPut', 'SyntheticCoveredPut']:
                 bep_price = round(bought_k - entry_p, 2)
                 bep_dist_usd = round(und_p - bep_price, 2)
                 bep_dist_pct = round((bep_dist_usd / und_p * 100.0), 1) if und_p > 0 else 0.0
                 if und_p <= bep_price:
-                    bep_status = f"✅ In winstzone (+${bep_price - und_p:.2f} / +{((bep_price - und_p)/bep_price)*100:.1f}% onder BEP van ${bep_price:.2f})"
+                    bep_status = f"✅ In winstzone (+\\${bep_price - und_p:.2f} / +{((bep_price - und_p)/bep_price)*100:.1f}% onder BEP van \\${bep_price:.2f})"
                 else:
-                    bep_status = f"⚠️ Nog -${bep_dist_usd:.2f} (-{abs(bep_dist_pct):.1f}%) daling nodig voor BEP op expiratie (${bep_price:.2f})"
+                    bep_status = f"⚠️ Nog -\\${bep_dist_usd:.2f} (-{abs(bep_dist_pct):.1f}%) daling nodig voor BEP op expiratie (\\${bep_price:.2f})"
                 
                 t1_stock = round(bep_price - (0.01 * entry_p), 2)
                 t5_stock = round(bep_price - (0.05 * entry_p), 2)
@@ -3805,8 +3805,8 @@ class PortfolioAnalyzer:
                 t5_dist_usd = round(und_p - t5_stock, 2)
                 t5_dist_pct = round((t5_dist_usd / und_p * 100.0), 1) if und_p > 0 else 0.0
                 
-                t1_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 1.0 else f"Nog -${t1_dist_usd:.2f} (-{t1_dist_pct:.1f}%) nodig tot ${t1_stock:.2f}"
-                t5_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 5.0 else f"Nog -${t5_dist_usd:.2f} (-{t5_dist_pct:.1f}%) nodig tot ${t5_stock:.2f}"
+                t1_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 1.0 else f"Nog -\\${t1_dist_usd:.2f} (-{t1_dist_pct:.1f}%) nodig tot \\${t1_stock:.2f}"
+                t5_status = f"✅ Reeds bereikt ({pnl_pct:+.1f}% winst)" if pnl_pct >= 5.0 else f"Nog -\\${t5_dist_usd:.2f} (-{t5_dist_pct:.1f}%) nodig tot \\${t5_stock:.2f}"
 
         return {
             'contract_label': contract_label,
@@ -3881,6 +3881,66 @@ class PortfolioAnalyzer:
                 'is_between_strikes': False,
                 'ex_dividend_risk': False,
                 'deadline_status': 'AANDELEN_PORTFOLIO'
+            }
+
+        # 1b. Gekochte Single-Leg Opties (Long Call / Long Put - Geen Aanwijzingsrisico)
+        if strat in ['LongCall', 'LongPut'] or (pos.get('is_long', False) and not is_credit_strat and sold_strike <= 0):
+            is_call = strat == 'LongCall' or 'C' in right
+            bought_k = float(pos.get('bought_strike', 0.0) or pos.get('strike', 0.0) or 0.0)
+            risk_level = "SAFE"
+            triggers = []
+
+            # Intrinsieke en extrinsieke waarde van de gekochte optie
+            if bought_k > 0 and underlying_p > 0:
+                intrinsic_val = max(0.0, underlying_p - bought_k) if is_call else max(0.0, bought_k - underlying_p)
+                extrinsic_val = max(0.0, mkt_price - intrinsic_val)
+            else:
+                intrinsic_val = 0.0
+                extrinsic_val = mkt_price
+
+            is_itm = intrinsic_val > 0
+
+            # Expiratiedag evaluatie (DTE == 0): Uitoefeningsrisico (Auto-exercise door IBKR) ipv Aanwijzingsrisico
+            if dte == 0:
+                if is_itm:
+                    triggers.append(f"📅 EXSPIRATIEDAG (DTE = 0): Optie staat In-The-Money (Intrinsiek: \\${intrinsic_val:.2f}). IBKR oefent deze om 22:00 uur automatisch uit tenzij je de positie tijdig verkoopt of 'Do Not Exercise' kiest.")
+                    consequences = f"Automatische uitoefening leidt tot {'aankoop' if is_call else 'verkoop'} van {qty * 100} aandelen {sym} tegen strike \\${bought_k:.2f} (kapitaalbeslag: \\${bought_k * 100 * qty:,.2f})."
+                    action_code = "WINST_BORGEN"
+                    action_title = "Optie Sluiten / Winst Borgen vóór 22:00 uur"
+                    recommended_action = "Verkoop de optie vóór 22:00 uur NL tijd om de winst in cash te verzilveren en ongewenst aandelenbezit te voorkomen."
+                    execution_type = "SINGLE_LEG_CLOSE"
+                else:
+                    triggers.append(f"📅 EXSPIRATIEDAG (DTE = 0): Optie staat Out-of-the-Money en loopt vanavond om 22:00 uur waardeloos af.")
+                    consequences = "De resterende premie verdampt. Er vindt geen uitoefening of aandelenlevering plaats."
+                    action_code = "HANDHAVEN"
+                    action_title = "Waardeloos Laten Expireren"
+                    recommended_action = "Geen actie vereist. Optie verdwijnt vanavond automatisch uit je account."
+                    execution_type = "HANDHAVEN"
+            else:
+                consequences = f"Account bezit {qty}x Long {'Call' if is_call else 'Put'} {sym} (Strike: \\${bought_k:.2f}, DTE: {dte}d). Als optiehouder heb je het uitoefenrecht en loop je GEEN enkel aanwijzingsrisico (0%). Maximaal verlies is strikt beperkt tot de betaalde premie."
+                action_code = "HANDHAVEN"
+                action_title = f"Long {'Call' if is_call else 'Put'} Handhaven"
+                recommended_action = "Geen actie vereist. Bewaak de positie op basis van het winstdoel en het OmniTrader BarToBar stop-loss niveau."
+                execution_type = "SINGLE_LEG_CLOSE"
+
+            return {
+                'risk_level': risk_level,
+                'triggers': triggers,
+                'consequences': consequences,
+                'action_code': action_code,
+                'action_title': action_title,
+                'recommended_action': recommended_action,
+                'execution_type': execution_type,
+                'extrinsic_val': extrinsic_val,
+                'intrinsic_val': intrinsic_val,
+                'is_itm': is_itm,
+                'is_pin_risk': False,
+                'is_between_strikes': False,
+                'ex_dividend_risk': False,
+                'deadline_status': 'LONG_OPTION_PORTFOLIO',
+                'notional_capital': 0.0,
+                'assignment_probability_pct': 0.0,
+                'capital_warning': ''
             }
 
         # Bereken intrinsieke en extrinsieke waarde van de geschreven optie
@@ -4048,30 +4108,32 @@ class PortfolioAnalyzer:
                 action_title = "Noodsluiting op Marktprijs (Direct Flat Gaan)"
         from risk_model import EarlyAssignmentRiskEngine
         notional_cap = sold_strike * 100.0 * qty if (is_credit_strat and sold_strike > 0) else 0.0
-        short_p = float(pos.get('short_leg_price', 0.0) or (mkt_price if mkt_price > 0 else 0.50))
-        eval_risk = EarlyAssignmentRiskEngine.evaluate_assignment_risk(
-            spot=underlying_p,
-            strike_sell=sold_strike,
-            short_option_price=short_p,
-            right=right,
-            dte=dte,
-            short_delta=short_delta,
-            account_cash=None,
-            quantity=qty
-        )
+        eval_risk = {'risk_level': 'VEILIG', 'probability_assignment_pct': 0.0, 'extrinsic_value': 0.0, 'capital_warning': ''}
+        if is_credit_strat and sold_strike > 0:
+            short_p = float(pos.get('short_leg_price', 0.0) or (mkt_price if mkt_price > 0 else 0.50))
+            eval_risk = EarlyAssignmentRiskEngine.evaluate_assignment_risk(
+                spot=underlying_p,
+                strike_sell=sold_strike,
+                short_option_price=short_p,
+                right=right,
+                dte=dte,
+                short_delta=short_delta,
+                account_cash=None,
+                quantity=qty
+            )
 
-        if eval_risk.get('should_close_now') or eval_risk.get('risk_level') == 'CRITICAL':
-            risk_level = "CRITICAL"
-            triggers.append(f"🚨 CRITIEKE TIJDSWAARDE VERDAMPING (${eval_risk.get('extrinsic_value', 0.0):.2f} <= $0.05): Kans op vervroegde aanwijzing is {eval_risk.get('probability_assignment_pct', 0.0):.0f}%. Sluit de positie direct!")
-            consequences = "De optiehouder kan op elk moment uitoefenen zonder tijdswaarde te verliezen. Er volgt onmiddellijke levering van 100 aandelen per contract!"
-            action_code = "TIJDIG_SLUITEN"
-            action_title = "Direct Sluiten (Tijdswaarde Verdamping / Aanwijzingsgevaar)"
-            recommended_action = "Sluit direct de hele spread als combinatie (BUY combo) om toewijzing voor te zijn."
-            execution_type = "COMBO_CLOSE"
-        elif eval_risk.get('risk_level') == 'WARNING':
-            if risk_level in ["SAFE", "LOW"]:
-                risk_level = "WARNING"
-            triggers.append(f"⚠️ GEVARENZONE TIJDSWAARDE (${eval_risk.get('extrinsic_value', 0.0):.2f} <= $0.10): Kans op vervroegde aanwijzing is verhoogd ({eval_risk.get('probability_assignment_pct', 0.0):.0f}%).")
+            if eval_risk.get('should_close_now') or eval_risk.get('risk_level') == 'CRITICAL':
+                risk_level = "CRITICAL"
+                triggers.append(f"🚨 CRITIEKE TIJDSWAARDE VERDAMPING (\\${eval_risk.get('extrinsic_value', 0.0):.2f} <= $0.05): Kans op vervroegde aanwijzing is {eval_risk.get('probability_assignment_pct', 0.0):.0f}%. Sluit de positie direct!")
+                consequences = "De optiehouder kan op elk moment uitoefenen zonder tijdswaarde te verliezen. Er volgt onmiddellijke levering van 100 aandelen per contract!"
+                action_code = "TIJDIG_SLUITEN"
+                action_title = "Direct Sluiten (Tijdswaarde Verdamping / Aanwijzingsgevaar)"
+                recommended_action = "Sluit direct de hele spread als combinatie (BUY combo) om toewijzing voor te zijn."
+                execution_type = "COMBO_CLOSE"
+            elif eval_risk.get('risk_level') == 'WARNING':
+                if risk_level in ["SAFE", "LOW"]:
+                    risk_level = "WARNING"
+                triggers.append(f"⚠️ GEVARENZONE TIJDSWAARDE (\\${eval_risk.get('extrinsic_value', 0.0):.2f} <= $0.10): Kans op vervroegde aanwijzing is verhoogd ({eval_risk.get('probability_assignment_pct', 0.0):.0f}%).")
 
         return {
             'risk_level': risk_level,
@@ -4436,6 +4498,15 @@ class PortfolioAnalyzer:
                 f"[Aanbevolen] {action_title}",
                 "Verkoop Aandelen via Limit Order",
                 "Verkoop Aandelen via Market Order",
+                "Handhaven (Geen Actie)"
+            ]
+        elif strat in ['LongCall', 'LongPut']:
+            alternatives = [
+                f"[Aanbevolen] {action_title}",
+                f"Verkoop {strat} via Limit Order",
+                f"Verkoop {strat} via Market Order",
+                "Rol Door naar Volgende Maand",
+                "Uitoefenen (Levering Aandelen)",
                 "Handhaven (Geen Actie)"
             ]
         elif anti_assign.get('execution_type') == 'SHORT_LEG_ONLY':

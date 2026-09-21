@@ -218,7 +218,7 @@ def render_portfolio_management_dashboard(tws_host, tws_port):
     n_tot = len(evaluations)
     action_evals = [e for e in evaluations if e['action_code'] != 'HANDHAVEN']
     n_action = len(action_evals)
-    threatened_evals = [e for e in evaluations if e.get('anti_assignment', {}).get('risk_level') in ['CRITICAL', 'HIGH'] and e['strategy'] != 'Stock']
+    threatened_evals = [e for e in evaluations if e.get('anti_assignment', {}).get('risk_level') in ['CRITICAL', 'HIGH'] and e['strategy'] not in ['Stock', 'LongCall', 'LongPut']]
     n_threatened = len(threatened_evals)
 
     m1, m2, m3, m4 = st.columns(4)
@@ -313,9 +313,13 @@ def render_portfolio_management_dashboard(tws_host, tws_port):
         risk_lvl = anti_assign.get('risk_level', item.get('urgency', 'LOW'))
 
         is_stock = strat == 'Stock'
+        is_long_opt = strat in ['LongCall', 'LongPut']
         if is_stock:
             urgency_badge = "🟢 AANDELENPOSITIE"
             header_icon = "📦"
+        elif is_long_opt:
+            urgency_badge = "🟢 GEKOCHTE OPTIE (GEEN AANWIJZINGSRISICO)" if risk_lvl == "SAFE" else ("🟠 EXPIRATIE UITOEFENING" if risk_lvl == "HIGH" else "🟡 AANDACHT")
+            header_icon = '🎯' if act_code == 'WINST_BORGEN' else ('⚠️' if act_code != 'HANDHAVEN' else '🟢')
         else:
             urgency_badge = "🔴 CRITICAL (AANWIJZINGSGEVAAR)" if risk_lvl == "CRITICAL" else ("🟠 HIGH (DEADLINE)" if risk_lvl == "HIGH" else ("🟡 MEDIUM" if risk_lvl == "MEDIUM" else "🟢 LOW (VEILIG)"))
             header_icon = '🚨' if risk_lvl in ['CRITICAL', 'HIGH'] else ('⚠️' if act_code != 'HANDHAVEN' else '✅')
@@ -440,6 +444,20 @@ def render_portfolio_management_dashboard(tws_host, tws_port):
                         st.markdown("##### 📦 Positie Status:")
                         for trg in triggers:
                             st.info(trg)
+                    elif is_long_opt:
+                        st.markdown("##### 🎯 Expiratie & Uitoefen Status:")
+                        for trg in triggers:
+                            if "🟢" in trg or "✅" in trg:
+                                st.success(trg)
+                            elif "💰" in trg or "⚠️" in trg:
+                                st.warning(trg)
+                            else:
+                                st.info(trg)
+                        c_ext1, c_ext2 = st.columns(2)
+                        with c_ext1:
+                            st.metric("Resterende Tijdswaarde (Extrinsiek)", f"${ext_val:.2f}", help="Resterende extrinsieke waarde van de gekochte optie.")
+                        with c_ext2:
+                            st.metric("Intrinsieke Waarde", f"${intr_val:.2f}", delta="In-The-Money" if intr_val > 0 else "Out-of-the-Money", delta_color="normal" if intr_val > 0 else "off")
                     else:
                         if risk_lvl == "SAFE":
                             st.markdown("##### 🟢 Expiratie & Winst Status:")
@@ -622,8 +640,10 @@ def render_portfolio_management_dashboard(tws_host, tws_port):
                             st.error(f"Verbinding mislukt: {s_msg}")
 
                 elif risk_lvl in ['CRITICAL', 'HIGH']:
-                    close_btn_label = f"🛡️ Sluit Positie Nu (Combo Order)" if mkt_info.get('is_open') else f"🛡️ Sluit Positie (Wachtrij tot 15:30 CET)"
-                    if st.button(close_btn_label, type="primary", key=f"btn_quick_close_{idx}_{sym}", help="Sluit beide optiebenen tegelijk als één combinatieorder (BAG Limit) in TWS om legging-in risico te vermijden."):
+                    close_action_name = f"Verkoop {strat} Nu" if is_long_opt else "Sluit Positie Nu (Combo Order)"
+                    close_btn_label = f"🛡️ {close_action_name}" if mkt_info.get('is_open') else f"🛡️ {close_action_name} (Wachtrij tot 15:30 CET)"
+                    close_btn_help = f"Verkoopt de gekochte {strat} positie in TWS om winst te borgen of verlies te beperken." if is_long_opt else "Sluit beide optiebenen tegelijk als één combinatieorder (BAG Limit) in TWS om legging-in risico te vermijden."
+                    if st.button(close_btn_label, type="primary", key=f"btn_quick_close_{idx}_{sym}", help=close_btn_help):
                         single_act = [{
                             'symbol': sym,
                             'strategy': strat,
