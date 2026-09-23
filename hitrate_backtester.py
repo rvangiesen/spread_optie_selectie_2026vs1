@@ -2,7 +2,31 @@ import datetime
 import numpy as np
 import pandas as pd
 import yfinance as yf
+from scipy.stats import norm
 from risk_model import AntiGravityGammaThetaEngine
+from logic import analyze_dual_trigger_spreads, calculate_profit_stop_levels
+
+def bs_call_price(S, K, T, r=0.04, sigma=0.20):
+    """Black-Scholes analytical Call price."""
+    if T <= 1e-5:
+        return max(0.0, float(S) - float(K))
+    sigma = max(1e-4, float(sigma))
+    S_f = max(1e-4, float(S))
+    K_f = max(1e-4, float(K))
+    d1 = (np.log(S_f / K_f) + (r + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
+    d2 = d1 - sigma * np.sqrt(T)
+    return max(0.0, float(S_f * norm.cdf(d1) - K_f * np.exp(-r * T) * norm.cdf(d2)))
+
+def bs_put_price(S, K, T, r=0.04, sigma=0.20):
+    """Black-Scholes analytical Put price."""
+    if T <= 1e-5:
+        return max(0.0, float(K) - float(S))
+    sigma = max(1e-4, float(sigma))
+    S_f = max(1e-4, float(S))
+    K_f = max(1e-4, float(K))
+    d1 = (np.log(S_f / K_f) + (r + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
+    d2 = d1 - sigma * np.sqrt(T)
+    return max(0.0, float(K_f * np.exp(-r * T) * norm.cdf(-d2) - S_f * norm.cdf(-d1)))
 
 def round_to_strike(price):
     """
@@ -32,7 +56,20 @@ class SpreadHitRateTester:
     def __init__(self):
         pass
 
-    def run_backtest(self, symbols=['SPY', 'AAPL', 'MSFT', 'NVDA', 'QQQ'], trades_per_symbol=5, em_multiplier=1.439535, target_strategy='AUTO', dte=30, spread_width=5.0, progress_callback=None, log_callback=None):
+    def run_backtest(
+        self,
+        symbols=['SPY', 'AAPL', 'MSFT', 'NVDA', 'QQQ'],
+        trades_per_symbol=10,
+        em_multiplier=1.439535,
+        target_strategy='AUTO',
+        dte=30,
+        spread_width=5.0,
+        use_dual_trigger=False,
+        profit_target_pct=70.0,
+        exit_on_momentum_drop=True,
+        progress_callback=None,
+        log_callback=None
+    ):
         def log(msg):
             if log_callback:
                 log_callback(msg)
@@ -52,41 +89,60 @@ class SpreadHitRateTester:
         for sym in symbols:
             try:
                 ticker = yf.Ticker(sym)
-                df_hist = ticker.history(period="1y")
+                hist_period = "2y" if (use_dual_trigger or trades_per_symbol > 5) else "1y"
+                df_hist = ticker.history(period=hist_period)
+                if (df_hist is None or df_hist.empty or len(df_hist) < 60) and hist_period == "2y":
+                    df_hist = ticker.history(period="1y")
             except Exception as e:
                 log(f"   ⚠️ Kon data niet ophalen voor {sym}: {e}")
                 continue
 
-            if df_hist.empty or len(df_hist) < 100:
+            if df_hist is None or df_hist.empty or len(df_hist) < 60:
                 continue
+
+            if use_dual_trigger:
+                df_dual = analyze_dual_trigger_spreads(df_hist)
+                if not df_dual.empty:
+                    df_hist = df_dual
 
             close_series = df_hist['Close'].ffill()
             df_hist['returns'] = close_series.pct_change(fill_method=None)
             df_hist['hv30'] = df_hist['returns'].rolling(window=30).std() * np.sqrt(252)
 
             total_bars = len(df_hist)
-            
-            # Start 14 calendar days back from the latest available date in dataset
-            latest_date = df_hist.index[-1]
-            target_start_date = latest_date - pd.Timedelta(days=14)
-            
-            try:
-                start_entry_idx = df_hist.index.get_indexer([target_start_date], method='nearest')[0]
-            except Exception:
-                start_entry_idx = total_bars - 15
+            trading_days_est = max(5, int(round(dte_val * 21.0 / 30.0)))
 
-            start_entry_idx = min(total_bars - 1, max(60, start_entry_idx))
+            if use_dual_trigger and 'Long_Signal' in df_hist.columns:
+                raw_sig_indices = [
+                    i for i in range(40, total_bars - trading_days_est)
+                    if bool(df_hist['Long_Signal'].iloc[i])
+                ]
+                # Filter indices so trades are at least 4 bars apart (prevents duplicate same-move clustering)
+                spaced_indices = []
+                for s_i in raw_sig_indices:
+                    if not spaced_indices or (s_i - spaced_indices[-1] >= 4):
+                        spaced_indices.append(s_i)
+                entry_indices = spaced_indices[-trades_per_symbol:]
+                if not entry_indices and raw_sig_indices:
+                    entry_indices = raw_sig_indices[-trades_per_symbol:]
+            else:
+                # Start 14 calendar days back from latest available date
+                latest_date = df_hist.index[-1]
+                target_start_date = latest_date - pd.Timedelta(days=14)
+                try:
+                    start_entry_idx = df_hist.index.get_indexer([target_start_date], method='nearest')[0]
+                except Exception:
+                    start_entry_idx = total_bars - 15
 
-            # Step backward in time (~21 trading days = 1 month per trade)
-            step_size = 21
-            entry_indices = []
-            for i in range(trades_per_symbol):
-                idx = start_entry_idx - (i * step_size)
-                if idx >= 60:
-                    entry_indices.append(idx)
+                start_entry_idx = min(total_bars - 1, max(60, start_entry_idx))
 
-            # Sort chronologically so report flows naturally from past to present
-            entry_indices.sort()
+                step_size = 21
+                entry_indices = []
+                for i in range(trades_per_symbol):
+                    idx = start_entry_idx - (i * step_size)
+                    if idx >= 60:
+                        entry_indices.append(idx)
+                entry_indices.sort()
 
             for idx_entry in entry_indices:
                 current_step += 1
@@ -247,50 +303,176 @@ class SpreadHitRateTester:
                     breached_short = min_price_during <= short_strike
                     win = price_exp >= short_strike
 
-                if strat == 'LongCall':
-                    intrinsic_exp = max(0.0, price_exp - long_strike)
-                    realized_pnl = round((intrinsic_exp - credit) * 100.0, 2)
-                    em85_safe = win or (price_exp > long_strike)
-                    if win:
-                        status = "✅ Winst (Koers > BEP)"
-                    elif intrinsic_exp > 0:
-                        status = "🟡 Deels Verlies (Tussen Strike en BEP)"
-                    else:
-                        status = "🔴 Verlies (Waardeloos OTM)"
+                entry_signal_type = str(row_entry.get('Signal_Type', 'None')) if use_dual_trigger else 'Regulier'
+                early_exit = False
+                exit_reason = "Expiratie Afloop"
+                days_held = trading_days
+                actual_exit_date = date_exp
+
+                # Calibreer theoretische optiewaarde op dag van instap (t=0)
+                t_entry_yrs = max(1e-4, dte_val / 365.0)
+                if strat == 'BullPut':
+                    bs_entry_short = bs_put_price(price_entry, short_strike, t_entry_yrs, 0.04, hv_val)
+                    bs_entry_long = bs_put_price(price_entry, long_strike, t_entry_yrs, 0.04, hv_val)
+                    bs_spread_entry = max(0.05, bs_entry_short - bs_entry_long)
+                elif strat == 'BearCall':
+                    bs_entry_short = bs_call_price(price_entry, short_strike, t_entry_yrs, 0.04, hv_val)
+                    bs_entry_long = bs_call_price(price_entry, long_strike, t_entry_yrs, 0.04, hv_val)
+                    bs_spread_entry = max(0.05, bs_entry_short - bs_entry_long)
+                elif strat == 'BullCall':
+                    bs_entry_long = bs_call_price(price_entry, long_strike, t_entry_yrs, 0.04, hv_val)
+                    bs_entry_short = bs_call_price(price_entry, short_strike, t_entry_yrs, 0.04, hv_val)
+                    bs_spread_entry = max(0.05, bs_entry_long - bs_entry_short)
+                elif strat == 'BearPut':
+                    bs_entry_long = bs_put_price(price_entry, long_strike, t_entry_yrs, 0.04, hv_val)
+                    bs_entry_short = bs_put_price(price_entry, short_strike, t_entry_yrs, 0.04, hv_val)
+                    bs_spread_entry = max(0.05, bs_entry_long - bs_entry_short)
+                elif strat == 'LongCall':
+                    bs_spread_entry = max(0.10, bs_call_price(price_entry, long_strike, t_entry_yrs, 0.04, hv_val))
                 elif strat == 'LongPut':
-                    intrinsic_exp = max(0.0, long_strike - price_exp)
-                    realized_pnl = round((intrinsic_exp - credit) * 100.0, 2)
-                    em85_safe = win or (price_exp < long_strike)
-                    if win:
-                        status = "✅ Winst (Koers < BEP)"
-                    elif intrinsic_exp > 0:
-                        status = "🟡 Deels Verlies (Tussen Strike en BEP)"
+                    bs_spread_entry = max(0.10, bs_put_price(price_entry, long_strike, t_entry_yrs, 0.04, hv_val))
+                else: # ShortPut
+                    bs_spread_entry = max(0.10, bs_put_price(price_entry, short_strike, t_entry_yrs, 0.04, hv_val))
+
+                # Bewakende Profit Stop monitoring (60%, 70%, 100% of trendverzwakking EMA5 < EMA13)
+                if profit_target_pct is not None and profit_target_pct > 0:
+                    target_frac = float(profit_target_pct) / 100.0
+                    for day_idx, (bar_dt, bar_row) in enumerate(df_trade_period.iterrows(), start=1):
+                        p_curr = float(bar_row['Close'])
+                        rem_days = max(0, trading_days - day_idx)
+                        t_rem_yrs = max(1e-4, (rem_days * (dte_val / trading_days)) / 365.0)
+
+                        if strat == 'BullPut':
+                            p_short = bs_put_price(p_curr, short_strike, t_rem_yrs, 0.04, hv_val)
+                            p_long = bs_put_price(p_curr, long_strike, t_rem_yrs, 0.04, hv_val)
+                            curr_spread_val = max(0.0, min(width_val, p_short - p_long))
+                            profit_pct_achieved = ((bs_spread_entry - curr_spread_val) / bs_spread_entry) * 100.0
+                            curr_unrealized_profit = (profit_pct_achieved / 100.0) * max_profit
+                        elif strat == 'BearCall':
+                            p_short = bs_call_price(p_curr, short_strike, t_rem_yrs, 0.04, hv_val)
+                            p_long = bs_call_price(p_curr, long_strike, t_rem_yrs, 0.04, hv_val)
+                            curr_spread_val = max(0.0, min(width_val, p_short - p_long))
+                            profit_pct_achieved = ((bs_spread_entry - curr_spread_val) / bs_spread_entry) * 100.0
+                            curr_unrealized_profit = (profit_pct_achieved / 100.0) * max_profit
+                        elif strat == 'BullCall':
+                            p_long = bs_call_price(p_curr, long_strike, t_rem_yrs, 0.04, hv_val)
+                            p_short = bs_call_price(p_curr, short_strike, t_rem_yrs, 0.04, hv_val)
+                            curr_spread_val = max(0.0, min(width_val, p_long - p_short))
+                            spread_gain = curr_spread_val - bs_spread_entry
+                            profit_pct_achieved = (spread_gain / max(0.1, (width_val - bs_spread_entry))) * 100.0
+                            curr_unrealized_profit = (profit_pct_achieved / 100.0) * max_profit
+                        elif strat == 'BearPut':
+                            p_long = bs_put_price(p_curr, long_strike, t_rem_yrs, 0.04, hv_val)
+                            p_short = bs_put_price(p_curr, short_strike, t_rem_yrs, 0.04, hv_val)
+                            curr_spread_val = max(0.0, min(width_val, p_long - p_short))
+                            spread_gain = curr_spread_val - bs_spread_entry
+                            profit_pct_achieved = (spread_gain / max(0.1, (width_val - bs_spread_entry))) * 100.0
+                            curr_unrealized_profit = (profit_pct_achieved / 100.0) * max_profit
+                        elif strat == 'LongCall':
+                            curr_call_val = bs_call_price(p_curr, long_strike, t_rem_yrs, 0.04, hv_val)
+                            profit_pct_achieved = ((curr_call_val - bs_spread_entry) / bs_spread_entry) * 100.0
+                            curr_unrealized_profit = (profit_pct_achieved / 100.0) * (credit * 100.0)
+                        elif strat == 'LongPut':
+                            curr_put_val = bs_put_price(p_curr, long_strike, t_rem_yrs, 0.04, hv_val)
+                            profit_pct_achieved = ((curr_put_val - bs_spread_entry) / bs_spread_entry) * 100.0
+                            curr_unrealized_profit = (profit_pct_achieved / 100.0) * (credit * 100.0)
+                        else: # ShortPut
+                            p_short = bs_put_price(p_curr, short_strike, t_rem_yrs, 0.04, hv_val)
+                            profit_pct_achieved = ((bs_spread_entry - p_short) / bs_spread_entry) * 100.0
+                            curr_unrealized_profit = (profit_pct_achieved / 100.0) * max_profit
+
+                        # Check 1: Profit Target hit (bijv 60% of 70%)
+                        if profit_target_pct < 100.0 and profit_pct_achieved >= profit_target_pct:
+                            early_exit = True
+                            exit_reason = f"🎯 Profit Target {profit_target_pct:.0f}% ({day_idx}d)"
+                            days_held = day_idx
+                            actual_exit_date = bar_dt
+                            realized_pnl = round(max_profit * target_frac, 2) if strat in ['BullPut', 'BearCall', 'ShortPut'] else round(curr_unrealized_profit, 2)
+                            win = True
+                            status = f"✅ Winst ({profit_target_pct:.0f}% Target na {day_idx}d)"
+                            em85_safe = True
+                            break
+
+                        # Check 2: Trend Momentum Exit (EMA5 < EMA13)
+                        if exit_on_momentum_drop and bool(bar_row.get('Exit_Signal', False)):
+                            if curr_unrealized_profit > 0 and day_idx >= 2:
+                                early_exit = True
+                                exit_reason = f"📈 Trend Exit EMA5<13 ({day_idx}d)"
+                                days_held = day_idx
+                                actual_exit_date = bar_dt
+                                realized_pnl = round(curr_unrealized_profit, 2)
+                                win = True
+                                status = f"✅ Trend Exit ({day_idx}d, +${realized_pnl:.0f})"
+                                em85_safe = True
+                                break
+                            elif curr_unrealized_profit < -max_loss * 0.75 and day_idx >= 3:
+                                early_exit = True
+                                exit_reason = f"⚠️ Stoploss Trend Keert ({day_idx}d)"
+                                days_held = day_idx
+                                actual_exit_date = bar_dt
+                                realized_pnl = round(curr_unrealized_profit, 2)
+                                win = False
+                                status = f"🔴 Stoploss ({day_idx}d, -${abs(realized_pnl):.0f})"
+                                em85_safe = False
+                                break
+
+                if not early_exit:
+                    if strat == 'LongCall':
+                        intrinsic_exp = max(0.0, price_exp - long_strike)
+                        realized_pnl = round((intrinsic_exp - credit) * 100.0, 2)
+                        em85_safe = win or (price_exp > long_strike)
+                        if win:
+                            status = "✅ Winst (Koers > BEP)"
+                            exit_reason = "✅ Expiratie Winst (ITM)"
+                        elif intrinsic_exp > 0:
+                            status = "🟡 Deels Verlies (Tussen Strike en BEP)"
+                            exit_reason = "🟡 Deels Verlies (Expiratie)"
+                        else:
+                            status = "🔴 Verlies (Waardeloos OTM)"
+                            exit_reason = "🔴 Waardeloos OTM (Expiratie)"
+                    elif strat == 'LongPut':
+                        intrinsic_exp = max(0.0, long_strike - price_exp)
+                        realized_pnl = round((intrinsic_exp - credit) * 100.0, 2)
+                        em85_safe = win or (price_exp < long_strike)
+                        if win:
+                            status = "✅ Winst (Koers < BEP)"
+                            exit_reason = "✅ Expiratie Winst (ITM)"
+                        elif intrinsic_exp > 0:
+                            status = "🟡 Deels Verlies (Tussen Strike en BEP)"
+                            exit_reason = "🟡 Deels Verlies (Expiratie)"
+                        else:
+                            status = "🔴 Verlies (Waardeloos OTM)"
+                            exit_reason = "🔴 Waardeloos OTM (Expiratie)"
+                    elif strat == 'ShortPut':
+                        em85_safe = not touched_bep
+                        if win:
+                            realized_pnl = max_profit
+                            status = "✅ Winst (Expiratie OTM / Premie Behouden)"
+                            exit_reason = "✅ Expiratie OTM (100% Premie)"
+                        elif price_exp >= bep:
+                            realized_pnl = round((price_exp - bep) * 100.0, 2)
+                            status = "🟡 Deelwinst (Tussen Strike en BEP)"
+                            exit_reason = "🟡 Deelwinst (Expiratie)"
+                        else:
+                            actual_loss = (bep - price_exp) * 100.0
+                            loss_capped = min(actual_loss, max_profit * 2.0)
+                            realized_pnl = -round(loss_capped, 2)
+                            status = "🔴 Verlies (ITM / Aanwijzing)"
+                            exit_reason = "🔴 Verlies (ITM / Toewijzing)"
                     else:
-                        status = "🔴 Verlies (Waardeloos OTM)"
-                elif strat == 'ShortPut':
-                    em85_safe = not touched_bep
-                    if win:
-                        realized_pnl = max_profit
-                        status = "✅ Winst (Expiratie OTM / Premie Behouden)"
-                    elif price_exp >= bep:
-                        realized_pnl = round((price_exp - bep) * 100.0, 2)
-                        status = "🟡 Deelwinst (Tussen Strike en BEP)"
-                    else:
-                        actual_loss = (bep - price_exp) * 100.0
-                        loss_capped = min(actual_loss, max_profit * 2.0)
-                        realized_pnl = -round(loss_capped, 2)
-                        status = "🔴 Verlies (ITM / Aanwijzing)"
-                else:
-                    em85_safe = not touched_bep
-                    if win:
-                        realized_pnl = max_profit
-                        status = "✅ Winst (Expiratie OTM)"
-                    elif touched_bep and not breached_short:
-                        realized_pnl = max_profit * 0.5
-                        status = "🟡 BEP Touch (Gered)"
-                    else:
-                        realized_pnl = -max_loss
-                        status = "🔴 Verlies (ITM)"
+                        em85_safe = not touched_bep
+                        if win:
+                            realized_pnl = max_profit
+                            status = "✅ Winst (Expiratie OTM)"
+                            exit_reason = "✅ Expiratie OTM (100% Premie)"
+                        elif touched_bep and not breached_short:
+                            realized_pnl = max_profit * 0.5
+                            status = "🟡 BEP Touch (Gered)"
+                            exit_reason = "🟡 BEP Touch (Gered)"
+                        else:
+                            realized_pnl = -max_loss
+                            status = "🔴 Verlies (ITM)"
+                            exit_reason = "🔴 Verlies (ITM Expiratie)"
 
                 # Bereken Ultieme AG-Score (0-100) voor de trade
                 ev_est = (pop_est / 100.0 * max_profit) - ((1.0 - pop_est / 100.0) * max_loss)
@@ -339,12 +521,27 @@ class SpreadHitRateTester:
                     'status': status,
                     'win': win,
                     'em85_safe': em85_safe,
-                    'realized_pnl': realized_pnl
+                    'realized_pnl': realized_pnl,
+                    'entry_signal': entry_signal_type,
+                    'exit_reason': exit_reason,
+                    'days_held': days_held,
+                    'early_exit': early_exit,
+                    'profit_target_hit': "🎯 Profit Target" in exit_reason
                 })
 
         df_res = pd.DataFrame(results)
         if df_res.empty:
-            return {'summary': {}, 'details_df': pd.DataFrame()}
+            empty_cols = [
+                'symbol', 'entry_date', 'exp_date', 'strategy', 'vol_regime', 'hv30_%', 'dte',
+                'spread_width', 'underlying_entry', 'underlying_exp', 'optie_strike', 'short_strike',
+                'long_strike', 'bep', 'credit', 'EM68', 'EM85', 'em_multiplier_used',
+                'em85_dekking_pct', 'pop', 'AG_Score', 'status', 'win', 'em85_safe',
+                'realized_pnl', 'entry_signal', 'exit_reason', 'days_held', 'early_exit', 'profit_target_hit'
+            ]
+            return {
+                'summary': {'total_trades': 0, 'wins': 0, 'losses': 0, 'hit_rate': 0.0, 'total_pnl': 0.0, 'avg_pnl': 0.0, 'avg_days_held': 0.0, 'profit_target_hits': 0, 'early_exits': 0},
+                'details_df': pd.DataFrame(columns=empty_cols)
+            }
 
         win_count = int(df_res['win'].sum())
         total_count = len(df_res)
@@ -375,7 +572,10 @@ class SpreadHitRateTester:
             'count_ag_sub_65': len(ag_low),
             'em85_safe_rate': round(em85_safe_rate, 1),
             'total_pnl': round(total_pnl, 2),
-            'avg_pnl': round(avg_pnl, 2)
+            'avg_pnl': round(avg_pnl, 2),
+            'avg_days_held': round(float(df_res['days_held'].mean()), 1) if 'days_held' in df_res.columns else dte_val,
+            'profit_target_hits': int(df_res['profit_target_hit'].sum()) if 'profit_target_hit' in df_res.columns else 0,
+            'early_exits': int(df_res['early_exit'].sum()) if 'early_exit' in df_res.columns else 0
         }
 
         return {
@@ -435,6 +635,8 @@ class SpreadHitRateTester:
             target_strategy=sidebar_params.get('target_strategy', 'AUTO'),
             dte=sidebar_params.get('dte', 30),
             spread_width=sidebar_params.get('spread_width', 10.0),
+            use_dual_trigger=sidebar_params.get('use_dual_trigger', False),
+            profit_target_pct=sidebar_params.get('profit_target_pct', 70.0),
             progress_callback=p_sb,
             log_callback=log_callback
         )
@@ -446,6 +648,8 @@ class SpreadHitRateTester:
             target_strategy=standard_params.get('target_strategy', 'AUTO'),
             dte=standard_params.get('dte', 30),
             spread_width=standard_params.get('spread_width', 5.0),
+            use_dual_trigger=standard_params.get('use_dual_trigger', False),
+            profit_target_pct=standard_params.get('profit_target_pct', 70.0),
             progress_callback=p_std,
             log_callback=log_callback
         )

@@ -1489,22 +1489,54 @@ class IBClient:
         trades = self.ib.openTrades()
         # returns list of Trade
         
+        # Determine parent child sequence mapping
+        child_seq = {}
+        data = []
         for t in trades:
-            # t is a Trade(contract, order, orderStatus, fills, log)
             c = t.contract
             o = t.order
             s = t.orderStatus
             
+            pid = getattr(o, 'parentId', 0) or 0
+            act = str(getattr(o, 'action', '') or '').upper()
+            act_nl = "Verkooporder" if act == "SELL" else "Kooporder"
+            
+            if pid > 0:
+                seq = child_seq.get(pid, 0) + 1
+                child_seq[pid] = seq
+                order_kind = "Take Profit" if o.orderType == 'LMT' else ("Stop Loss" if 'STP' in str(o.orderType).upper() else "Bracket Leg")
+                order_ref = f"{act_nl} {pid}.{seq} ({order_kind})"
+            else:
+                order_ref = f"{act_nl} #{o.orderId} (Hoofdorder)"
+                
+            price_display = f"${o.lmtPrice:.2f}" if getattr(o, 'lmtPrice', 0) and o.lmtPrice > 0 else (f"STP ${o.auxPrice:.2f}" if getattr(o, 'auxPrice', 0) and o.auxPrice > 0 else str(o.orderType))
+            
+            if getattr(c, 'secType', '') == 'BAG':
+                legs_str = f"Combo ({len(c.comboLegs)} legs)" if hasattr(c, 'comboLegs') and c.comboLegs else "Combo"
+                contract_desc = f"{c.symbol} {legs_str}"
+            elif getattr(c, 'secType', '') in ['OPT', 'FOP']:
+                contract_desc = f"{c.symbol} {getattr(c, 'lastTradeDateOrContractMonth', '')} ${getattr(c, 'strike', 0):.1f}{getattr(c, 'right', '')}"
+            else:
+                contract_desc = f"{c.symbol} {getattr(c, 'secType', '')}"
+                
             data.append({
-                'symbol': c.symbol,
+                'TWS Order': order_ref,
+                'Order ID': o.orderId,
+                'Parent ID': pid if pid > 0 else "-",
+                'Symbool': c.symbol,
+                'Contract': contract_desc,
+                'Actie': o.action,
+                'Type': o.orderType,
+                'Aantal': int(getattr(o, 'totalQuantity', 1) or 1),
+                'Prijs': price_display,
+                'Status': s.status,
+                'Gevuld': s.filled,
+                'Resterend': s.remaining,
+                'id': o.orderId,
                 'action': o.action,
                 'quantity': o.totalQuantity,
-                'status': s.status,
-                'filled': s.filled,
-                'remaining': s.remaining,
-                'avgFillPrice': s.avgFillPrice,
                 'lmtPrice': o.lmtPrice,
-                'id': o.orderId
+                'symbol': c.symbol
             })
             
         return pd.DataFrame(data)
@@ -1859,6 +1891,70 @@ class IBClient:
                     'underlying_price': und_price,
                     'legs': items
                 })
+
+        # Match open orders from TWS to portfolio positions
+        try:
+            open_trades = list(self.ib.openTrades() or [])
+            for pos in positions_list:
+                pos_sym = pos['symbol'].upper()
+                pos_legs_con_ids = set()
+                for leg in pos.get('legs', []):
+                    c = getattr(leg, 'contract', None)
+                    if c and getattr(c, 'conId', 0):
+                        pos_legs_con_ids.add(c.conId)
+                
+                matched_orders = []
+                for tr in open_trades:
+                    o = tr.order
+                    c = tr.contract
+                    if not c or c.symbol.upper() != pos_sym:
+                        continue
+                    
+                    is_match = False
+                    if c.conId in pos_legs_con_ids:
+                        is_match = True
+                    elif c.secType == 'BAG' and hasattr(c, 'comboLegs') and c.comboLegs:
+                        bag_con_ids = {cl.conId for cl in c.comboLegs}
+                        if bag_con_ids and (bag_con_ids.issubset(pos_legs_con_ids) or pos_legs_con_ids.issubset(bag_con_ids)):
+                            is_match = True
+                    elif pos['strategy'] in ['Stock'] and c.secType == 'STK':
+                        is_match = True
+                    elif c.secType in ['OPT', 'FOP']:
+                        c_k = float(getattr(c, 'strike', 0) or 0)
+                        if c_k in [pos.get('sold_strike'), pos.get('bought_strike')]:
+                            is_match = True
+                            
+                    if is_match:
+                        pid = getattr(o, 'parentId', 0) or 0
+                        act_nl = "Verkooporder" if str(o.action).upper() == 'SELL' else "Kooporder"
+                        if pid > 0:
+                            order_kind = "Take Profit" if o.orderType == 'LMT' else ("Stop Loss" if 'STP' in str(o.orderType).upper() else "Bracket Leg")
+                            sub_idx = 1 if o.orderType == 'LMT' else 2
+                            p_str = f"${o.lmtPrice:.2f}" if getattr(o, 'lmtPrice', 0) and o.lmtPrice > 0 else f"${getattr(o, 'auxPrice', 0):.2f}"
+                            lbl = f"{act_nl} {pid}.{sub_idx} ({order_kind} @ {p_str})"
+                        else:
+                            p_str = f"${o.lmtPrice:.2f}" if getattr(o, 'lmtPrice', 0) and o.lmtPrice > 0 else f"${getattr(o, 'auxPrice', 0):.2f}"
+                            lbl = f"{act_nl} #{o.orderId} ({o.orderType} @ {p_str})"
+                            
+                        matched_orders.append({
+                            'order_id': o.orderId,
+                            'parent_id': pid,
+                            'label': lbl,
+                            'action': o.action,
+                            'order_type': o.orderType,
+                            'price': float(o.lmtPrice or o.auxPrice or 0.0),
+                            'status': tr.orderStatus.status
+                        })
+                
+                pos['matched_orders'] = matched_orders
+                if matched_orders:
+                    pos['tws_order_label'] = " | ".join([mo['label'] for mo in matched_orders])
+                    pos['tws_short_ref'] = matched_orders[0]['label'].split(' (')[0]
+                else:
+                    pos['tws_order_label'] = "Geen actieve beschermingsorder in TWS"
+                    pos['tws_short_ref'] = "Geen order"
+        except Exception as e:
+            print(f"DEBUG_LOG: Fout bij koppelen van open orders aan posities: {e}")
 
         return positions_list
 

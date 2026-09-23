@@ -257,6 +257,137 @@ class AntiGravityOptionChainAnalyzer:
         }
 
 
+def analyze_dual_trigger_spreads(
+    df: pd.DataFrame,
+    bb_length: int = 20,
+    bb_dev: float = 2.0,
+    kc_length: int = 20,
+    kc_mult: float = 1.3
+) -> pd.DataFrame:
+    """
+    Berekent zowel Squeeze Breakouts als Trend Pullback entries
+    voor 1-tot-5-weekse bull call spreads en bullish credit spreads.
+    Ondersteunt zowel 'Close'/'High'/'Low' als 'close'/'high'/'low'.
+    """
+    if df is None or df.empty or len(df) < max(bb_length, kc_length, 35):
+        return pd.DataFrame()
+        
+    df = df.copy()
+    
+    # Vind juiste kolomnamen ongeacht casing
+    close_col = 'Close' if 'Close' in df.columns else ('close' if 'close' in df.columns else None)
+    high_col = 'High' if 'High' in df.columns else ('high' if 'high' in df.columns else None)
+    low_col = 'Low' if 'Low' in df.columns else ('low' if 'low' in df.columns else None)
+    
+    if not close_col:
+        return df
+    if not high_col:
+        high_col = close_col
+    if not low_col:
+        low_col = close_col
+
+    close_s = df[close_col].astype(float)
+    high_s = df[high_col].astype(float)
+    low_s = df[low_col].astype(float)
+
+    # 1. Bollinger Bands
+    df['SMA20'] = close_s.rolling(window=bb_length).mean()
+    df['STD20'] = close_s.rolling(window=bb_length).std()
+    df['Upper_BB'] = df['SMA20'] + (df['STD20'] * bb_dev)
+    df['Lower_BB'] = df['SMA20'] - (df['STD20'] * bb_dev)
+
+    # 2. Keltner Channels (True Range)
+    prev_close = close_s.shift(1)
+    df['TR'] = np.maximum(
+        high_s - low_s,
+        np.maximum(abs(high_s - prev_close), abs(low_s - prev_close))
+    )
+    df['ATR20'] = df['TR'].rolling(window=kc_length).mean()
+    df['Upper_KC'] = df['SMA20'] + (df['ATR20'] * kc_mult)
+    df['Lower_KC'] = df['SMA20'] - (df['ATR20'] * kc_mult)
+
+    # 3. Korte termijn EMA Ribbon
+    df['EMA5'] = close_s.ewm(span=5, adjust=False).mean()
+    df['EMA13'] = close_s.ewm(span=13, adjust=False).mean()
+    df['EMA34'] = close_s.ewm(span=34, adjust=False).mean()
+
+    # 4. Trigger A: Squeeze Breakout (Consolidatie ontbranding)
+    df['Squeeze_On'] = (df['Upper_BB'] < df['Upper_KC']) & (df['Lower_BB'] > df['Lower_KC'])
+    df['Squeeze_Fire_Up'] = (
+        (df['Squeeze_On'].shift(1) == True) & 
+        (~df['Squeeze_On']) & 
+        (close_s > df['SMA20']) & 
+        (df['EMA5'] > df['EMA13'])
+    )
+
+    # 5. Trigger B: Trend Pullback / Vroeg Momentum (vangt eerdere trendswings op)
+    df['EMA_Cross_Up'] = (df['EMA5'] > df['EMA13']) & (df['EMA5'].shift(1) <= df['EMA13'].shift(1))
+    df['Pullback_Entry'] = (
+        df['EMA_Cross_Up'] & 
+        (close_s > df['EMA34']) & 
+        (close_s > close_s.shift(1))
+    )
+
+    # 6. Gecombineerd Signaal & Scoring
+    df['Long_Signal'] = df['Squeeze_Fire_Up'] | df['Pullback_Entry']
+
+    # Exit / Verzwakking (EMA5 kruist onder EMA13)
+    df['Exit_Signal'] = df['EMA5'] < df['EMA13']
+
+    # Signaaltype tag voor de spreadselector
+    cond_both = df['Squeeze_Fire_Up'] & df['Pullback_Entry']
+    cond_squeeze = df['Squeeze_Fire_Up']
+    cond_pullback = df['Pullback_Entry']
+
+    df['Signal_Type'] = np.select(
+        [cond_both, cond_squeeze, cond_pullback],
+        ['Squeeze + Pullback', 'Squeeze Breakout', 'Trend Pullback'],
+        default='None'
+    )
+
+    return df
+
+
+def calculate_profit_stop_levels(strategy: str, entry_price_or_credit: float, width: float = 5.0, target_profit_pct: float = 70.0):
+    """
+    Berekent de bewakende profit stop niveaus voor opties en spreads.
+    target_profit_pct: bijv. 60.0, 70.0 of 100.0% van de maximale winst.
+    """
+    st_clean = str(strategy).upper()
+    val = float(entry_price_or_credit) if entry_price_or_credit else 0.0
+    w = float(width) if width else 5.0
+    tgt_frac = float(target_profit_pct) / 100.0
+
+    if 'BULLPUT' in st_clean or 'BEARCALL' in st_clean or 'SHORTPUT' in st_clean:
+        # Credit Strategy:
+        # Max profit = Net Credit (val) * 100
+        # Sluiten wanneer spreadwaarde daalt naar (1 - tgt_frac) * credit
+        max_p = val * 100.0
+        target_profit_usd = max_p * tgt_frac
+        exit_spread_price = round(val * (1.0 - tgt_frac), 2)
+        advice = f"Winst nemen bij spreadwaarde ≤ ${exit_spread_price:.2f} ({target_profit_pct:.0f}% winst = +${target_profit_usd:.0f}). Stop op BE na 50% premiedaling."
+    elif 'BULLCALL' in st_clean or 'BEARPUT' in st_clean:
+        # Debit Spread Strategy:
+        # Max profit = (width - debit) * 100
+        max_p = max(0.1, (w - val)) * 100.0
+        target_profit_usd = max_p * tgt_frac
+        exit_spread_price = round(val + (max_p * tgt_frac / 100.0), 2)
+        advice = f"Winst nemen bij spreadwaarde ≥ ${exit_spread_price:.2f} ({target_profit_pct:.0f}% max winst = +${target_profit_usd:.0f}) of bij EMA5 < EMA13."
+    else: # LongCall / LongPut
+        # Single-leg Debit:
+        max_p = val * 100.0 # Benchmark 100% gain (verdubbeling)
+        target_profit_usd = max_p * tgt_frac
+        exit_spread_price = round(val * (1.0 + tgt_frac), 2)
+        advice = f"Winst nemen bij optieprijs ≥ ${exit_spread_price:.2f} (+{target_profit_pct:.0f}% ROC = +${target_profit_usd:.0f}) of bij EMA5 < EMA13."
+
+    return {
+        'target_profit_pct': target_profit_pct,
+        'target_profit_usd': round(target_profit_usd, 2),
+        'exit_spread_price': exit_spread_price,
+        'advice': advice
+    }
+
+
 class SpreadScanner:
     def __init__(self, ib_client=None):
         self.ib_client = ib_client
@@ -390,8 +521,70 @@ class SpreadScanner:
                 signals['passed'] = True
             else:
                 signals['stoch_rsi_status'] = f"Neutral (K={curr_k:.1f})"
+
+        # 3. Dual-Trigger Analysis (Squeeze Breakout & Trend Pullback)
+        dual_status = self.get_dual_trigger_status(hist_df, max_lookback=5)
+        signals['dual_trigger'] = dual_status
+        signals['dual_trigger_badge'] = dual_status.get('badge', '⚪ Geen Signaal')
+        signals['dual_trigger_signal'] = dual_status.get('has_signal', False)
+        signals['dual_trigger_type'] = dual_status.get('signal_type', 'None')
                 
         return signals
+
+    def get_dual_trigger_status(self, hist_df, max_lookback: int = 5) -> dict:
+        """
+        Controleert of een aandeel recent een Squeeze Breakout of Trend Pullback signaal heeft gehad.
+        max_lookback: aantal candles terug (bijv. 2 voor vers signaal, 5 voor recente swing).
+        """
+        res = {
+            'has_signal': False,
+            'signal_type': 'Geen',
+            'squeeze_fire': False,
+            'pullback_entry': False,
+            'exit_signal': False,
+            'bars_ago': -1,
+            'is_fresh': False,
+            'badge': '⚪ Geen Signaal'
+        }
+        if hist_df is None or hist_df.empty or len(hist_df) < 35:
+            return res
+
+        df_dual = analyze_dual_trigger_spreads(hist_df)
+        if df_dual.empty or 'Long_Signal' not in df_dual.columns:
+            return res
+
+        # Check laatste bar voor exit signaal (EMA5 < EMA13)
+        latest_exit = bool(df_dual['Exit_Signal'].iloc[-1])
+        res['exit_signal'] = latest_exit
+
+        # Zoek laatste Long_Signal in de laatste max_lookback bars
+        sub = df_dual.iloc[-max_lookback:]
+        sig_indices = sub.index[sub['Long_Signal']].tolist()
+
+        if sig_indices:
+            last_sig_idx = sig_indices[-1]
+            row_sig = df_dual.loc[last_sig_idx]
+            bars_ago = (len(df_dual.index) - 1) - df_dual.index.get_loc(last_sig_idx)
+            
+            sig_type = str(row_sig.get('Signal_Type', 'Trend Pullback'))
+            res['has_signal'] = True
+            res['signal_type'] = sig_type
+            res['squeeze_fire'] = bool(row_sig.get('Squeeze_Fire_Up', False))
+            res['pullback_entry'] = bool(row_sig.get('Pullback_Entry', False))
+            res['bars_ago'] = bars_ago
+            res['is_fresh'] = (bars_ago <= 2)
+
+            if 'Squeeze + Pullback' in sig_type:
+                badge = f"🚀 Squeeze+Pullback ({bars_ago}d)"
+            elif 'Squeeze' in sig_type:
+                badge = f"🔥 Squeeze Breakout ({bars_ago}d)"
+            elif 'Pullback' in sig_type:
+                badge = f"⚡ Trend Pullback ({bars_ago}d)"
+            else:
+                badge = f"🟢 Signaal ({bars_ago}d)"
+            res['badge'] = badge
+
+        return res
 
     def predict_1month_trend(self, hist_df):
         """
@@ -1724,6 +1917,28 @@ class SpreadScanner:
         spreads_df = spreads_df[valid_mask].copy()
         removed = original_count - len(spreads_df)
         
+        # --- Bied/Laat Wijdte & Slippage Risico Waarschuwing ---
+        # Berekent de totale Bied/Laat spreiding van het contract en waarschuwt bij te grote spread
+        # waardoor het contract al snel uit de winst zou kunnen vallen door frictie/slippage.
+        mid_clean = np.maximum(0.05, spreads_df['spread_mid_abs'].values)
+        b_l_diff = np.maximum(0.0, spreads_df['b_l_verschil'].values)
+        spread_bid_ask_width = np.round(b_l_diff * 2.0, 2)
+        spread_bid_ask_pct = np.round((spread_bid_ask_width / mid_clean) * 100.0, 1)
+        
+        spreads_df['bid_ask_width'] = spread_bid_ask_width
+        spreads_df['bid_ask_pct'] = spread_bid_ask_pct
+        
+        is_wide_spread = (
+            (spread_bid_ask_width >= 0.25) & (spread_bid_ask_pct >= 20.0)
+        ) | (spread_bid_ask_pct >= 35.0) | (spread_bid_ask_width >= 0.40)
+        
+        spreads_df['has_wide_spread_warning'] = is_wide_spread
+        spreads_df['wide_spread_badge'] = np.where(
+            is_wide_spread, 
+            "⚠️ GROTE SPREAD", 
+            "🟢 LIQUIDE"
+        )
+        
         if removed > 0 and self.log_func:
             self.log_func(f"      🚫 {removed} fantoom-strikes verwijderd (geen Bid/Ask in TWS).")
             
@@ -2541,13 +2756,26 @@ class SpreadScanner:
                 vertical_mask = df['strategy'].isin(['BullCall', 'BullPut', 'BearCall', 'BearPut'])
                 min_d = filters.get('min_delta', 0.0)
                 max_d = filters.get('max_delta', 1.0)
-                mask &= ~vertical_mask | ((df['delta_sell'].abs() >= min_d) & (df['delta_sell'].abs() <= max_d))
+                delta_mode = filters.get('delta_mode', 'harmonized')
+                
+                if delta_mode == 'raw_override':
+                    eval_delta = df['delta_sell'].abs()
+                else:
+                    # Oplossing A (Wiskundige Risico-Delta Harmonisatie):
+                    # Voor DITM opties (abs(delta) > 0.50, bijv. DITM BullCall met delta ~0.85),
+                    # is de effectieve risicokans gelijk aan 1.0 - abs(delta) (dus 0.15).
+                    raw_abs_d = df['delta_sell'].abs()
+                    eval_delta = np.where(raw_abs_d > 0.50, 1.0 - raw_abs_d, raw_abs_d)
+                    
+                df['effective_risk_delta'] = eval_delta
+                mask &= ~vertical_mask | ((eval_delta >= min_d) & (eval_delta <= max_d))
                 
             df = df[mask]
             dropped = before - len(df)
             if dropped > 0:
                 drop_stats['Delta'] = dropped
-                if log_func: log_func(f"   🔻 Filter Delta Sell [{filters.get('min_delta', 0.0):.2f} - {filters.get('max_delta', 1.0):.2f}]: {dropped} dropped")
+                delta_lbl = "Ruwe Delta" if filters.get('delta_mode') == 'raw_override' else "Risico-Delta (Geharmoniseerd)"
+                if log_func: log_func(f"   🔻 Filter {delta_lbl} [{filters.get('min_delta', 0.0):.2f} - {filters.get('max_delta', 1.0):.2f}]: {dropped} dropped")
 
         # Filter Minimale BEP Afstand (Geldt voor credit spreads als veiligheidsbuffer; Longs & Synthetics zijn vrijgesteld)
         if 'min_bep_dist_pct' in filters and filters['min_bep_dist_pct'] > 0:
@@ -2864,7 +3092,7 @@ class SpreadScanner:
             },
             {
                 'key': 'delta_range',
-                'name': 'Delta Sell Bereik',
+                'name': 'Delta Sell Bereik' if filters.get('delta_mode') == 'raw_override' else 'Risico-Delta Bereik (Geharmoniseerd)',
                 'col': 'delta_sell',
                 'type': 'range_abs',
                 'setting_str': f"[{filters.get('min_delta', 0.10):.2f} - {filters.get('max_delta', 0.30):.2f}]",
@@ -2941,10 +3169,16 @@ class SpreadScanner:
                 max_d = float(filters.get('max_delta', 1.0))
                 abs_vals = df[col].abs().dropna()
                 if not abs_vals.empty:
-                    isolated_fails = int(((abs_vals < min_d) | (abs_vals > max_d)).sum())
-                    avg_val = f"{abs_vals.mean():.3f}"
-                    q_low = float(abs_vals.quantile(0.1))
-                    q_high = float(abs_vals.quantile(0.9))
+                    if filters.get('delta_mode', 'harmonized') != 'raw_override':
+                        # Harmonized risk delta (Oplossing A)
+                        eval_vals = np.where(abs_vals > 0.50, 1.0 - abs_vals, abs_vals)
+                    else:
+                        eval_vals = abs_vals.values
+                    eval_series = pd.Series(eval_vals, index=abs_vals.index)
+                    isolated_fails = int(((eval_series < min_d) | (eval_series > max_d)).sum())
+                    avg_val = f"{eval_series.mean():.3f}"
+                    q_low = float(eval_series.quantile(0.1))
+                    q_high = float(eval_series.quantile(0.9))
                     suggested_val = f"[{q_low:.2f} - {q_high:.2f}]"
             elif spec['type'] == 'min_abs' and col in df.columns:
                 thresh = float(filters.get(spec['key'], 0))
@@ -3830,7 +4064,9 @@ class PortfolioAnalyzer:
             't5_dist_usd': t5_dist_usd,
             't5_dist_pct': t5_dist_pct,
             't5_status': t5_status,
-            'legs_breakdown': legs_breakdown
+            'legs_breakdown': legs_breakdown,
+            'has_wide_spread_warning': bool(pos.get('has_wide_spread_warning', False)),
+            'wide_spread_width': float(pos.get('bid_ask_width', 0.0) or 0.0)
         }
 
     def evaluate_anti_assignment_routine(self, pos, underlying_p, dte, pnl_usd, pnl_pct):

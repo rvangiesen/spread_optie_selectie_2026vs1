@@ -338,7 +338,21 @@ def render_portfolio_management_dashboard(tws_host, tws_port):
         t5_status = fin.get('t5_status', '')
         legs_bd = fin.get('legs_breakdown', [])
 
-        with st.expander(f"{header_icon} **#{idx+1} {sym} - {strat} ({item['pos_data']['strikes_str']})** | Koers: ${und_p:,.2f} | P&L: ${pnl_usd:,.2f} ({pnl_pct:.1f}%) | DTE: {dte}d | Status: {urgency_badge}", expanded=(not is_stock and (risk_lvl in ['CRITICAL', 'HIGH'] or act_code != 'HANDHAVEN'))):
+        tws_short_ref = item['pos_data'].get('tws_short_ref', 'Geen order')
+        tws_order_label = item['pos_data'].get('tws_order_label') or "Geen actieve beschermingsorder in TWS"
+        tws_badge_header = f" | TWS: `{tws_short_ref}`" if tws_short_ref != 'Geen order' else ""
+
+        with st.expander(f"{header_icon} **#{idx+1} {sym} - {strat} ({item['pos_data']['strikes_str']})**{tws_badge_header} | Koers: ${und_p:,.2f} | P&L: ${pnl_usd:,.2f} ({pnl_pct:.1f}%) | DTE: {dte}d | Status: {urgency_badge}", expanded=(not is_stock and (risk_lvl in ['CRITICAL', 'HIGH'] or act_code != 'HANDHAVEN'))):
+            # 0. TWS Ordernummering & Actieve Bescherming
+            if "Verkooporder" in tws_order_label or "Order #" in tws_order_label:
+                st.success(f"🏷️ **TWS Ordernummer:** `{tws_order_label}`")
+            else:
+                st.info(f"ℹ️ **TWS Order:** `{tws_order_label}`")
+
+            # Grote Bied/Laat Spread Waarschuwing op Positie
+            if fin.get('has_wide_spread_warning') or item['pos_data'].get('has_wide_spread_warning'):
+                st.warning("⚠️ **Waarschuwing: Grote Bied/Laat Spread op dit contract!** Er ontstaat risico dat het contract bij sluiting of marktbeweging al snel uit de winst valt door frictie/slippage tussen Bied en Laat.")
+
             # 1. Prominent Financial Overview (Koers Aandeel, Contract, P&L, BEP)
             f_col1, f_col2, f_col3, f_col4 = st.columns(4)
             with f_col1:
@@ -1162,7 +1176,8 @@ with col_sb_res1:
         is_long_only = any(s in active_strategies for s in ["LongCall", "LongPut"]) and not any(s in active_strategies for s in ["BullCall", "BullPut", "BearCall", "BearPut", "IronCondor", "Strangle"])
         reset_dict = {
             'preset_koopadvies_p': 1.0,
-            'sb_itm_support': "Standaard (Min. afstand %)"
+            'sb_itm_support': "Standaard (Min. afstand %)",
+            'sb_delta_override': False
         }
         if "Maand" in chosen_prof:
             reset_dict.update({'sb_min_dte': 30, 'sb_max_dte': 75, 'preset_min_bep_dist': 8.0, 'preset_min_strike': 6.0, 'sb_width': 10, 'sb_min_pop': 65, 'sb_min_profit': 60, 'sb_min_delta': 0.10, 'sb_max_delta': 0.28})
@@ -1196,13 +1211,58 @@ with col_dte2:
 width = st.sidebar.number_input("Spread Breedte ($)", value=int(st.session_state.get('sb_width', 10)), key='sb_width')
 min_bep_dist_pct = st.sidebar.number_input("Min. BEP Buffer Afstand %", min_value=0.0, max_value=30.0, value=float(st.session_state.get('preset_min_bep_dist', 6.0)), step=0.5, key='preset_min_bep_dist', help="Strikt filter: de koers moet minimaal dit percentage boven het Break-Even Punt liggen (bijv. 6.0%).")
 
-delta_range = st.sidebar.slider(
-    "Delta Bereik (Short Leg)", 0.01, 1.00, 
-    (float(st.session_state.get('sb_min_delta', 0.10)), float(st.session_state.get('sb_max_delta', 0.30))), 
-    step=0.01, 
-    help="Gewenste Delta bandbreedte voor de verkochte optie (standaard 0.10 tot 0.30). Voorkomt illiquide fantoom-trades met minieme delta. Maximum verhoogd naar 1.00 zodat ook hoge delta-waarden (zoals 0.77-0.96) geselecteerd kunnen worden."
-)
-min_delta, max_delta = delta_range
+col_d_hdr1, col_d_hdr2 = st.sidebar.columns([3, 2])
+with col_d_hdr1:
+    st.sidebar.caption("🎯 **Delta Bereik (Short Leg)**")
+with col_d_hdr2:
+    delta_override_btn = st.sidebar.toggle("⚙️ Overrule", value=st.session_state.get('sb_delta_override', False), key='sb_delta_override', help="Klik om de standaard geharmoniseerde delta-instelling te overrulen met handmatige of alternatieve instellingen.")
+
+if not delta_override_btn:
+    delta_range = st.sidebar.slider(
+        "Risico-Delta (OTM Equivalent)", 0.01, 0.50, 
+        (float(st.session_state.get('sb_min_delta', 0.10)), float(st.session_state.get('sb_max_delta', 0.30))), 
+        step=0.01, 
+        help="Standaard Oplossing A (Geharmoniseerd): Wiskundig risico-equivalent. BullPut: delta 0.10-0.30. DITM BullCall: delta 0.70-0.90 (risicokans 0.10-0.30, PoP 80-90%)."
+    )
+    st.sidebar.caption("🟢 **Geharmoniseerd**: BullPut [0.10-0.30] | DITM BullCall [0.70-0.90]")
+    delta_mode = "harmonized"
+    min_delta, max_delta = delta_range
+else:
+    st.sidebar.warning("⚙️ **Delta Overrule Actief**")
+    override_preset = st.sidebar.radio(
+        "Kies Delta Configuratie:",
+        [
+            "🎯 Vrije Ruwe Delta Slider [0.01 - 1.00]",
+            "💎 DITM Focus (Delta 0.70 - 0.95)",
+            "📚 Klassiek OTM / Boekje (Delta 0.20 - 0.35)",
+            "🟢 Herstel naar Geharmoniseerd (0.10 - 0.30)"
+        ],
+        index=0,
+        key="sb_override_choice"
+    )
+    if override_preset == "💎 DITM Focus (Delta 0.70 - 0.95)":
+        delta_range = (0.70, 0.95)
+        delta_mode = "raw_override"
+        st.sidebar.info("💎 Vaste DITM delta filter actief: 0.70 - 0.95")
+    elif override_preset == "📚 Klassiek OTM / Boekje (Delta 0.20 - 0.35)":
+        delta_range = (0.20, 0.35)
+        delta_mode = "raw_override"
+        st.sidebar.info("📚 Klassieke OTM boekjes-delta actief: 0.20 - 0.35 (Lagere PoP ~45%)")
+    elif override_preset == "🟢 Herstel naar Geharmoniseerd (0.10 - 0.30)":
+        delta_range = (0.10, 0.30)
+        delta_mode = "harmonized"
+        st.sidebar.success("🟢 Geharmoniseerde risico-delta actief.")
+    else:
+        delta_range = st.sidebar.slider(
+            "Ruwe Delta Sell Bereik", 0.01, 1.00,
+            (float(st.session_state.get('sb_raw_min_delta', 0.10)), float(st.session_state.get('sb_raw_max_delta', 0.95))),
+            step=0.01,
+            key="sb_raw_delta_slider",
+            help="Directe filtering op ruwe delta_sell zonder harmonisatie."
+        )
+        delta_mode = "raw_override"
+        st.sidebar.caption(f"🔧 Direct gefilterd op ruwe delta_sell: [{delta_range[0]:.2f} - {delta_range[1]:.2f}]")
+    min_delta, max_delta = delta_range
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### 🟡 Aanbevolen Filters (Strategie & Trend)")
@@ -1409,6 +1469,34 @@ trend_expected_direction = st.sidebar.selectbox(
     ["Automatisch (Matchend met Marktvisie)", "Alleen Stijging (Bullish)", "Alleen Daling (Bearish)"],
     help="Matcht automatisch met de gekozen marktvisie of filtert strikt op stijgers/dalers."
 )
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("**🔥 Dual-Trigger Entry (Squeeze & Pullback)**")
+use_dual_trigger = st.sidebar.checkbox(
+    "Filter op Dual-Trigger Entry",
+    value=False,
+    help="Selecteert uitsluitend aandelen met een Squeeze Breakout (Bollinger Bands uit Keltner Channel) of Trend Pullback (EMA5>13 boven EMA34)."
+)
+if use_dual_trigger:
+    dual_allow_squeeze = st.sidebar.checkbox("Squeeze Breakouts toestaan", value=True)
+    dual_allow_pullback = st.sidebar.checkbox("Trend Pullbacks toestaan", value=True)
+    dual_freshness = st.sidebar.selectbox(
+        "Signaal Versheid:",
+        options=["Vandaag / Gisteren (<= 2 candles)", "Binnen 5 candles"],
+        index=0,
+        help="Hoe recent moet de Squeeze Breakout of Trend Pullback zijn opgetreden?"
+    )
+    dual_profit_target_choice = st.sidebar.selectbox(
+        "🎯 Bewakende Profit Target:",
+        options=["70% Winstdoel (Aanbevolen)", "60% Winstdoel (Snelle Exit)", "100% Expiratie (Volledig)", "Dynamisch Trailing (60% lock -> 100%)"],
+        index=0,
+        help="Bepaalt het actieve winstdoel waarbij de bewakende stop de trade voortijdig sluit om winst te verzilveren en risico te elimineren."
+    )
+else:
+    dual_allow_squeeze = False
+    dual_allow_pullback = False
+    dual_freshness = "Vandaag / Gisteren (<= 2 candles)"
+    dual_profit_target_choice = "70% Winstdoel (Aanbevolen)"
 
 @st.dialog("🔬 Functie onderzoek Filters & Criteria")
 def run_research_dialog():
@@ -1790,7 +1878,7 @@ with tab1:
                                      
                                      current_filters = {
                                          'min_pop': min_pop, 'min_profit': min_profit, 'min_delta': min_delta,
-                                         'max_delta': max_delta, 'min_bep_dist_pct': min_bep_dist_pct,
+                                         'max_delta': max_delta, 'delta_mode': delta_mode, 'min_bep_dist_pct': min_bep_dist_pct,
                                          'min_gamma': min_gamma, 'max_dte': max_dte, 'min_dte': min_dte, 
                                          'min_short_dte': synth_pmcc_min_short_dte, 'max_short_dte': synth_pmcc_max_short_dte,
                                          'synth_min_premium': synth_min_premium, 'synth_min_roc': synth_min_roc,
@@ -1950,6 +2038,21 @@ with tab1:
 
                                      # --- New Technical Signals Entry Check ---
                                      tech_signals = scanner.get_technical_signals(hist_data, price)
+                                     # --- Dual-Trigger Check (Squeeze Breakout & Trend Pullback) ---
+                                     dual_status = tech_signals.get('dual_trigger', {})
+                                     log(f"   🔥 Dual-Trigger: {dual_status.get('badge', '⚪ Geen Signaal')}")
+
+                                     if use_dual_trigger:
+                                         has_sq = dual_allow_squeeze and dual_status.get('squeeze_fire', False)
+                                         has_pb = dual_allow_pullback and dual_status.get('pullback_entry', False)
+                                         max_lb = 2 if "2" in str(dual_freshness) else 5
+                                         b_ago = dual_status.get('bars_ago', -1)
+                                         fresh_ok = (0 <= b_ago <= max_lb)
+
+                                         if not ((has_sq or has_pb) and fresh_ok):
+                                             log(f"   ⛔ {sym} gefilterd door Dual-Trigger filter (Geen actieve/verse Squeeze of Pullback)")
+                                             continue
+                                         log(f"   ✅ {sym} doorstaat Dual-Trigger filter ({dual_status.get('signal_type')}, {b_ago}d)")
                                      log(f"   📉 EMA Status: {tech_signals['ema_status']} | EMA20/50: {tech_signals.get('ema20_50_status', 'N/A')}")
                                      log(f"   📊 Stoch RSI: {tech_signals['stoch_rsi_status']}")
 
@@ -2178,6 +2281,7 @@ with tab1:
                                              'min_profit': min_profit,
                                              'min_delta': d_min_dl,
                                              'max_delta': d_max_dl,
+                                             'delta_mode': delta_mode,
                                              'min_bep_dist_pct': d_min_bep,
                                              'min_gamma': d_min_gm,
                                              'max_dte': d_max_dt,
@@ -2195,6 +2299,9 @@ with tab1:
                                              enriched['EMA_Cross'] = tech_signals['ema_status']
                                              enriched['Stoch_RSI'] = tech_signals['stoch_rsi_status']
                                              enriched['Sentiment'] = auto_sentiment
+                                             enriched['Dual_Trigger'] = dual_status.get('badge', '⚪ Geen Signaal')
+                                             t_pct = 60.0 if "60%" in str(dual_profit_target_choice) else (100.0 if "100%" in str(dual_profit_target_choice) else 70.0)
+                                             enriched['Profit_Stop_Advice'] = f"Winstdoel {t_pct:.0f}% / Exit EMA5<13"
                                              
                                              # 2. Add technical levels and other metrics
                                              s_str = ", ".join([f"${s:.2f}" for s in tech_levels.get('supports', [])])
@@ -2332,7 +2439,7 @@ with tab1:
              if is_fast_atm:
                  preview_cols = ['symbol', 'strategy', 'expiry', 'strike_buy', 'spread_ask_abs', 'winst_laat', 'winst_midden', 'winst_laatste', 'dte']
              else:
-                 preview_cols = ['symbol', 'strategy', 'expiry', 'strike_buy', 'strike_sell', 'max_profit', 'pop', 'EM68', 'EM85', 'call_wall', 'put_wall', 'TTP (D)', 'TEI Score']
+                 preview_cols = ['symbol', 'strategy', 'Dual_Trigger', 'expiry', 'strike_buy', 'strike_sell', 'max_profit', 'pop', 'EM68', 'EM85', 'call_wall', 'put_wall', 'TTP (D)', 'TEI Score']
              preview_cols = [c for c in preview_cols if c in df_res.columns]
 
              strategies_found = df_res['strategy'].unique()
@@ -2474,7 +2581,7 @@ with tab2:
             ]
         else:
             display_cols = [
-                'Selecteer', 'koopadvies', 'trade_verdict', 'Profiel', 'symbol', 'underlying_price', 'AG_Score', 'score_pop', 'score_roc', 'score_ttp', 'score_safety', 'score_flow', 'expected_value', 'pop_adj', 'pop', 'dS_BE', 'gamma_theta_ratio', 'strategy', 'assignment_risk_badge', 'notional_assignment_capital', 'extrinsic_val_short', 'cue', 'expiry', 'strike_buy', 'strike_sell', 'width', 
+                'Selecteer', 'koopadvies', 'trade_verdict', 'Profiel', 'Dual_Trigger', 'Profit_Stop_Advice', 'symbol', 'underlying_price', 'AG_Score', 'score_pop', 'score_roc', 'score_ttp', 'score_safety', 'score_flow', 'expected_value', 'pop_adj', 'pop', 'dS_BE', 'gamma_theta_ratio', 'strategy', 'assignment_risk_badge', 'notional_assignment_capital', 'extrinsic_val_short', 'cue', 'expiry', 'strike_buy', 'strike_sell', 'width', 
                 'strike_p_buy', 'strike_p_sell', 'strike_c_sell', 'strike_c_buy',
                 'spread_mid_abs', 'spread_ask_abs', 'b_l_verschil', 'max_profit', 'sluitingswinst', 'sluitingswinst_em85',
                 'TTP (D)', 'TEI Score', 'Efficient',
@@ -2517,6 +2624,11 @@ with tab2:
         col_cfg = {
             "Selecteer": st.column_config.CheckboxColumn("Selecteer", default=False, help="Vink aan om op te nemen in 'Plaats orders'", pinned=True),
             "trade_verdict": st.column_config.TextColumn("Verdict", help="Quant Oordeel: EXECUTE (EV>0 & PoP>=65%), SPECULATIVE of REJECT / GAMMA_CLIFF_RISK", pinned=True),
+            "Dual_Trigger": st.column_config.TextColumn("Dual Trigger", help="Squeeze Breakout of Trend Pullback momentum signaal"),
+            "Profit_Stop_Advice": st.column_config.TextColumn("Bewakend Winstdoel", help="Winstdoelverzilvering (60/70/100%) en actieve trendbewaking"),
+            "wide_spread_badge": st.column_config.TextColumn("B/L Status", help="Liquiditeit & Bied/Laat Spreiding. Waarschuwing bij wijde spread wegens slippage & risico op snel winstverlies."),
+            "bid_ask_width": st.column_config.NumberColumn("B/L Wijdte ($)", format="$%.2f", help="Totale Bied-Laat spread van het contract (frictiekosten)"),
+            "bid_ask_pct": st.column_config.NumberColumn("B/L Wijdte %", format="%.1f%%", help="Bied-Laat spreiding als percentage van de premie"),
             "assignment_risk_badge": st.column_config.TextColumn("Aanwijzingsstatus", help="Kans op vervroegde toewijzing (early assignment) en tijdswaarde-status van de short leg"),
             "notional_assignment_capital": st.column_config.NumberColumn("Toewijzingskapitaal ($)", format="$%d", help="Benodigd cash-kapitaal (Strike * 100) om 100 aandelen af te nemen bij toewijzing"),
             "extrinsic_val_short": st.column_config.NumberColumn("Tijdswaarde Short ($)", format="$%.2f", help="Resterende extrinsieke waarde van de geschreven poot. Bij <= $0.10 stijgt aanwijzingsgevaar!"),
@@ -2703,6 +2815,12 @@ with tab2:
         if not selected_rows.empty:
             summary_symbols = ", ".join([f"**{r['symbol']}** ({r['strategy']} ${r['strike_buy']:.1f})" for _, r in selected_rows.iterrows()])
             st.success(f"🎯 **Geselecteerd voor order ({len(selected_rows)}):** {summary_symbols}")
+
+            # Grote Bied/Laat Spread Waarschuwing voor geselecteerde rijen
+            wide_spread_sel = [r for _, r in selected_rows.iterrows() if r.get('has_wide_spread_warning')]
+            if wide_spread_sel:
+                wide_names = ", ".join([f"{r['symbol']} ({r['strategy']} - spread ${r.get('bid_ask_width', 0):.2f})" for r in wide_spread_sel])
+                st.warning(f"⚠️ **Let op: Grote Bied/Laat Spread op geselecteerde order(s): {wide_names}**\n\nEr ontstaat een reëel risico dat deze contracten bij marktbeweging of sluiting **al snel uit de winst vallen** door de hoge transactiespread. Gebruik bij voorkeur een scherpe Limit-order rond het Midden.")
         else:
             st.info("💡 **Geen contract aangevinkt:** Vink in de linkerkolom ('Selecteer') het contract aan dat je wilt kopen.")
 
@@ -3045,6 +3163,12 @@ with tab3:
                 st.write(f"**Risk Efficiency (TEI Score):** {selected_row.get('TEI Score', 'N/A')}")
                 st.write(f"**Middenprijs:** ${selected_row.get('spread_mid_abs', 0):.2f}")
                 st.write(f"**Laatprijs (Ask):** ${selected_row.get('spread_ask_abs', 0):.2f}")
+                ba_w = float(selected_row.get('bid_ask_width', 0.0) or 0.0)
+                ba_pct = float(selected_row.get('bid_ask_pct', 0.0) or 0.0)
+                if ba_w > 0:
+                    st.write(f"**Bied/Laat Wijdte:** ${ba_w:.2f} ({ba_pct:.1f}%)")
+                if selected_row.get('has_wide_spread_warning'):
+                    st.warning(f"⚠️ **Grote Bied/Laat Spread (${ba_w:.2f})!** Risico dat contract bij marktschommelingen of sluiting al snel uit de winst valt door hoge transactiefrictie.")
                 st.write(f"**Prijs Buy-leg:** ${selected_row.get('price_buy', 0):.2f}")
                 st.write(f"**Prijs Sell-leg:** ${selected_row.get('price_sell', 0):.2f}")
 
@@ -3850,7 +3974,7 @@ with tab6:
                 test_symbols = ['SPY', 'QQQ', 'AAPL', 'MSFT', 'NVDA']
 
     with col_hr2:
-        trades_per_sym = st.number_input("Aantal spreads per aandeel", min_value=1, max_value=20, value=5)
+        trades_per_sym = st.number_input("Aantal spreads per aandeel", min_value=1, max_value=25, value=10)
         target_strat_choice = st.selectbox(
             "🎯 Strategie Validatie Filter:",
             options=[
@@ -3866,6 +3990,18 @@ with tab6:
             index=0,
             help="Kies een specifieke strategie om de test uitsluitend voor die strategie (bijv. enkel BullCall, LongCall of losse ShortPut) uit te voeren."
         )
+        bt_use_dual_trigger = st.checkbox(
+            "🔥 Backtest met Dual-Trigger Signalen (Squeeze & Pullback)", 
+            value=True, 
+            help="Test echte historische Squeeze Breakouts en Trend Pullback entries i.p.v. vaste kalenderstappen."
+        )
+        bt_profit_target_choice = st.selectbox(
+            "🎯 Bewakende Profit Target:",
+            options=["70% Winstdoel (Aanbevolen)", "60% Winstdoel (Snelle Exit)", "100% Expiratie (Geen vroegtijdige exit)"],
+            index=0,
+            help="Sluit de trade direct zodra 60% of 70% van de winst bereikt is, of bij momentumomslag (EMA5 < EMA13)."
+        )
+        bt_target_pct = 60.0 if "60%" in str(bt_profit_target_choice) else (100.0 if "100%" in str(bt_profit_target_choice) else 70.0)
 
     n_syms = len(test_symbols)
     total_test_trades = n_syms * trades_per_sym
@@ -3874,6 +4010,18 @@ with tab6:
         st.warning("⚠️ Voer ten minste 1 aandeel in (bijv. ACNB, MRK of SPY) of selecteer uit de lijst om de test te starten.")
     else:
         st.info(f"📊 **Test Configuratie**: {total_test_trades} spreads over **{n_syms} aandeel/aandelen**: `{', '.join(test_symbols)}` ({trades_per_sym} spreads per aandeel) | Strategie: **{target_strat_choice}**")
+
+        with st.expander("⚙️ Delta Instellingen & Optimalisatie Status", expanded=False):
+            t3_c1, t3_c2 = st.columns(2)
+            with t3_c1:
+                st.markdown("**Actieve Delta Modus in Scanner:**")
+                if delta_mode == "harmonized":
+                    st.success(f"🟢 Geharmoniseerd (Risico-Delta: [{min_delta:.2f} - {max_delta:.2f}])")
+                    st.caption("BullPut: 0.10-0.30 | DITM BullCall: 0.70-0.90 (PoP 80-90%)")
+                else:
+                    st.warning(f"🔧 Handmatige Overrule Actief (Ruwe Delta: [{min_delta:.2f} - {max_delta:.2f}])")
+            with t3_c2:
+                st.caption("💡 U kunt in de linker sidebar via '⚙️ Overrule' een afwijkende delta (zoals DITM Focus [0.70-0.95] of Boekje [0.20-0.35]) aanzetten om direct te zien wat het effect is op de testresultaten.")
 
     col_act1, col_act2 = st.columns(2)
     with col_act1:
@@ -3936,6 +4084,8 @@ with tab6:
                     'spread_width': sb_width,
                     'em_multiplier': sb_em_mult,
                     'target_strategy': target_strat_key,
+                    'use_dual_trigger': bt_use_dual_trigger,
+                    'profit_target_pct': bt_target_pct,
                     'name': f"Sidebar ({sb_avg_dte}d / ${sb_width:.0f} / {sb_em_mult:.2f}x)"
                 },
                 standard_params={
@@ -3943,6 +4093,8 @@ with tab6:
                     'spread_width': 5.0,
                     'em_multiplier': 1.439535,
                     'target_strategy': 'AUTO',
+                    'use_dual_trigger': bt_use_dual_trigger,
+                    'profit_target_pct': bt_target_pct,
                     'name': "Standaard (30d / $5.0 / 1.44x)"
                 },
                 progress_callback=comp_progress,
@@ -3992,6 +4144,8 @@ with tab6:
                 symbols=test_symbols,
                 trades_per_symbol=trades_per_sym,
                 target_strategy=target_strat_key,
+                use_dual_trigger=bt_use_dual_trigger,
+                profit_target_pct=bt_target_pct,
                 progress_callback=hr_progress,
                 log_callback=hr_log
             )
@@ -4150,11 +4304,13 @@ with tab6:
             tot_cnt, win_cnt, hr_pct, pop_avg, safe_pct, tot_pnl, avg_pnl = 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0
 
         st.subheader(f"📊 Testresultaten Samenvatting ({filter_sym} | {filter_strat})")
-        m1, m2, m3, m4 = st.columns(4)
+        m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric("Werkelijke Hit Rate", f"{hr_pct}%", f"{win_cnt}/{tot_cnt} Gewonnen")
         m2.metric("Verwachte Kans (PoP)", f"{pop_avg}%", f"Verschil: {round(hr_pct - pop_avg, 1)}%")
         m3.metric("EM85 Safe Rate", f"{safe_pct}%", "Geen BEP Touch")
         m4.metric("Totale Realiseerde Winst", f"${tot_pnl:,.2f}", f"Gem. ${avg_pnl:.2f} / trade")
+        avg_d_h = round(float(df_filtered['days_held'].mean()), 1) if ('days_held' in df_filtered.columns and not df_filtered.empty) else 0.0
+        m5.metric("Gem. Looptijd", f"{avg_d_h} d", "Snelle Winstexits")
         
         st.markdown("### 📋 Overzicht van de Gelopen Spreads (Gefilterd)")
         
@@ -4166,6 +4322,9 @@ with tab6:
                 "symbol": "Aandeel",
                 "entry_date": "Entry Datum",
                 "exp_date": "Expiratie",
+                "entry_signal": st.column_config.TextColumn("Entry Signaal", help="Dual-Trigger signaaltype (Squeeze Breakout / Trend Pullback)"),
+                "exit_reason": st.column_config.TextColumn("Exit Reden", help="Reden voor winstafsluiting of stop (Profit target, Trend exit, Expiratie)"),
+                "days_held": st.column_config.NumberColumn("Looptijd (d)", format="%d d", help="Aantal handelsdagen in positie"),
                 "strategy": "Strategie",
                 "underlying_entry": st.column_config.NumberColumn("Koers In", format="$%.2f"),
                 "underlying_exp": st.column_config.NumberColumn("Koers Uit", format="$%.2f"),
