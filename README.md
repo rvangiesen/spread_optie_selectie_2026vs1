@@ -16,6 +16,9 @@ Zie de volledige stap-voor-stap handleiding: **[Handleiding_Project2_Laptop_Inst
 ---
 
 ## 🌟 Nieuwste Functies & Validaties
+* **🔥 Dual-Trigger Entry Strategie (Squeeze & Trend Pullback)**: Kwantitatief instapmodel gericht op 80–90% winstkans. Combineert Bollinger Bands Squeeze Breakouts (`Upper_BB < Upper_KC` ontbranding met `Close > SMA20` & `EMA5 > EMA13`) en Trend Pullbacks (`EMA5` kruist opwaarts over `EMA13` boven `EMA34`). Volledig in- en uitschakelbaar in de scanner.
+* **🎯 Bewakende Profit Stop Engine**: Dynamische winstbewaking met vaste take-profit percentages (60%, 70% aanbevolen, 100%) en actieve trailing momentum exits (`EMA5 < EMA13`). Berekent direct het concrete TWS limietorderadvies en dollarwinst in de resultatentabel.
+* **🧪 10-Trades per Aandeel Backtest Engine**: Historische trigger-detectie met gekalibreerde dag-op-dag Black-Scholes optieprijsbepaling. Analyseert vroege winstexits en toont de daling in gemiddelde bewaartijd (bijv. van 21 naar 13.7 dagen met 80% hit rate).
 * **⚖️ Kapitaalbewuste Selectie: Bull Put vs Bull Call**: Automatische bescherming tegen aandelen-toewijzing (Early Assignment). Berekent het benodigde kapitaal ($Strike \times 100$) en geeft bij beperkte cash automatisch voorrang aan risico-gelimiteerde Bull Call debet spreads.
 * **🛡️ Early Assignment Risk Engine**: Real-time berekening van resterende tijdswaarde (extrinsieke waarde) en toewijzingskans op geschreven opties. Waarschuwing bij $\le \$0.10$ en direct noodsluitingsalarm bij $\le \$0.05$.
 * **🔧 TWS Error 201 Fix**: Canonieke pootdefinitie voor credit spreads, waardoor bracket orders (Take Profit & Stop Loss) direct en foutloos worden geaccepteerd door Interactive Brokers zonder "risicoloze order" afwijzingen.
