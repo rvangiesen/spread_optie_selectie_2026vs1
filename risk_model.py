@@ -345,7 +345,9 @@ class EarlyAssignmentRiskEngine:
         dte: float = 30.0,
         short_delta: float = 0.0,
         account_cash: float = None,
-        quantity: int = 1
+        quantity: int = 1,
+        dividend_amount: float = 0.0,
+        days_to_ex_div: int = None
     ) -> dict:
         """
         Evaluates early assignment risk, probability, notional capital required,
@@ -418,6 +420,32 @@ class EarlyAssignmentRiskEngine:
             if risk_level not in ["CRITICAL"]:
                 risk_level = "WARNING"
 
+        # Ex-Dividend toewijzingsrisico analyse (Cruciaal voor Short Calls!)
+        is_ex_div_risk = False
+        if not is_put and days_to_ex_div is not None and 0 <= days_to_ex_div <= dte and dividend_amount > 0:
+            if is_itm:
+                if dividend_amount >= extrinsic_val:
+                    prob_assign = 95.0
+                    risk_level = "CRITICAL"
+                    status_desc = f"🚨 EX-DIV ARBITRAGE (Div ${dividend_amount:.2f} >= Tijdswaarde ${extrinsic_val:.2f}): Koper zal vrijwel zeker de avond vóór ex-div (over {days_to_ex_div}d) uitoefenen!"
+                    action_code = "DIRECT_SLUITEN"
+                    is_ex_div_risk = True
+                else:
+                    prob_assign = max(prob_assign, 65.0)
+                    if risk_level not in ["CRITICAL"]:
+                        risk_level = "WARNING"
+                        status_desc = f"⚠️ EX-DIV RISICO: Aandeel noteert ITM en gaat over {days_to_ex_div}d ex-dividend (${dividend_amount:.2f})."
+                        action_code = "TIJDIG_SLUITEN"
+                    is_ex_div_risk = True
+            else:
+                # OTM Short Call: indien koers binnen 3% van de strike noteert
+                if s > 0 and (k_sell - s) / s <= 0.03:
+                    prob_assign = max(prob_assign, 25.0)
+                    if risk_level not in ["CRITICAL", "WARNING"]:
+                        risk_level = "WARNING"
+                        status_desc = f"⚠️ EX-DIV ALERT: Strike ligt <3% boven de koers en aandeel keert over {days_to_ex_div}d ${dividend_amount:.2f} dividend uit."
+                    is_ex_div_risk = True
+
         # Capital coverage check
         capital_covered = True
         capital_warning = ""
@@ -438,6 +466,9 @@ class EarlyAssignmentRiskEngine:
             "action_code": action_code,
             "capital_covered": capital_covered,
             "capital_warning": capital_warning,
+            "is_ex_div_risk": is_ex_div_risk,
+            "dividend_amount": round(dividend_amount, 2),
+            "days_to_ex_div": days_to_ex_div,
             "should_close_now": action_code in ["DIRECT_SLUITEN", "TIJDIG_SLUITEN"]
         }
 

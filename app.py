@@ -1430,6 +1430,12 @@ with st.sidebar.expander("🛡️ Kapitaalbescherming & Aanwijzingsdekking", exp
         help="Verbergt credit spreads (Bull Puts) volledig als je account-cash ontoereikend is voor eventuele aanwijzing (Strike x 100). Er worden dan uitsluitend veilige Bull Calls getoond."
     ) if enable_capital_guardrail else False
 
+    filter_ex_div_risk = st.checkbox(
+        "🛡️ Ex-Dividend Toewijzingsfilter",
+        value=True,
+        help="Sluit Bear Call Spreads en geschreven calls automatisch uit wanneer er een ex-dividenddatum binnen de looptijd valt én er sprake is van toewijzingsgevaar (ITM of Dividend >= Tijdswaarde)."
+    ) if enable_capital_guardrail else False
+
 # Technical Filters (EMA & 1-Maands Trend)
 st.sidebar.subheader("Technische Filters (EMA & Trend)")
 use_ema = st.sidebar.checkbox("Filter op EMA Trend (Prijs > EMA)")
@@ -1883,7 +1889,8 @@ with tab1:
                                          'min_short_dte': synth_pmcc_min_short_dte, 'max_short_dte': synth_pmcc_max_short_dte,
                                          'synth_min_premium': synth_min_premium, 'synth_min_roc': synth_min_roc,
                                          'koopadvies_p': koopadvies_p, 'only_koopadvies': only_koopadvies,
-                                         'require_assignment_coverage': strict_cash_coverage_only
+                                         'require_assignment_coverage': strict_cash_coverage_only,
+                                         'filter_ex_div_risk': filter_ex_div_risk
                                      }
                                      if use_max_pain_filter: current_filters['max_pain_dist'] = max_pain_dist
                                      
@@ -1934,6 +1941,17 @@ with tab1:
                                      if earnings_date:
                                          days_to_earnings = (earnings_date.normalize() - pd.Timestamp.now().normalize()).days
                                          log(f"   📅 Volgende earnings: {earnings_date.strftime('%Y-%m-%d')} ({days_to_earnings} dagen)")
+
+                                     # 2b. Ex-Dividend Date Check
+                                     div_info = scan_ib.get_dividend_info(sym) if scan_ib else None
+                                     if div_info and div_info.get('ex_div_date'):
+                                         ex_d_val = div_info['ex_div_date']
+                                         try:
+                                             days_to_ex = (pd.to_datetime(ex_d_val).date() - datetime.date.today()).days
+                                             if days_to_ex >= 0:
+                                                 log(f"   💰 Ex-Dividend: {ex_d_val} ({days_to_ex} dagen, bedrag: ${div_info.get('dividend_rate', 0.0):.2f})")
+                                         except Exception:
+                                             pass
 
                                      hist_data = scan_ib.get_historical_data(contract, duration='6 M', bar_size='1 day')
                                      hist_iv_df = scan_ib.get_historical_iv(contract, duration='1 Y')
@@ -2130,8 +2148,13 @@ with tab1:
                                                      if opt_w:
                                                          widths_to_check = [int(opt_w)]
                                                      opt_em = opt_prof.get('best_em_multiplier', 1.44)
-                                                     cur_min_dte = opt_prof.get('best_min_dte', min_dte)
-                                                     cur_max_dte = opt_prof.get('best_max_dte', d_max)
+                                                     # Respecteer de door de gebruiker gekozen horizon (bijv. Maand Spreads 30-75 DTE of handmatige DTE >= 28):
+                                                     if "Maand" in str(chosen_prof) or min_dte >= 28:
+                                                         cur_min_dte = min_dte
+                                                         cur_max_dte = d_max
+                                                     else:
+                                                         cur_min_dte = opt_prof.get('best_min_dte', min_dte)
+                                                         cur_max_dte = min(d_max, opt_prof.get('best_max_dte', d_max))
                                                      cur_bep_dist = opt_prof.get('best_min_bep_dist', min_bep_dist_pct)
                                                      opt_target = opt_prof.get('profit_target_pct', 65.0)
                                                      log(f"   🎯 [AUTO-OPTIMALISATIE] {sym}: Aandeel-profiel actief ({opt_em}x EM, ${widths_to_check[0]} breedte, DTE {cur_min_dte}-{cur_max_dte}d, Winstdoel: {opt_target:.0f}%)")
@@ -2266,7 +2289,8 @@ with tab1:
                                              hist_iv_df=hist_iv_df,
                                              log_func=log, koopadvies_p=koopadvies_p,
                                              account_cash=account_cash_input,
-                                             force_bullcall_if_uncovered=force_bullcall_preference
+                                             force_bullcall_if_uncovered=force_bullcall_preference,
+                                             div_info=div_info
                                          )
 
                                          if scan_mode == "BarChart Optie Flow (CSV)" and not barchart_df_parsed.empty:
@@ -2289,7 +2313,8 @@ with tab1:
                                              'min_short_dte': synth_pmcc_min_short_dte, 'max_short_dte': synth_pmcc_max_short_dte,
                                              'synth_min_premium': synth_min_premium, 'synth_min_roc': synth_min_roc,
                                              'koopadvies_p': koopadvies_p, 'only_koopadvies': only_koopadvies,
-                                             'require_assignment_coverage': strict_cash_coverage_only
+                                             'require_assignment_coverage': strict_cash_coverage_only,
+                                             'filter_ex_div_risk': filter_ex_div_risk
                                          }
                                          if use_max_pain_filter:
                                              current_filters['max_pain_dist'] = max_pain_dist
@@ -2581,7 +2606,7 @@ with tab2:
             ]
         else:
             display_cols = [
-                'Selecteer', 'koopadvies', 'trade_verdict', 'Profiel', 'Dual_Trigger', 'Profit_Stop_Advice', 'symbol', 'underlying_price', 'AG_Score', 'score_pop', 'score_roc', 'score_ttp', 'score_safety', 'score_flow', 'expected_value', 'pop_adj', 'pop', 'dS_BE', 'gamma_theta_ratio', 'strategy', 'assignment_risk_badge', 'notional_assignment_capital', 'extrinsic_val_short', 'cue', 'expiry', 'strike_buy', 'strike_sell', 'width', 
+                'Selecteer', 'koopadvies', 'trade_verdict', 'Profiel', 'Dual_Trigger', 'Profit_Stop_Advice', 'symbol', 'underlying_price', 'AG_Score', 'score_pop', 'score_roc', 'score_ttp', 'score_safety', 'score_flow', 'expected_value', 'pop_adj', 'pop', 'dS_BE', 'gamma_theta_ratio', 'strategy', 'assignment_risk_badge', 'ex_div_date', 'notional_assignment_capital', 'extrinsic_val_short', 'cue', 'expiry', 'strike_buy', 'strike_sell', 'width', 
                 'strike_p_buy', 'strike_p_sell', 'strike_c_sell', 'strike_c_buy',
                 'spread_mid_abs', 'spread_ask_abs', 'b_l_verschil', 'max_profit', 'sluitingswinst', 'sluitingswinst_em85',
                 'TTP (D)', 'TEI Score', 'Efficient',
@@ -2629,7 +2654,8 @@ with tab2:
             "wide_spread_badge": st.column_config.TextColumn("B/L Status", help="Liquiditeit & Bied/Laat Spreiding. Waarschuwing bij wijde spread wegens slippage & risico op snel winstverlies."),
             "bid_ask_width": st.column_config.NumberColumn("B/L Wijdte ($)", format="$%.2f", help="Totale Bied-Laat spread van het contract (frictiekosten)"),
             "bid_ask_pct": st.column_config.NumberColumn("B/L Wijdte %", format="%.1f%%", help="Bied-Laat spreiding als percentage van de premie"),
-            "assignment_risk_badge": st.column_config.TextColumn("Aanwijzingsstatus", help="Kans op vervroegde toewijzing (early assignment) en tijdswaarde-status van de short leg"),
+            "assignment_risk_badge": st.column_config.TextColumn("Aanwijzingsstatus", help="Kans op vervroegde toewijzing (early assignment), tijdswaarde-status en ex-dividend arbitrage gevaar van de short leg"),
+            "ex_div_date": st.column_config.TextColumn("Ex-Div Datum", help="Aankomende ex-dividenddatum van het aandeel"),
             "notional_assignment_capital": st.column_config.NumberColumn("Toewijzingskapitaal ($)", format="$%d", help="Benodigd cash-kapitaal (Strike * 100) om 100 aandelen af te nemen bij toewijzing"),
             "extrinsic_val_short": st.column_config.NumberColumn("Tijdswaarde Short ($)", format="$%.2f", help="Resterende extrinsieke waarde van de geschreven poot. Bij <= $0.10 stijgt aanwijzingsgevaar!"),
             "expected_value": st.column_config.NumberColumn("EV ($)", format="$%.2f", help="Wiskundige verwachte waarde per spread: (PoP_adj * MaxWinst) - ((1-PoP_adj) * MaxVerlies) - transactiekosten"),

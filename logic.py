@@ -1584,7 +1584,7 @@ class SpreadScanner:
         flip_strike = min(net_gamma_by_strike, key=lambda k: abs(net_gamma_by_strike[k]))
         return flip_strike
 
-    def calculate_metrics(self, spreads_df, ib_client, symbol, underlying_price=None, chain_data=None, underlying_iv=0.0, hist_iv_df=None, log_func=None, koopadvies_p=0.01, atr_10=0.0, target_profit_usd=5.0, account_cash=None, force_bullcall_if_uncovered=False):
+    def calculate_metrics(self, spreads_df, ib_client, symbol, underlying_price=None, chain_data=None, underlying_iv=0.0, hist_iv_df=None, log_func=None, koopadvies_p=0.01, atr_10=0.0, target_profit_usd=5.0, account_cash=None, force_bullcall_if_uncovered=False, div_info=None):
         """
         Enriches spreads using Real Prices (Bid/Ask) if available in chain_data.
         Integrates Early Assignment Risk quantification and Capital Guardrail for credit spreads.
@@ -2529,13 +2529,39 @@ class SpreadScanner:
         assign_badge_arr = []
         cap_covered_arr = []
 
+        # Haal dividend-info op voor ex-dividend toewijzingsbewaking
+        div_rate = 0.0
+        days_to_ex = None
+        ex_div_str = "-"
+        if div_info is not None and isinstance(div_info, dict):
+            div_rate = float(div_info.get('dividend_rate', 0.0) or 0.0)
+            ex_d = div_info.get('ex_div_date')
+            if ex_d:
+                try:
+                    ex_d_val = pd.to_datetime(ex_d).date()
+                    days_to_ex = (ex_d_val - datetime.date.today()).days
+                    ex_div_str = ex_d_val.strftime('%Y-%m-%d')
+                except Exception:
+                    pass
+        elif ib_client is not None and hasattr(ib_client, 'get_dividend_info'):
+            try:
+                d_inf = ib_client.get_dividend_info(symbol)
+                div_rate = float(d_inf.get('dividend_rate', 0.0) or 0.0)
+                ex_d = d_inf.get('ex_div_date')
+                if ex_d:
+                    ex_d_val = pd.to_datetime(ex_d).date()
+                    days_to_ex = (ex_d_val - datetime.date.today()).days
+                    ex_div_str = ex_d_val.strftime('%Y-%m-%d')
+            except Exception:
+                pass
+
         for i in range(n):
             st_val = strat_vals[i]
             s_sell = float(spreads_df['strike_sell'].iloc[i]) if 'strike_sell' in spreads_df.columns else 0.0
             p_sell = float(spreads_df['price_sell'].iloc[i]) if 'price_sell' in spreads_df.columns else 0.0
             r_val = 'P' if ('PUT' in str(st_val).upper() or 'P' in str(spreads_df['right'].iloc[i]).upper()) else 'C'
             
-            if st_val in ['BullPut', 'BearCall', 'IronCondor'] and s_sell > 0:
+            if st_val in ['BullPut', 'BearCall', 'IronCondor', 'SynthCoveredCall', 'ShortCall'] and s_sell > 0:
                 notional_cap = s_sell * 100.0
                 notional_cap_arr[i] = notional_cap
                 eval_risk = EarlyAssignmentRiskEngine.evaluate_assignment_risk(
@@ -2544,7 +2570,9 @@ class SpreadScanner:
                     short_option_price=p_sell,
                     right=r_val,
                     dte=float(spreads_df['dte'].iloc[i]) if 'dte' in spreads_df.columns else 30.0,
-                    account_cash=account_cash
+                    account_cash=account_cash,
+                    dividend_amount=div_rate,
+                    days_to_ex_div=days_to_ex
                 )
                 extrinsic_short_arr[i] = eval_risk['extrinsic_value']
                 assign_prob_arr[i] = eval_risk['probability_assignment_pct']
@@ -2552,11 +2580,19 @@ class SpreadScanner:
                 cap_covered_arr.append(cap_cov)
 
                 if eval_risk['risk_level'] == 'CRITICAL':
-                    assign_badge_arr.append("🚨 DIRECT SLUITEN (Tijdswaarde ≤ $0.05)")
+                    if eval_risk.get('is_ex_div_risk'):
+                        assign_badge_arr.append(f"🚨 EX-DIV ARBITRAGE (Div ${div_rate:.2f} >= Tijdswaarde)")
+                    else:
+                        assign_badge_arr.append("🚨 DIRECT SLUITEN (Tijdswaarde ≤ $0.05)")
                 elif eval_risk['risk_level'] == 'WARNING':
-                    assign_badge_arr.append("⚠️ GEVARENZONE (Tijdswaarde ≤ $0.10)")
+                    if eval_risk.get('is_ex_div_risk'):
+                        assign_badge_arr.append(f"⚠️ EX-DIV RISICO (Ex-Div in {days_to_ex}d, Div ${div_rate:.2f})")
+                    else:
+                        assign_badge_arr.append("⚠️ GEVARENZONE (Tijdswaarde ≤ $0.10)")
                 elif not cap_cov:
                     assign_badge_arr.append(f"⚠️ GEEN CASH-DEKKING (Vereist ${notional_cap:,.0f})")
+                elif eval_risk.get('is_ex_div_risk'):
+                    assign_badge_arr.append(f"ℹ️ Ex-Div over {days_to_ex}d (${div_rate:.2f})")
                 else:
                     assign_badge_arr.append("🟢 VEILIG (Volledig Gedekt)")
             else:
@@ -2571,6 +2607,9 @@ class SpreadScanner:
         spreads_df['early_assignment_risk_pct'] = np.round(assign_prob_arr, 1)
         spreads_df['assignment_risk_badge'] = assign_badge_arr
         spreads_df['capital_covered'] = cap_covered_arr
+        spreads_df['ex_div_date'] = ex_div_str
+        spreads_df['dividend_amount'] = div_rate
+        spreads_df['days_to_ex_div'] = days_to_ex if days_to_ex is not None else -1
 
         # --- Part 9: Ultieme AntiGravity Master Selector (AG Score 0 - 100) ---
         # Berekent de genormaliseerde 5-Pijler Master Selector (0.0 tot 100.0)
@@ -2845,6 +2884,16 @@ class SpreadScanner:
                 if dropped > 0:
                     drop_stats['Aanwijzingsdekking'] = dropped
                     if log_func: log_func(f"   🔻 Filter Niet-gedekte Credit Spreads: {dropped} dropped (Bull Calls beschermd)")
+
+        # Filter Ex-Dividend Toewijzingsrisico (Bear Calls & Short Calls met ex-div gevaar uitsluiten)
+        if filters.get('filter_ex_div_risk', False):
+            before = len(df)
+            if 'assignment_risk_badge' in df.columns:
+                df = df[~df['assignment_risk_badge'].astype(str).str.contains("EX-DIV ARBITRAGE|EX-DIV RISICO", na=False)]
+                dropped = before - len(df)
+                if dropped > 0:
+                    drop_stats['Ex-Dividend Risico'] = dropped
+                    if log_func: log_func(f"   🔻 Filter Ex-Dividend Risico: {dropped} dropped (Bear Calls/Short Calls met toewijzingsgevaar vóór ex-div)")
             
         if log_func:
             if df.empty and drop_stats:
