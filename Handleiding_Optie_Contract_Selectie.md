@@ -66,6 +66,11 @@ Aan de linkerkant van het scherm (de sidebar) vind je de instellingen waarmee je
   * **100% (Tot Expiratie Laten Lopen)**: Volledige expiratie afwachten.
   * **Trailing / EMA Kruising Exit**: Actieve bewaking die de positie sluit zodra de snelle `EMA5` onder de signaallijn `EMA13` duikt om een opgebouwde winst veilig te stellen.
 
+### 🛡️ Kapitaalbescherming & Aanwijzingsdekking (Expander)
+* **🛡️ Ex-Dividend Toewijzingsfilter**: Schakel dit vinkje in om automatisch alle optiecontracten uit te sluiten die acute toewijzingsdreiging vertonen rond een naderende ex-dividend datum (`🚨 EX-DIV ARBITRAGE` of `⚠️ EX-DIV RISICO`).
+* **Cash-Secured Toewijzingsfilter**: Verbergt geschreven putopties (Bull Puts) waarvoor onvoldoende cash op de rekening staat om 100 aandelen per contract af te nemen.
+* **Verberg Hoog Aanwijzingsrisico**: Verbergt posities waarvan de extrinsieke waarde van de geschreven optie gezakt is naar $0.05 of lager.
+
 ---
 
 ### ⚡ De Snelle Actieknoppen: 'Reset Filters' & 'Optimaliseer'
@@ -96,6 +101,7 @@ Moet je na het opstarten of bij het kiezen van een strategie verplicht op deze k
 * **Wat doet deze knop?**
   Het programma start na het openen **volledig automatisch** op in de **Auto-Optimalisatie** stand. In plaats van alle aandelen met één generieke sidebar-instelling te scannen, kijkt het systeem naar het specifieke gedrag van elk aandeel:
   * **Aandeel-specifieke parameters**: Gebruikt automatisch de meest winstgevende Expected Move buffer (bijv. 1.10x voor lage volatiliteit vs. 1.65x voor snelle groeiers zoals NVDA), de optimale spread-breedte ($5, $10 of $15) en het ideale DTE-venster.
+  * **Strikte Horizon-Bescherming (30–75 DTE vs. Week)**: Wanneer je kiest voor het **Maand-profiel (30–75 DTE)** of handmatig een DTE-ondergrens $\ge 28$ dagen instelt, respecteert het systeem jouw gekozen tijdshorizon onverbiddelijk. De scanner overschrijft je maandhorizon nooit met kortere weekprofielen (14–25 DTE uit eerdere sweeps). Zo voorkom je dat een scan ten onrechte 100% afgekeurd wordt op te korte marktexpiraties.
   * **Auto-Refresh bij veroudering (>30 dagen)**: Is een aandeel nieuw of is de laatste optimalisatiesweep ouder dan 30 dagen? De scanner voert tijdens het scannen direct een snelle achtergrond-sweep uit (15–20 seconden) en slaat het nieuwe optimum permanent op in `stock_profiles.json`.
   * **Dynamisch Winstdoel in Portfoliobewaking (Tab 0)**: Spreads geopend met een strakke EM krijgen automatisch een winstdoel van **50%** (sneller borgen i.v.m. delta-risico), terwijl diepe spreads (>= 1.60x EM) automatisch worden vastgehouden tot **75% à 80%** winst.
 * **Uitschakelen**: Wil je handmatig met de sliders experimenteren zonder dat het programma aandeel-profielen toepast? Klik eenmaal op `🟢 🎯 Auto-Optimalisatie: ACTIEF`; de knop verandert direct in `⚪ ⚙️ Auto-Optimalisatie: UIT` en de scanner volgt exact jouw handmatige sliders.
@@ -845,7 +851,8 @@ De kolommen zijn logisch onderverdeeld in 5 functionele clusters:
 #### Cluster 2: Kapitaalbescherming & Toewijzingsveiligheid (Early Assignment)
 | Kolom | Wat betekent het? | Gewenste Richtwaarde | Hoe gebruik je dit? |
 | :--- | :--- | :--- | :--- |
-| **`assignment_risk_badge`** | Toont de veiligheidsstatus van de geschreven poot: `🟢 VEILIG (Volledig Gedekt)`, `⚠️ GEEN CASH-DEKKING`, `🚨 DIRECT SLUITEN` of `🛡️ GEEN AANWIJZING`. | **`🟢 VEILIG`** of **`🛡️ GEEN AANWIJZING`** | Voorkomt dat je verrast wordt door verplichte levering van 100 aandelen per contract. |
+| **`assignment_risk_badge`** | Toont de veiligheidsstatus van de geschreven poot: `🟢 VEILIG (Volledig Gedekt)`, `⚠️ GEEN CASH-DEKKING`, `🚨 DIRECT SLUITEN`, `🛡️ GEEN AANWIJZING`, `🚨 EX-DIV ARBITRAGE`, `⚠️ EX-DIV RISICO` of `ℹ️ Ex-Div over Xd`. | **`🟢 VEILIG`** of **`🛡️ GEEN AANWIJZING`** | Voorkomt dat je verrast wordt door verplichte levering of toewijzing van 100 aandelen per contract. |
+| **`ex_div_date`** | De eerstvolgende **ex-dividend datum** en het dividendbedrag van het onderliggende aandeel (opgehaald via IBKR). | Geen ex-div vóór expiratie | Toont direct wanneer het aandeel ex-dividend gaat. Cruciaal bij geschreven calls (Bear Call / Covered Call)! |
 | **`notional_assignment_capital`** | Het **totale cash-kapitaal** dat nodig is als de geschreven put wordt aangewezen: Uitoefenprijs x 100 x Aantal contracten. | Binnen de beschikbare cash op je rekening | Vergelijk dit direct met je rekeningsaldo. Heb je minder cash dan dit bedrag? Kies dan voor een Bull Call debet spread! |
 | **`extrinsic_val_short` ($)** | De **resterende zuivere tijdswaarde** van de geschreven poot. | **meer dan $0,25 (Veilig)**<br>0,10 dollar of minder (Gevarenzone)<br>0,05 dollar of minder (Aanwijzingsalarm) | Zolang de tijdswaarde ruim boven $0,10 ligt, zal de tegenpartij de optie vrijwel nooit uitoefenen omdat hij dan zijn eigen tijdswaarde weggooit. |
 
@@ -1064,13 +1071,22 @@ Om het kiezen van een trade voor **iedereen** (van beginner tot ervaren trader) 
 
 ---
 
-#### 7. Aanwijzing (`assignment_risk_badge`: Veilig vs Misschien / Waarschuwing vs Hoog)
+#### 7. Aanwijzing (`assignment_risk_badge`: Veilig vs Waarschuwing vs Alarm & Ex-Dividend)
 * **Wat betekent het?** 
- Toetst het risico dat de tegenpartij de door jou verkochte optiepoot vroegtijdig uitoefent (Early Assignment), waardoor je verplicht 100 aandelen per contract moet afnemen of leveren. Dit hangt direct af van de resterende extrinsieke waarde (`extrinsic_val_short`).
+ Toetst het risico dat de tegenpartij de door jou verkochte optiepoot vroegtijdig uitoefent (Early Assignment), waardoor je verplicht 100 aandelen per contract moet afnemen of leveren. Dit hangt primair af van de resterende extrinsieke waarde (`extrinsic_val_short`) en de **ex-dividend datum** van het aandeel.
 * **Mogelijke waarden & Consequenties**:
  * **`🟢 Veilig` (Tijdswaarde > 0.10 - 0.25)**: **Consequentie**: Geen enkel risico op vroege aanwijzing. De tegenpartij zou immers zijn eigen resterende tijdswaarde vernietigen door vroegtijdig uit te oefenen.
  * **`⚠️ Misschien / Waarschuwing` (Tijdswaarde $0.05 - 0.10)**: **Consequentie**: Opletten geblazen, met name rond de ex-dividend datum van het aandeel of wanneer de koers door de strike breekt.
  * **`🚨 Hoog / Alarm` (Tijdswaarde $<= 0.05)**: **Consequentie**: Zeer acuut aanwijzingsgevaar. Direct de positie sluiten of doorrollen naar een latere expiratieperiode.
+ * **`🚨 EX-DIV ARBITRAGE` (Dividend $\ge$ Resterende Tijdswaarde)**: **Consequentie**: **ACUUT TOEWYSINGSGEVAAR (Kans ~95%)**. De tegenpartij bezit een In-the-Money calloptie en zal deze daags vóór de ex-dividend datum vroegtijdig uitoefenen om het contante dividend te innen. Het dividend overtreft immers de verloren tijdswaarde! **Actie**: Onmiddellijk sluiten (`DIRECT_SLUITEN`) of tijdig doorrollen.
+ * **`⚠️ EX-DIV RISICO`**: De geschreven call staat In-the-Money en de ex-dividend datum valt binnen 3 dagen vóór expiratie. Verhoogde alertheid vereist.
+ * **`⚠️ EX-DIV ALERT`**: De koers bevindt zich vlakbij de strike (< 3% Out-of-the-Money) vlak voor ex-dividend; bij een kleine stijging ontstaat arbitragegevaar.
+ * **`ℹ️ Ex-Div over Xd`**: Informatief signaal dat er binnenkort dividend wordt uitgekeerd, maar de geschreven optie staat nog veilig ver uit het geld (OTM).
+
+> [!IMPORTANT]
+> **Waarom geldt Ex-Dividend risico wél voor Calls en géén Puts?**
+> * **Geschreven Calls (Bear Call, Covered Call, PMCC)**: De koper van de call wil het aandeel bezitten vóór beursopening op de ex-dividend datum om recht te hebben op de dividenduitkering. Als de resterende extrinsieke waarde kleiner is dan het dividendbedrag ($Div \ge Extrinsic$), is vroege uitoefening economisch 100% rationeel.
+> * **Geschreven Puts (Bull Put Spreads)**: Op de ex-dividend datum zakt de aandelenkoers met exact het dividendbedrag. Een koersdaling maakt een putoptie méér waard, nooit minder. De koper van een put heeft er dus financieel alle belang bij om de put aan te houden en nooit vroegtijdig uit te oefenen voor dividend.
 
 ---
 
