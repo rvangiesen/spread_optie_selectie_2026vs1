@@ -2727,7 +2727,9 @@ with tab2:
                 'Nr', 'Selecteer', 'symbol', 'underlying_price', 'strategy', 'Contract', 'Profiel',
                 
                 # --- 2. KEUZETABEL & BESLISPARAMETERS IN 1 OOGOPSLAG (DE KERN) ---
-                'Handelsadvies', 'trade_verdict', 'koopadvies', 'cue', 'AG_Score', 'Dual_Trigger', 'Profit_Stop_Advice',
+                'Handelsadvies', 'trade_verdict', 'koopadvies', 'cue', 
+                'AG_Score', 'score_pop', 'score_roc', 'score_ttp', 'score_safety', 'score_flow',
+                'Dual_Trigger', 'Profit_Stop_Advice',
                 'pop_adj', 'expected_value', 'bep_afstand_pct', 'assignment_risk_badge', 'Efficient', 'TEI Score',
                 
                 # --- 3. PRIJZEN, RENDEMENT & LIQUIDITEIT (ONDERBOUWING A) ---
@@ -2744,11 +2746,10 @@ with tab2:
                 'iv_percentile', 'iv_rank', 'underlying_iv', 'gamma_flip', 'call_wall', 'put_wall', 'gex_wall',
                 'pop', 'max_pain', 'max_pain_selection', 'max_pain_buffer_ok', 'dist_max_pain',
                 
-                # --- 6. POOTDETAILS & SUBSCORES (VERDIEPING) ---
+                # --- 6. POOTDETAILS (VERDIEPING) ---
                 'expiry', 'expiry_long', 'dte_long', 'strike_buy', 'strike_sell', 'width',
                 'strike_p_buy', 'strike_p_sell', 'strike_c_sell', 'strike_c_buy',
-                'price_buy', 'price_sell', 'net_extrinsic', 'delta_buy', 'delta_sell',
-                'score_pop', 'score_roc', 'score_ttp', 'score_safety', 'score_flow'
+                'price_buy', 'price_sell', 'net_extrinsic', 'delta_buy', 'delta_sell'
             ]
 
         # Column Configuration for Streamlit
