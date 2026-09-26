@@ -2724,29 +2724,34 @@ with tab2:
         else:
             display_cols = [
                 # --- 1. IDENTIFICATIE & BASIS (WIE & WAT) ---
-                'Nr', 'Selecteer', 'symbol', 'underlying_price', 'strategy', 'Contract', 'Profiel',
+                'Nr', 'Selecteer', 'symbol', 'underlying_price', 'strategy', 'Contract', 'Profiel', 'Handelsadvies',
                 
-                # --- 2. KEUZETABEL & BESLISPARAMETERS IN 1 OOGOPSLAG (DE KERN) ---
-                'Handelsadvies', 'trade_verdict', 'koopadvies', 'cue', 
-                'AG_Score', 'score_pop', 'score_roc', 'score_ttp', 'score_safety', 'score_flow',
+                # --- 2. VERDICT & SCORECARD (DE 6 PUNTEN) ---
+                'trade_verdict', 'AG_Score', 'score_pop', 'score_roc', 'score_ttp', 'score_safety', 'score_flow',
+                
+                # --- 3. FLOW VAN BESLISSEN: ZWAARWEGENDE STATISTISCHE PARAMETERS (CONFORM HANDLEIDING) ---
+                'cue', 'koopadvies', 'pop_adj', 'bep_afstand_pct', 'BEP', 'dS_BE', 'expected_value',
+                'TEI Score', 'Efficient', 'gamma_theta_ratio', 'dte', 'assignment_risk_badge', 'ex_div_date',
+                'extrinsic_val_short', 'EM85', 'EM68', 'em85_dekking_pct',
                 'Dual_Trigger', 'Profit_Stop_Advice',
-                'pop_adj', 'expected_value', 'bep_afstand_pct', 'assignment_risk_badge', 'Efficient', 'TEI Score',
                 
-                # --- 3. PRIJZEN, RENDEMENT & LIQUIDITEIT (ONDERBOUWING A) ---
+                # --- 4. VEILIGE DAGGRENZEN, BUFFERS & INSTITUTIONELE MUREN ---
+                'supports', 'resistances', 'call_vested_wall', 'put_vested_wall', 'notional_assignment_capital',
+                'req_bep_move_pct', 'extrinsic_pct', 'capital_risk_flat_pct', 'capital_risk_dip5_pct',
+                
+                # --- 5. OPTIEGRIEKEN ---
+                'delta', 'delta_koers', 'gamma', 'theta',
+                
+                # --- 6. PRIJZEN, RENDEMENT & LIQUIDITEIT ---
                 'spread_mid_abs', 'spread_ask_abs', 'b_l_verschil', 'wide_spread_badge', 'bid_ask_width', 'bid_ask_pct',
                 'max_profit', 'sluitingswinst', 'sluitingswinst_em85', 'TTP (D)', 'roc_cyclus', 'roc_jaars',
                 
-                # --- 4. VEILIGE DAGGRENZEN, BUFFERS & INSTITUTIONELE MUREN (ONDERBOUWING B) ---
-                'BEP', 'dS_BE', 'gamma_theta_ratio', 'EM68', 'EM85', 'supports', 'resistances',
-                'call_vested_wall', 'put_vested_wall', 'notional_assignment_capital', 'extrinsic_val_short', 'ex_div_date',
-                'em85_dekking_pct', 'req_bep_move_pct', 'extrinsic_pct', 'capital_risk_flat_pct', 'capital_risk_dip5_pct',
-                
-                # --- 5. OPTIEGRIEKEN & TREND INDICATOREN (ONDERBOUWING C) ---
-                'delta', 'delta_koers', 'gamma', 'theta', 'dte', 'EMA_Cross', 'Stoch_RSI', 'Sentiment',
+                # --- 7. TREND, VOLATILITEIT & MARKTINDICATOREN ---
+                'EMA_Cross', 'Stoch_RSI', 'Sentiment',
                 'iv_percentile', 'iv_rank', 'underlying_iv', 'gamma_flip', 'call_wall', 'put_wall', 'gex_wall',
                 'pop', 'max_pain', 'max_pain_selection', 'max_pain_buffer_ok', 'dist_max_pain',
                 
-                # --- 6. POOTDETAILS (VERDIEPING) ---
+                # --- 8. POOTDETAILS (VERDIEPING) ---
                 'expiry', 'expiry_long', 'dte_long', 'strike_buy', 'strike_sell', 'width',
                 'strike_p_buy', 'strike_p_sell', 'strike_c_sell', 'strike_c_buy',
                 'price_buy', 'price_sell', 'net_extrinsic', 'delta_buy', 'delta_sell'
@@ -2762,18 +2767,32 @@ with tab2:
             "Contract": st.column_config.TextColumn("Contract", width="medium", help="Expiratiedatum, Type, Strikes en Resterende Dagen (DTE)"),
             "Profiel": st.column_config.TextColumn("Profiel", help="Aandeel-specifiek optimalisatieprofiel (EM Multiplier & Breedte)"),
             "Handelsadvies": st.column_config.TextColumn("Handelsadvies", width="large", help="Concreet direct handelsadvies met actielimiet, winstdoel in dollars en acute risicobewaking"),
-            "trade_verdict": st.column_config.TextColumn("Verdict", help="Quant Oordeel: EXECUTE (EV>0 & PoP>=65%), SPECULATIVE, REJECT of GAMMA_CLIFF_RISK"),
-            "koopadvies": st.column_config.TextColumn("Koopadvies", help="Groen (🟢 Ja) = Statistisch koopadvies | Rood (🔴 Nee) = Geen koopadvies"),
+            "trade_verdict": st.column_config.TextColumn("Verdict", help="Quant Oordeel volgens de 48-gevallen keuzetabel: EXECUTE (EV>0 & PoP>=65%), SPECULATIVE, REJECT of GAMMA_CLIFF_RISK"),
             "cue": st.column_config.TextColumn("Marktregime", help="4-Kwadranten Delta OI marktregime (Uptrend, Downtrend, Pinning, Neutral)"),
             "AG_Score": st.column_config.NumberColumn("AG Score", format="⭐ %.1f", help="Ultieme Master Selector (0-100) over 5 Pijlers: PoP, ROC/EV, TTP Snelheid, Buffer en Flow"),
+            "score_pop": st.column_config.NumberColumn("P1: Slaagkans", format="%.1f pt", help="Pilaar 1: Slaagkans & Statistisch Voordeel (max 25 pt)"),
+            "score_roc": st.column_config.NumberColumn("P2: ROC/EV", format="%.1f pt", help="Pilaar 2: Rendement op Investering & EV (max 20 pt)"),
+            "score_ttp": st.column_config.NumberColumn("P3: TTP Snelheid", format="%.1f pt", help="Pilaar 3: Tijdswaarde & Verzilveringssnelheid (max 15 pt)"),
+            "score_safety": st.column_config.NumberColumn("P4: Buffer/Gamma", format="%.1f pt", help="Pilaar 4: Koersbuffer & Gamma/Theta Veiligheid (max 20 pt)"),
+            "score_flow": st.column_config.NumberColumn("P5: Flow/Regime", format="%.1f pt", help="Pilaar 5: Institutionele Flow & Sentiment (max 20 pt)"),
+            "koopadvies": st.column_config.TextColumn("Koopadvies", help="Groen (🟢 Ja) = Statistisch koopadvies | Rood (🔴 Nee) = Geen koopadvies"),
+            "pop_adj": st.column_config.NumberColumn("PoP Adj %", format="%.1f%%", help="Bayesiaans gecorrigeerde winstkans incl. steun/weerstand muren, pinning en headwind/tailwind"),
+            "bep_afstand_pct": st.column_config.NumberColumn("BEP Afstand", format="%.1f%%", help="Afstand in % van de huidige koers tot het Break-Even Punt (veiligheidsbuffer: ≥ 8.0% is Triple-A)"),
+            "BEP": st.column_config.NumberColumn("BEP", format="$%.2f", help="Break Even Point koersniveau gebaseerd op Laat prijs"),
+            "dS_BE": st.column_config.NumberColumn("dS BE ($)", format="$%.2f", help="Breakeven dagelijkse koersuitslag onderliggende: sqrt(2 * |Theta| / |Gamma|). Maximale dagelijkse koersbeweging richting het Break-Even Punt die de spread aankan zonder verlies."),
+            "expected_value": st.column_config.NumberColumn("EV ($)", format="$%.2f", help="Wiskundige verwachte waarde per spread rekening houdend met PoP, max winst, max verlies en frictiekosten"),
+            "TEI Score": st.column_config.NumberColumn("TEI Score", format="%.2f", help="Target Efficiency Index (Black-Scholes model: > 1.2 is hoge efficiëntie)"),
+            "Efficient": st.column_config.TextColumn("Efficiënt", help="Blauw blokje = TEI Score > 1.2 en TTP < DTE/2 (hoge efficiëntie)"),
+            "gamma_theta_ratio": st.column_config.NumberColumn("Γ/Θ Ratio", format="%.4f", help="Gamma/Theta verhouding per positie (lager is veiliger)"),
+            "dte": st.column_config.NumberColumn("DTE", format="%d", help="Dagen tot expiratie. Rood = Acuut Gamma Cliff risico (≤ 3 DTE) of earnings beperking"),
+            "assignment_risk_badge": st.column_config.TextColumn("Aanwijzingsstatus (DTDiv)", help="Kans op vervroegde toewijzing (early assignment), tijdswaarde-status en ex-dividend arbitrage gevaar van de short leg"),
+            "ex_div_date": st.column_config.TextColumn("Ex-Div Datum", help="Aankomende ex-dividenddatum van het aandeel"),
+            "extrinsic_val_short": st.column_config.NumberColumn("Tijdswaarde Short ($)", format="$%.2f", help="Resterende extrinsieke waarde van de geschreven poot. Bij ≤ $0.05 direct sluiten!"),
+            "EM85": st.column_config.NumberColumn("EM85 (Primair)", format="$%.2f", help="Expected Move 85% kans (1.44 Standaarddeviaties). De primaire institutionele veiligheidsmuur: strikes horen hierbuiten te liggen."),
+            "EM68": st.column_config.NumberColumn("EM68 (Secundair)", format="$%.2f", help="Expected Move 68% kans (1.00 Standaarddeviatie). Secundaire richtlijn voor snelle winstneming / sluitingswinst halverwege."),
+            "em85_dekking_pct": st.column_config.NumberColumn("EM85 Dekking %", format="%.1f%%", help="Afstand van BEP tot koers als % van EM85 (>100% betekent dat BEP buiten 85% kansbereik ligt)"),
             "Dual_Trigger": st.column_config.TextColumn("Dual Trigger", help="Squeeze Breakout of Trend Pullback momentum signaal"),
             "Profit_Stop_Advice": st.column_config.TextColumn("Bewakend Winstdoel", help="Winstdoelverzilvering (60/70/100%) en actieve trendbewaking"),
-            "pop_adj": st.column_config.NumberColumn("PoP Adj %", format="%.1f%%", help="Bayesiaans gecorrigeerde winstkans incl. steun/weerstand muren, pinning en headwind/tailwind"),
-            "expected_value": st.column_config.NumberColumn("EV ($)", format="$%.2f", help="Wiskundige verwachte waarde per spread rekening houdend met PoP, max winst, max verlies en frictiekosten"),
-            "bep_afstand_pct": st.column_config.NumberColumn("BEP Afstand", format="%.1f%%", help="Afstand in % van de huidige koers tot het Break-Even Punt (buffer)"),
-            "assignment_risk_badge": st.column_config.TextColumn("Aanwijzingsstatus", help="Kans op vervroegde toewijzing (early assignment), tijdswaarde-status en ex-dividend arbitrage gevaar van de short leg"),
-            "Efficient": st.column_config.TextColumn("Efficiënt", help="Blauw blokje = TEI Score > 1.2 en TTP < DTE/2 (hoge efficiëntie)"),
-            "TEI Score": st.column_config.NumberColumn("TEI Score", format="%.2f", help="Target Efficiency Index (Black-Scholes model)"),
             "spread_mid_abs": st.column_config.NumberColumn("Middenprijs", format="$%.2f", help="Middenprijs (aanbevolen limietorder)"),
             "spread_ask_abs": st.column_config.NumberColumn("Laatprijs", format="$%.2f"),
             "spread_last_abs": st.column_config.NumberColumn("Laatste Prijs", format="$%.2f"),
@@ -2790,19 +2809,11 @@ with tab2:
             "TTP (D)": st.column_config.NumberColumn("TTP (Dagen)", format="%.1f", help="Days to Profit ($5 doel)"),
             "roc_cyclus": st.column_config.NumberColumn("ROC Cyclus %", format="%.1f%%", help="Rendement op netto debit per short cyclus (premie sell / netto debit)"),
             "roc_jaars": st.column_config.NumberColumn("ROC Jaar %", format="%.1f%%", help="Geannualiseerd rendement op kapitaal op basis van de short cyclus"),
-            "BEP": st.column_config.NumberColumn("BEP", format="$%.2f", help="Break Even Point gebaseerd op Laat prijs"),
-            "dS_BE": st.column_config.NumberColumn("dS BE ($)", format="$%.2f", help="Breakeven dagelijkse koersuitslag onderliggende: sqrt(2 * |Theta| / |Gamma|)"),
-            "gamma_theta_ratio": st.column_config.NumberColumn("Γ/Θ Ratio", format="%.4f", help="Gamma/Theta verhouding per positie"),
-            "EM68": st.column_config.NumberColumn("EM68", format="$%.2f", help="Expected Move 68% kans (1 Standaarddeviatie)"),
-            "EM85": st.column_config.NumberColumn("EM85", format="$%.2f", help="Expected Move 85% kans (1.44 Standaarddeviatie)"),
             "supports": st.column_config.TextColumn("Steunzones (1-3)", help="Technisch berekende steunniveaus"),
             "resistances": st.column_config.TextColumn("Weerstandszones (1-3)", help="Technisch berekende weerstandsniveaus"),
             "call_vested_wall": st.column_config.NumberColumn("Call Vested Wall", format="$%.2f", help="Institutionele verdedigingsmuur bovenkant (Margin * OI)"),
             "put_vested_wall": st.column_config.NumberColumn("Put Vested Wall", format="$%.2f", help="Institutionele verdedigingsmuur onderkant (Margin * OI)"),
             "notional_assignment_capital": st.column_config.NumberColumn("Toewijzingskapitaal ($)", format="$%d", help="Benodigd cash-kapitaal (Strike * 100) om 100 aandelen af te nemen bij toewijzing"),
-            "extrinsic_val_short": st.column_config.NumberColumn("Tijdswaarde Short ($)", format="$%.2f", help="Resterende extrinsieke waarde van de geschreven poot. Bij <= $0.10 stijgt aanwijzingsgevaar!"),
-            "ex_div_date": st.column_config.TextColumn("Ex-Div Datum", help="Aankomende ex-dividenddatum van het aandeel"),
-            "em85_dekking_pct": st.column_config.NumberColumn("EM85 Dekking", format="%.1f%%", help="Afstand van BEP tot koers als % van EM85 (>100% betekent dat BEP buiten 85% kansbereik ligt)"),
             "req_bep_move_pct": st.column_config.NumberColumn("BEP Vereist %", format="%.2f%%", help="Benodigde koersbeweging van het aandeel om break-even te spelen"),
             "extrinsic_pct": st.column_config.NumberColumn("Tijdswaarde %", format="%.2f%%", help="Tijdswaarde als percentage van de aandelenkoers"),
             "capital_risk_flat_pct": st.column_config.NumberColumn("Risico Vlak (0%)", format="%.1f%%", help="Verliespercentage van de inleg bij gelijkblijvende koers op expiratie"),
@@ -2811,7 +2822,6 @@ with tab2:
             "delta_koers": st.column_config.NumberColumn("Delta Koers", format="%.3f", help="Snelheid en versnelling van winstrespons: abs(Net Delta) + Net Gamma"),
             "gamma": st.column_config.NumberColumn("Gamma", format="%.4f"),
             "theta": st.column_config.NumberColumn("Theta", format="%.3f"),
-            "dte": st.column_config.NumberColumn("DTE", format="%d", help="Dagen tot expiratie. Rood = Earnings beperking kon niet worden gehaald"),
             "EMA_Cross": st.column_config.TextColumn("EMA 8/50"),
             "Stoch_RSI": st.column_config.TextColumn("Stoch RSI Status"),
             "Sentiment": st.column_config.TextColumn("Sentiment"),
@@ -2841,51 +2851,152 @@ with tab2:
             "price_sell": st.column_config.NumberColumn("Prijs Sell", format="$%.2f"),
             "net_extrinsic": st.column_config.NumberColumn("Net Extrin.", format="$%.2f"),
             "delta_buy": st.column_config.NumberColumn("Delta Buy", format="%.3f"),
-            "delta_sell": st.column_config.NumberColumn("Delta Sell", format="%.3f"),
-            "score_pop": st.column_config.NumberColumn("P1: Slaagkans", format="%.1f pt", help="Pilaar 1: Slaagkans & Statistisch Voordeel (max 25 pt)"),
-            "score_roc": st.column_config.NumberColumn("P2: ROC/EV", format="%.1f pt", help="Pilaar 2: Rendement op Investering & EV (max 20 pt)"),
-            "score_ttp": st.column_config.NumberColumn("P3: TTP Snelheid", format="%.1f pt", help="Pilaar 3: Tijdswaarde & Verzilveringssnelheid (max 15 pt)"),
-            "score_safety": st.column_config.NumberColumn("P4: Buffer/Gamma", format="%.1f pt", help="Pilaar 4: Koersbuffer & Gamma/Theta Veiligheid (max 20 pt)"),
-            "score_flow": st.column_config.NumberColumn("P5: Flow/Regime", format="%.1f pt", help="Pilaar 5: Institutionele Flow & Sentiment (max 20 pt)")
+            "delta_sell": st.column_config.NumberColumn("Delta Sell", format="%.3f")
         }
 
         # Ensure columns exist before displaying
         final_cols = [c for c in display_cols if c in results.columns]
 
-        # Helper voor visuele styling
+        # Helper voor visuele dynamische kleurcodering (Groen / Oranje / Rood)
         def style_results(row):
             styles = [''] * len(row)
-            if 'relaxed_earnings' in row.index and row['relaxed_earnings'] == True:
-                if 'dte' in row.index:
+            c_green = 'background-color: #14532d; color: #86efac; font-weight: bold;'
+            c_orange = 'background-color: #78350f; color: #fef08a; font-weight: bold;'
+            c_red = 'background-color: #7f1d1d; color: #fca5a5; font-weight: bold;'
+
+            strat = str(row.get('strategy', '')).upper()
+            is_bull = 'BULL' in strat or ('CALL' in strat and 'BEAR' not in strat)
+            is_bear = 'BEAR' in strat or ('PUT' in strat and 'BULL' not in strat)
+            is_neutral = 'IRON' in strat or 'STRANGLE' in strat
+
+            def apply_style(col, style_val):
+                if col in row.index:
                     try:
-                        idx = row.index.get_loc('dte')
-                        styles[idx] = 'color: #ef4444; font-weight: bold;'
+                        styles[row.index.get_loc(col)] = style_val
                     except Exception:
                         pass
-            if 'koopadvies' in row.index:
-                try:
-                    k_idx = row.index.get_loc('koopadvies')
-                    val_k = str(row['koopadvies'])
-                    if "🟢" in val_k or "Ja" in val_k:
-                        styles[k_idx] = 'background-color: #14532d; color: #86efac; font-weight: bold;'
-                    else:
-                        styles[k_idx] = 'background-color: #7f1d1d; color: #fca5a5; font-weight: bold;'
-                except Exception:
-                    pass
+
+            # 1. Handelsadvies
             if 'Handelsadvies' in row.index:
+                val_h = str(row['Handelsadvies'])
+                if '🚨' in val_h:
+                    apply_style('Handelsadvies', 'background-color: #7f1d1d; color: #fee2e2; font-weight: bold;')
+                elif '🟢 KOPEN' in val_h:
+                    apply_style('Handelsadvies', 'background-color: #064e3b; color: #a7f3d0; font-weight: bold;')
+                elif '🟡 SPEC' in val_h:
+                    apply_style('Handelsadvies', 'background-color: #78350f; color: #fef08a; font-weight: bold;')
+                elif '❌ AFWIJZEN' in val_h:
+                    apply_style('Handelsadvies', 'color: #9ca3af;')
+
+            # 2. Verdict (48-gevallen tabel)
+            if 'trade_verdict' in row.index:
+                v_str = str(row['trade_verdict']).upper()
+                if 'EXECUTE' in v_str:
+                    apply_style('trade_verdict', c_green)
+                elif 'SPEC' in v_str:
+                    apply_style('trade_verdict', c_orange)
+                elif 'CLIFF' in v_str or 'REJECT' in v_str:
+                    apply_style('trade_verdict', c_red)
+
+            # 3. Scorecard (AG Score + P1 t/m P5)
+            if 'AG_Score' in row.index:
                 try:
-                    h_idx = row.index.get_loc('Handelsadvies')
-                    val_h = str(row['Handelsadvies'])
-                    if "🚨" in val_h:
-                        styles[h_idx] = 'background-color: #7f1d1d; color: #fee2e2; font-weight: bold;'
-                    elif "🟢 KOPEN" in val_h:
-                        styles[h_idx] = 'background-color: #064e3b; color: #a7f3d0; font-weight: bold;'
-                    elif "🟡 SPEC" in val_h:
-                        styles[h_idx] = 'background-color: #78350f; color: #fef08a; font-weight: bold;'
-                    elif "❌ AFWIJZEN" in val_h:
-                        styles[h_idx] = 'color: #9ca3af;'
+                    ag = float(row['AG_Score'])
+                    apply_style('AG_Score', c_green if ag >= 75.0 else (c_orange if ag >= 50.0 else c_red))
                 except Exception:
                     pass
+
+            for col, th_green, th_orange in [
+                ('score_pop', 18.0, 13.0),
+                ('score_roc', 14.0, 9.0),
+                ('score_ttp', 10.0, 6.0),
+                ('score_safety', 14.0, 9.0),
+                ('score_flow', 14.0, 9.0)
+            ]:
+                if col in row.index:
+                    try:
+                        sc = float(row[col])
+                        apply_style(col, c_green if sc >= th_green else (c_orange if sc >= th_orange else c_red))
+                    except Exception:
+                        pass
+
+            # 4. Marktregime (cue - geëvalueerd tegenover de strategie-richting)
+            if 'cue' in row.index:
+                c_str = str(row['cue']).upper()
+                if is_bull:
+                    if 'UPTREND' in c_str or 'CORR UP' in c_str:
+                        apply_style('cue', c_green)
+                    elif 'DOWNTREND' in c_str or 'CORR DOWN' in c_str:
+                        apply_style('cue', c_red)
+                    else:
+                        apply_style('cue', c_orange)
+                elif is_bear:
+                    if 'DOWNTREND' in c_str or 'CORR DOWN' in c_str:
+                        apply_style('cue', c_green)
+                    elif 'UPTREND' in c_str or 'CORR UP' in c_str:
+                        apply_style('cue', c_red)
+                    else:
+                        apply_style('cue', c_orange)
+                elif is_neutral:
+                    if 'PINNING' in c_str or 'NEUTRAL' in c_str:
+                        apply_style('cue', c_green)
+                    elif 'UPTREND' in c_str or 'DOWNTREND' in c_str or 'VOL EXP' in c_str:
+                        apply_style('cue', c_red)
+                    else:
+                        apply_style('cue', c_orange)
+                else:
+                    apply_style('cue', c_orange)
+
+            # 5. Koopadvies
+            if 'koopadvies' in row.index:
+                val_k = str(row['koopadvies'])
+                apply_style('koopadvies', c_green if ('🟢' in val_k or 'Ja' in val_k) else c_red)
+
+            # 6. PoP Adj %
+            if 'pop_adj' in row.index:
+                try:
+                    pop_v = float(row['pop_adj'])
+                    apply_style('pop_adj', c_green if pop_v >= 70.0 else (c_orange if pop_v >= 60.0 else c_red))
+                except Exception:
+                    pass
+
+            # 7. BEP Afstand % (≥ 8.0% is de gouden regel uit de handleiding)
+            if 'bep_afstand_pct' in row.index:
+                try:
+                    bep_v = float(row['bep_afstand_pct'])
+                    apply_style('bep_afstand_pct', c_green if bep_v >= 8.0 else (c_orange if bep_v >= 5.0 else c_red))
+                except Exception:
+                    pass
+
+            # 8. Expected Value ($)
+            if 'expected_value' in row.index:
+                try:
+                    ev_v = float(row['expected_value'])
+                    apply_style('expected_value', c_green if ev_v > 0 else c_red)
+                except Exception:
+                    pass
+
+            # 9. Aanwijzingsstatus (DTDiv)
+            if 'assignment_risk_badge' in row.index:
+                val_a = str(row['assignment_risk_badge'])
+                if '🚨' in val_a:
+                    apply_style('assignment_risk_badge', c_red)
+                elif '⚠️' in val_a:
+                    apply_style('assignment_risk_badge', c_orange)
+                elif '🟢' in val_a or '🛡️' in val_a:
+                    apply_style('assignment_risk_badge', c_green)
+
+            # 10. DTE (looptijd)
+            if 'dte' in row.index:
+                try:
+                    d_val = float(row['dte'])
+                    if d_val <= 3.0 or ('relaxed_earnings' in row.index and row['relaxed_earnings'] == True):
+                        apply_style('dte', 'color: #ef4444; font-weight: bold;')
+                    elif d_val < 14.0:
+                        apply_style('dte', 'color: #f59e0b; font-weight: bold;')
+                except Exception:
+                    pass
+
             return styles
 
         # Filter config to only existing columns
