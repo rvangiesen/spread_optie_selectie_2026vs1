@@ -56,15 +56,15 @@ Aan de linkerkant van het scherm (de sidebar) vind je de instellingen waarmee je
 * **ITM Veiligheidsmarge (Support Niveau)**: Kies hoe conservatief je wilt positioneren op basis van de **Expected Move** (de verwachte beweeglijkheid van het aandeel). Kies bijvoorbeeld *Niveau 2 (2x Expected Move)* om uitoefenprijzen extra ver weg en veilig te leggen.
 
 ### 🔥 Dual-Trigger Entry & Bewakende Profit Target (Nieuw)
-* **🔥 Dual-Trigger Entry (Squeeze & Pullback)**: Schakel dit vinkje in om de scanner uitsluitend aandelen te laten meenemen die exact op dit moment een kwantitatieve momentum-setup tonen (gericht op minstens 80-90% winstkans):
-  * **Squeeze Breakouts**: Vangt de opwaartse explosie na extreme consolidatie (Bollinger Bands trekken binnen Keltner Channels en openen opwaarts met `Close > SMA20` en `EMA5 > EMA13`).
-  * **Trend Pullbacks**: Vangt vroege herstelkansen binnen een gevestigde trend (`EMA5` kruist opwaarts over `EMA13` boven de langetermijntrend `EMA34` met een groene bevestigingscandle).
-  * **Signaal Versheid**: Bepaal hoe recent de breakout of pullback mag zijn (*Vandaag (0d)*, *Laatste 2 dagen*, *Laatste 3 dagen*, of *Laatste 5 dagen*).
+* **🔥 Dual-Trigger Entry (Squeeze & Pullback)**: Schakel dit vinkje in om de scanner uitsluitend aandelen te laten meenemen die exact op dit moment een krachtige opwaartse impuls tonen (gericht op 80% tot 90% winstkans):
+  * **Squeeze Breakouts**: Vangt de opwaartse explosie na extreme marktcompressie (de volatiliteitsbanden trekken samen en breken krachtig opwaarts uit boven het gemiddelde).
+  * **Trend Pullbacks**: Vangt vroege instapkansen binnen een sterke, gevestigde opwaartse trend (de snelle trendlijn veert opwaarts op vanaf de langetermijntrend met een positieve candle).
+  * **Signaal Versheid**: Bepaal hoe recent de uitbraak of trendterugval mag zijn (*Vandaag (0d)*, *Laatste 2 dagen*, *Laatste 3 dagen*, of *Laatste 5 dagen*).
 * **🎯 Bewakende Profit Target (Exit Bewaking)**:
-  * **70% van Max Winst (Aanbevolen)**: Sluit credit spreads (Bull Put) zodra 70% van de ontvangen premie winst is (terugkopen op 30% van de premie), en sluit debit spreads (Bull Call) bij 70% van de maximale spreadwinst.
-  * **60% (Snel Winst Nemen)**: Sneller winst verzilveren en kapitaal vrijmaken bij hoge marktvolatiliteit.
-  * **100% (Tot Expiratie Laten Lopen)**: Volledige expiratie afwachten.
-  * **Trailing / EMA Kruising Exit**: Actieve bewaking die de positie sluit zodra de snelle `EMA5` onder de signaallijn `EMA13` duikt om een opgebouwde winst veilig te stellen.
+  * **70% van Max Winst (Aanbevolen)**: Sluit credit spreads (Bull Put) zodra 70% van de ontvangen premie binnen is (terugkopen op 30% van de openingspremie), en sluit debit spreads (Bull Call) bij 70% van de maximale spreadwinst.
+  * **60% (Snel Winst Nemen)**: Sneller winst verzilveren en kapitaal weer vrijmaken bij beweeglijke markten.
+  * **100% (Tot Expiratie Laten Lopen)**: De volledige looptijd tot expiratie uitzitten.
+  * **Trailing Momentum Exit**: Actieve bewaking die de positie automatisch sluit zodra de kortetermijntrend afzwakt, om een opgebouwde winst definitief veilig te stellen.
 
 ### 🛡️ Kapitaalbescherming & Aanwijzingsdekking (Expander)
 * **🛡️ Ex-Dividend Toewijzingsfilter**: Schakel dit vinkje in om automatisch alle optiecontracten uit te sluiten die acute toewijzingsdreiging vertonen rond een naderende ex-dividend datum (`🚨 EX-DIV ARBITRAGE` of `⚠️ EX-DIV RISICO`).
@@ -101,8 +101,8 @@ Moet je na het opstarten of bij het kiezen van een strategie verplicht op deze k
 * **Wat doet deze knop?**
   Het programma start na het openen **volledig automatisch** op in de **Auto-Optimalisatie** stand. In plaats van alle aandelen met één generieke sidebar-instelling te scannen, kijkt het systeem naar het specifieke gedrag van elk aandeel:
   * **Aandeel-specifieke parameters**: Gebruikt automatisch de meest winstgevende Expected Move buffer (bijv. 1.10x voor lage volatiliteit vs. 1.65x voor snelle groeiers zoals NVDA), de optimale spread-breedte ($5, $10 of $15) en het ideale DTE-venster.
-  * **Strikte Horizon-Bescherming (30–75 DTE vs. Week)**: Wanneer je kiest voor het **Maand-profiel (30–75 DTE)** of handmatig een DTE-ondergrens $\ge 28$ dagen instelt, respecteert het systeem jouw gekozen tijdshorizon onverbiddelijk. De scanner overschrijft je maandhorizon nooit met kortere weekprofielen (14–25 DTE uit eerdere sweeps). Zo voorkom je dat een scan ten onrechte 100% afgekeurd wordt op te korte marktexpiraties.
-  * **Auto-Refresh bij veroudering (>30 dagen)**: Is een aandeel nieuw of is de laatste optimalisatiesweep ouder dan 30 dagen? De scanner voert tijdens het scannen direct een snelle achtergrond-sweep uit (15–20 seconden) en slaat het nieuwe optimum permanent op in `stock_profiles.json`.
+  * **Strikte Horizon-Bescherming (30–75 DTE vs. Week)**: Wanneer je kiest voor het **Maand-profiel (30–75 DTE)** of handmatig een looptijd van minimaal 28 dagen instelt, respecteert het systeem jouw gekozen tijdshorizon onverbiddelijk. De scanner overschrijft je maandhorizon nooit met kortere weekprofielen (14–25 dagen uit eerdere sweeps). Zo voorkom je dat een scan ten onrechte 100% afgekeurd wordt op te korte marktexpiraties.
+  * **Auto-Refresh bij veroudering (>30 dagen)**: Is een aandeel nieuw of is het opgeslagen profiel ouder dan 30 dagen? De scanner voert tijdens het scannen direct een snelle achtergrond-optimalisatie uit (15–20 seconden) en slaat het nieuwe optimum permanent op.
   * **Dynamisch Winstdoel in Portfoliobewaking (Tab 0)**: Spreads geopend met een strakke EM krijgen automatisch een winstdoel van **50%** (sneller borgen i.v.m. delta-risico), terwijl diepe spreads (>= 1.60x EM) automatisch worden vastgehouden tot **75% à 80%** winst.
 * **Uitschakelen**: Wil je handmatig met de sliders experimenteren zonder dat het programma aandeel-profielen toepast? Klik eenmaal op `🟢 🎯 Auto-Optimalisatie: ACTIEF`; de knop verandert direct in `⚪ ⚙️ Auto-Optimalisatie: UIT` en de scanner volgt exact jouw handmatige sliders.
 
@@ -318,8 +318,8 @@ De **AG Score** is de centrale kwaliteitsmeter van het programma. Het berekent e
 3. **ATR(10) (Average True Range)**: Berekent de gemiddelde dagelijkse koersuitslag in dollars over de afgelopen 10 dagen.
 4. **TTP (Time-to-Profit / Dagen tot Winst)**: Berekent hoeveel dagen het aandeel er op basis van zijn dagelijkse beweeglijkheid over zal doen om het winstdoel te bereiken.
 5. **Expected Move (1SD / EM68 & EM85)**: De statistisch verwachte bandbreedte waarin het aandeel zal blijven tot expiratie.
-6. **Bollinger Bands vs. Keltner Channels Squeeze (John Carter Squeeze)**: Meet of de volatiliteit tijdelijk is samengeperst (`Upper_BB < Upper_KC` en `Lower_BB > Lower_KC`). Zodra de bands weer buiten het Keltner-kanaal treden, ontlaadt de geaccumuleerde potentiële energie zich in een krachtige trendbeweging (`Squeeze_Fire_Up`).
-7. **Korte Termijn EMA Ribbon (EMA 5, EMA 13, EMA 34) & Momentum Exit**: De wisselwerking tussen de snelle EMA5, signaallijn EMA13 en trendanker EMA34. Een opwaartse kruising van EMA5 over EMA13 boven de EMA34 valideert een vroege pullback entry; een neerwaartse kruising (`EMA5 < EMA13`) signaleert afnemend momentum en activeert de bewakende exit om behaalde winst direct te borgen.
+6. **Marktcompressie & Uitbraak (Squeeze)**: Meet of de koersbeweeglijkheid tijdelijk extreem is samengeperst (zoals een ingedrukte springveer). Zodra de koers uit deze samendrukking losbreekt, ontlaadt de opgebouwde energie zich in een krachtige, directionele trendbeweging.
+7. **Kortetermijn Trendlijnen & Momentum Exit**: De wisselwerking tussen de snelle trendlijn (5 dagen), de signaallijn (13 dagen) en het langetermijn trendanker (34 dagen). Een opwaartse kruising valideert een vroege instapkans bij herstel; een neerwaartse kruising signaleert afnemend momentum en activeert het advies om opgebouwde winst direct veilig te stellen.
 
 ---
 
@@ -490,21 +490,20 @@ Het programma beschikt over een geavanceerde **Portfolio Bewakingsmodule** (`�
  - Losse optiebenen worden automatisch gebundeld tot hun oorspronkelijke combinaties (zoals Bull Put Spreads, Bear Call Spreads, Iron Condors of losse opties).
 
 
-2. **OmniTrader BarToBarAdvanced Versie 2 Integratie (`STPB2BADV2CT`)**:
- AntiGravity ondersteunt het geavanceerde **OmniTrader BarToBar exit-model** inclusief de Coral Trend filter:
- - **`InitMult = 7.0`**: Startdrempel van de stop ingesteld op 7x de gemiddelde dagelijkse beweging (ATR) onder/boven de instapkoers.
-- **`ATR_Periods = 7`**: Volatiliteitsperiode gebaseerd op 7-daagse High-Low beweging.
-- **`P-Factor = 0.4`**: Dynamische trailing factor die de stop stapsgewijs optrekt bij stijgende koersen.
-- **`PctCloseUp / PctCloseDown = 0.25%`**: Dagelijkse percentage-aanpassing op basis van sluitkoersen.
-- **3-Bar Versnelde Risicoreductie**: Zodra de koers 3 opeenvolgende beursdagen boven de instapkoers (`EntryPrice`) sluit, wordt de stop automatisch opgetrokken naar minimaal `EntryPrice * 0.985` om het risico volledig af te dekken.
-- **Coral Trend Filter (`MarketState`)**: Een exit wordt geactiveerd zodra de sluitkoers door het stop-niveau zakt én de Coral Trend balk **Oranje (`Marketstate = 0`)** kleurt.
-3. **📈 Interactive Plotly Grafiek & Live Koerslijnen**:
-Bij elke positie kun je de interactieve koersgrafiek openen:
-- **🩵 Lichtblauwe Traplijn (`#00bfff`)**: De dynamische OmniTrader BarToBar trailing stop die vloeiend vanaf het instapmoment (`SignalStartBar`) omhoog klimt.
-- **🔵 Staalblauwe Lijn (`Entry Price`)**: De uitoefen-/instapkoers van de positie.
-- **🟢 Groene Gestreepte Lijn (`-- Winstdoel Target`)**: Beweegt live mee met de door jou ingevoerde Winstdoel Koers.
-- **🔴 Rode Gestreepte Lijn (`-- Handmatige Stoploss`)**: Beweegt live mee met de door jou ingevoerde Stoploss Koers.
-- **MarketState Balk**: Onderste trendbalk (Groen = Bullish, Oranje = Bearish).
+2. **OmniTrader Bar-tot-Bar Dynamische Uitstap-Integratie**:
+  AntiGravity ondersteunt het beproefde **OmniTrader Bar-tot-Bar exitmodel** inclusief de trendbalk-beveiliging:
+  - **Ruime Startbuffer**: De initiële stoploss ligt op 7x de gemiddelde dagelijkse koersuitslag (ATR) onder of boven de openingskoers, zodat normale dagelijkse ruis de trade niet vroegtijdig uitstopt.
+  - **7-Daagse Volatiliteitsmeting**: Berekent de bewegingsruimte op basis van de koersgrafiek over de afgelopen 7 handelsdagen.
+  - **Dynamisch Meelopende Trailing Stop**: Naarmate de koers verder in jouw voordeel beweegt, trekt de software de stop automatisch stapsgewijs omhoog om opgebouwde winst te borgen.
+  - **3-Dagen Snelle Risico-Afdekking**: Sluit de koers drie opeenvolgende beursdagen boven de openingsprijs? Dan trekt het systeem de stop direct op tot vlak onder de instapkoers, waardoor het neerwaartse risico vrijwel volledig is weggenomen.
+  - **Trendfilter Bevestiging**: Een sluitingssignaal wordt pas definitief geactiveerd als de koers door het stopniveau breekt én de trendbalk oranje kleurt (bevestigde trendomkeer).
+3. **📈 Interactieve Koersgrafiek & Live Signaallijnen**:
+Bij elke positie kun je de visuele koersgrafiek openen:
+- **🩵 Lichtblauwe Traplijn**: De dynamische trailing stop die vanaf de instapdag vloeiend mee omhoog klimt.
+- **🔵 Staalblauwe Lijn**: De instapkoers of uitoefenprijs van de positie.
+- **🟢 Groene Gestreepte Lijn**: Jouw gekozen Winstdoel (Take Profit).
+- **🔴 Rode Gestreepte Lijn**: Jouw gekozen Stoploss-niveau.
+- **Trendbalk**: Onderste kleurbalk (Groen = Stijgende Trend, Oranje = Dalende Trend).
 4. **🎯 Handmatige Winst- & Verliessimulator (Koers X / Y)**:
 - Vul een gewenste **Winstdoel Koers** in om direct de verwachte dollarwinst te zien (bijv. `+ $200.00`).
 - Vul een gewenste **Stoploss Koers** in om direct het verwachte dollarverlies te zien (bijv. `- $120.00`).
@@ -579,17 +578,17 @@ Met de knop **"🔬 Vergelijk Huidige Sidebar vs. Standaard Benchmark"** test he
 Het dashboard toont direct:
 * Welke instelling globaal het meest winstgevend is (**Winst/Trade**, **Hit Rate %**, **Totale Portfoliowinst** en **Geen-BEP-Touch Rate**).
 * **1-Klik Synchronisatie**: Met de knop **"⚡ Pas Beste Instellingen Toe op de Linker Sidebar"** worden alle filters in de linker sidebar met één klik veilig overgezet naar de winnende instelling.
-* **Aandeel-Specifieke Optimalisatie**: Als bepaalde aandelen beter presteren met specifieke instellingen, worden deze profielen opgeslagen (`optimal_stock_configs`). De scanner in Tab 1 past deze instellingen dan automatisch toe per aandeel!
+* **Aandeel-Specifieke Optimalisatie**: Als bepaalde aandelen beter presteren met specifieke instellingen, worden deze profielen permanent opgeslagen. De scanner in Tab 1 past deze instellingen dan automatisch toe per aandeel!
 
 ### 🔥 5. Dual-Trigger Signaal Backtester & Bewakende Exits (10 Trades per Aandeel)
 Naast de reguliere vaste-stappen backtest ondersteunt het systeem een geavanceerde **Dual-Trigger Backtest Engine**:
 * **Historische Trigger-Detectie**: In plaats van elke 21 beursdagen geforceerd een spread te openen, scant het algoritme de historische daggrafieken op **werkelijke Squeeze Breakout en Trend Pullback signalen** (met minimaal 4 beursdagen scheiding tussen opeenvolgende entries).
 * **10 Trades per Aandeel**: Het aantal te evalueren setups staat standaard op **10 trades per aandeel**, waardoor je een statistisch betrouwbare steekproef krijgt over recente marktcycli.
-* **Dagelijkse Black-Scholes Simulatie**: De optiewaarde, delta en het theta-tijdswaardeverval worden dag-op-dag herrekend via een gesloten Black-Scholes model.
+* **Dagelijkse Simulatie**: De optiewaarde, delta en het tijdswaardeverval worden dag-op-dag herrekend via een gesloten waarderingsmodel.
 * **Actieve Exit Bewaking**:
-  * **Profit Target Hit (60%, 70%, 100%)**: Sluit de trade direct zodra het gekozen percentage van de maximale winst wordt aangetikt.
-  * **Momentum Verlies Lock-in (`EMA5 < EMA13`)**: Als het aandeel verzwakt en de positie staat op winst (>0%), sluit het systeem de trade direct om winst vast te klikken.
-* **Nieuwe KPI: Gemiddelde Looptijd (dagen)**: Toont direct hoe snel het kapitaal weer vrijkomt. Bij een 70% profit target op Bull Call Spreads daalt de gemiddelde bewaartijd bijvoorbeeld van 21 naar **13.7 dagen** met een winstkans van 80%+.
+  * **Winstdoel Bereikt (60%, 70%, 100%)**: Sluit de trade direct zodra het gekozen percentage van de maximale winst wordt aangetikt.
+  * **Vroegtijdige Winstborging bij Trendafzwakking**: Als het aandeel verzwakt en de positie staat op winst, sluit het systeem de trade direct om de winst vast te klikken.
+* **Nieuwe KPI: Gemiddelde Looptijd (dagen)**: Toont direct hoe snel het kapitaal weer vrijkomt. Bij een 70% profit target op Bull Call Spreads daalt de gemiddelde bewaartijd bijvoorbeeld van 21 naar **13,7 dagen** met een winstkans van 80%+.
 
 ---
 
@@ -813,9 +812,9 @@ In Tab 2 (Resultaten) vind je geavanceerde quant-indicatoren gebaseerd op de twe
  - `🎯 PINNING`: Grote partijen verdedigen zowel calls als puts rond de huidige koers (ideaal voor Iron Condors).
  - `🔻 DOWNTREND`: Zware verkoopdruk en afbraak van steun.
 2. **Vested Value Muren (marge x openstaande contracten)**:
- Toont de werkelijke institutionele verdedigingslijnen (`call_vested_wall` en `put_vested_wall`), gefilterd tegen illiquide uitschieters.
+ Toont de werkelijke institutionele verdedigingslijnen (institutionele Call- en Put-muren), gefilterd tegen illiquide uitschieters.
 3. **Breakeven Dagelijkse Beweging (dagelijkse speling dS_BE)**:
- Berekend uit de optieformule: dS_BE = wortel uit (2 x dagelijkse tijdswinst / koersrisico). Geeft exact aan hoeveel dollar het aandeel per dag mag bewegen voordat het tijdswaardeverval (Theta) omslaat in verlies (Gamma).
+ Geeft in dollars exact de veilige daggrens aan: hoeveel dollar mag het aandeel vandaag bewegen voordat het tijdswaardeverval (Theta) omslaat in verlies door koersbeweging (Gamma).
 4. **Quant Trade Verdict**:
  - **🟢 EXECUTE**: Positieve Expected Value (EV groter dan 0) én de winstkans (PoP_adj) minimaal 65% is.
  - **🟡 SPEC**: Kansrijk maar hogere volatiliteit.
@@ -837,58 +836,58 @@ De kolommen zijn logisch onderverdeeld in 5 functionele clusters:
 #### Cluster 1: Het Quant Oordeel & Wiskundig Voordeel (De Beslissers)
 | Kolom | Wat betekent het? | Gewenste Richtwaarde | Hoe gebruik je dit? |
 | :--- | :--- | :--- | :--- |
-| **`trade_verdict`** | Het integrale oordeel van de Quant Engine: `🟢 EXECUTE`, `🟡 SPEC`, `⚠️ CLIFF` of `❌ REJECT`. | **`🟢 EXECUTE`** | **Eerste filter**: Handel bij voorkeur uitsluitend trades met `🟢 EXECUTE`. Dit garandeert dat zowel de wiskundige winstverwachting (EV groter dan 0) als de gecorrigeerde winstkans (winstkans PoP_adj minimaal 65%) groen zijn. |
-| **`expected_value` (EV)** | De **wiskundige verwachte winst in dollars** per trade over duizend herhalingen na aftrek van transactiekosten: (winstkans x winst) - (verlieskans x verlies) - kosten. | **meer dan +$20,00** | Dit is het casino-voordeel: als dit getal groter is dan $0, speel je met de statistiek aan jouw kant. Is EV negatief? Nooit handelen! |
-| **`pop_adj` (%)** | De **Bayesiaans gecorrigeerde winstkans**. Neemt de theoretische formule en telt daar de bonus/straf bij op van institutionele muren, marketmaker pinning en markttrend. | **>= 70.0%** (Credit Spreads)<br>**>= 50.0%** (Debet Spreads) | Veel betrouwbaarder dan de standaard BSM PoP omdat rekening wordt gehouden met de werkelijke verdedigingslinies van optieschrijvers. |
-| **`pop` (%)** | De klassieke wiskundige **Black-Scholes Probability of Profit**. | minimaal 60,0% | Dient als referentiepunt om te zien hoeveel bonus de trade krijgt ten opzichte van de standaard formule. |
-| **`AG_Score`** | De **hoofdscore van AntiGravity**. Weegt PoP, EV, BEP-afstand, kapitaaldekking, liquiditeit en markttrend integraal af in één getal. | **80,0 of hoger** (hoe hoger, hoe beter) | Ideaal om de tabel direct van hoog naar laag op te sorteren (`Ranking`). |
-| **`cue` (Regime Cue)** | Het marktregime op basis van openstaande contracten (verandering in openstaande contracten Delta OI): `🚀 UPTREND`, `🎯 PINNING`, `🔻 DOWNTREND`, `⚠️ CORR DOWN`, `📈 CORR UP`. | Passend bij strategie | Zorgt dat je strategie synchroon loopt met de markt: Bull Put / Bull Call bij `UPTREND`, Iron Condor bij `PINNING`. |
-| **`dS_BE` ($)** | **Breakeven Dagelijkse Koersuitslag**: dS_BE = wortel uit (2 x dagelijkse tijdswinst / koersrisico). Geeft in dollars aan hoeveel het aandeel per dag mag bewegen voordat het tijdvoordeel omslaat in verlies. | **minimaal 1,0x de dagelijkse beweging (ATR)** | Zie de diepgaande uitleg hieronder in Sectie B! |
-| **`gamma_theta_ratio`** | De verhouding tussen koersversnellingsrisico (Gamma) en dagelijks tijdswaardeverval (Theta). | **<= 0.08** (Credit Spreads)<br>**0,10 tot 0,25** (Debet Spreads) | Zie de diepgaande uitleg hieronder in Sectie B! |
+| **Kwantitatief Oordeel (Verdict)** | Het integrale oordeel van de Quant Engine: `🟢 EXECUTE`, `🟡 SPEC`, `⚠️ CLIFF` of `❌ REJECT`. | **`🟢 EXECUTE`** | **Eerste filter**: Handel bij voorkeur uitsluitend trades met `🟢 EXECUTE`. Dit garandeert dat zowel de wiskundige winstverwachting (EV groter dan 0) als de gecorrigeerde winstkans (winstkans PoP_adj minimaal 65%) groen zijn. |
+| **Verwachte Dollaropbrengst (EV)** | De **wiskundige verwachte winst in dollars** per trade over duizend herhalingen na aftrek van transactiekosten: (winstkans x winst) - (verlieskans x verlies) - kosten. | **meer dan +$20,00** | Dit is het casino-voordeel: als dit getal groter is dan $0, speel je met de statistiek aan jouw kant. Is EV negatief? Nooit handelen! |
+| **Gecorrigeerde Winstkans (PoP %)** | De **Bayesiaans gecorrigeerde winstkans**. Neemt de theoretische formule en telt daar de bonus/straf bij op van institutionele muren, marketmaker pinning en markttrend. | **>= 70.0%** (Credit Spreads)<br>**>= 50.0%** (Debet Spreads) | Veel betrouwbaarder dan de standaard BSM PoP omdat rekening wordt gehouden met de werkelijke verdedigingslinies van optieschrijvers. |
+| **Theoretische Winstkans (PoP %)** | De klassieke wiskundige **Black-Scholes Probability of Profit**. | minimaal 60,0% | Dient als referentiepunt om te zien hoeveel bonus de trade krijgt ten opzichte van de standaard formule. |
+| **AntiGravity Score (AG Score)** | De **hoofdscore van AntiGravity**. Weegt PoP, EV, BEP-afstand, kapitaaldekking, liquiditeit en markttrend integraal af in één getal. | **80,0 of hoger** (hoe hoger, hoe beter) | Ideaal om de tabel direct van hoog naar laag op te sorteren (`Ranking`). |
+| **Marktregime (Regime Cue)** | Het marktregime op basis van openstaande contracten (verandering in openstaande contracten Delta OI): `🚀 UPTREND`, `🎯 PINNING`, `🔻 DOWNTREND`, `⚠️ CORR DOWN`, `📈 CORR UP`. | Passend bij strategie | Zorgt dat je strategie synchroon loopt met de markt: Bull Put / Bull Call bij `UPTREND`, Iron Condor bij `PINNING`. |
+| **Breakeven Dagschommeling (dS_BE $)** | **Veilige Dagelijkse Koersgrens**: Geeft in dollars exact aan hoeveel het aandeel vandaag mag bewegen voordat het tijdvoordeel omslaat in verlies. | **minimaal 1,0x de dagelijkse beweging (ATR)** | Zie de diepgaande uitleg hieronder in Sectie B! |
+| **Gamma/Theta Risicoratio** | De verhouding tussen koersversnellingsrisico (Gamma) en dagelijks tijdswaardeverval (Theta). | **<= 0.08** (Credit Spreads)<br>**0,10 tot 0,25** (Debet Spreads) | Zie de diepgaande uitleg hieronder in Sectie B! |
 
 ---
 
 #### Cluster 2: Kapitaalbescherming & Toewijzingsveiligheid (Early Assignment)
 | Kolom | Wat betekent het? | Gewenste Richtwaarde | Hoe gebruik je dit? |
 | :--- | :--- | :--- | :--- |
-| **`assignment_risk_badge`** | Toont de veiligheidsstatus van de geschreven poot: `🟢 VEILIG (Volledig Gedekt)`, `⚠️ GEEN CASH-DEKKING`, `🚨 DIRECT SLUITEN`, `🛡️ GEEN AANWIJZING`, `🚨 EX-DIV ARBITRAGE`, `⚠️ EX-DIV RISICO` of `ℹ️ Ex-Div over Xd`. | **`🟢 VEILIG`** of **`🛡️ GEEN AANWIJZING`** | Voorkomt dat je verrast wordt door verplichte levering of toewijzing van 100 aandelen per contract. |
-| **`ex_div_date`** | De eerstvolgende **ex-dividend datum** en het dividendbedrag van het onderliggende aandeel (opgehaald via IBKR). | Geen ex-div vóór expiratie | Toont direct wanneer het aandeel ex-dividend gaat. Cruciaal bij geschreven calls (Bear Call / Covered Call)! |
-| **`notional_assignment_capital`** | Het **totale cash-kapitaal** dat nodig is als de geschreven put wordt aangewezen: Uitoefenprijs x 100 x Aantal contracten. | Binnen de beschikbare cash op je rekening | Vergelijk dit direct met je rekeningsaldo. Heb je minder cash dan dit bedrag? Kies dan voor een Bull Call debet spread! |
-| **`extrinsic_val_short` ($)** | De **resterende zuivere tijdswaarde** van de geschreven poot. | **meer dan $0,25 (Veilig)**<br>0,10 dollar of minder (Gevarenzone)<br>0,05 dollar of minder (Aanwijzingsalarm) | Zolang de tijdswaarde ruim boven $0,10 ligt, zal de tegenpartij de optie vrijwel nooit uitoefenen omdat hij dan zijn eigen tijdswaarde weggooit. |
+| **Aanwijzingsveiligheid (Status)** | Toont de veiligheidsstatus van de geschreven poot: `🟢 VEILIG (Volledig Gedekt)`, `⚠️ GEEN CASH-DEKKING`, `🚨 DIRECT SLUITEN`, `🛡️ GEEN AANWIJZING`, `🚨 EX-DIV ARBITRAGE`, `⚠️ EX-DIV RISICO` of `ℹ️ Ex-Div over Xd`. | **`🟢 VEILIG`** of **`🛡️ GEEN AANWIJZING`** | Voorkomt dat je verrast wordt door verplichte levering of toewijzing van 100 aandelen per contract. |
+| **Ex-Dividend Datum** | De eerstvolgende **ex-dividend datum** en het dividendbedrag van het onderliggende aandeel (opgehaald via IBKR). | Geen ex-div vóór expiratie | Toont direct wanneer het aandeel ex-dividend gaat. Cruciaal bij geschreven calls (Bear Call / Covered Call)! |
+| **Vereist Toewijzingskapitaal (Cash $)** | Het **totale cash-kapitaal** dat nodig is als de geschreven put wordt aangewezen: Uitoefenprijs x 100 x Aantal contracten. | Binnen de beschikbare cash op je rekening | Vergelijk dit direct met je rekeningsaldo. Heb je minder cash dan dit bedrag? Kies dan voor een Bull Call debet spread! |
+| **Resterende Tijdswaarde (Extrinsiek $)** | De **resterende zuivere tijdswaarde** van de geschreven poot. | **meer dan $0,25 (Veilig)**<br>0,10 dollar of minder (Gevarenzone)<br>0,05 dollar of minder (Aanwijzingsalarm) | Zolang de tijdswaarde ruim boven $0,10 ligt, zal de tegenpartij de optie vrijwel nooit uitoefenen omdat hij dan zijn eigen tijdswaarde weggooit. |
 
 ---
 
 #### Cluster 3: Prijzen, Liquiditeit & Winstpotentieel
 | Kolom | Wat betekent het? | Gewenste Richtwaarde | Hoe gebruik je dit? |
 | :--- | :--- | :--- | :--- |
-| **`b_l_verschil` ($)** | Het verschil tussen de bied- en laatprijs op de spread (Bid-Ask Spread). | **maximaal $0,05 tot $0,08** | **Cruciale liquiditeitsfilter!** Een krap verschil betekent dat de optie liquide is en je order direct tegen een eerlijke prijs gevuld wordt zonder verborgen verlies. |
-| **`spread_mid_abs` ($)** | De theoretische middenprijs van de spread. | Afhankelijk van strategie | Dit is je basisprijs voor de limietorder in TWS. |
-| **`spread_ask_abs` ($)** | De laatprijs (Natural Ask). | - | Geeft inzicht in de wijdte van de markt. |
-| **`max_profit` ($)** | De **maximale winst in dollars per contract** als de trade 100% succesvol verloopt. | minimaal $50 per contract | Bij credit spreads is dit de ontvangen premie x 100; bij debet spreads is dit (spreadbreedte - betaalde inleg) x 100. |
-| **`sluitingswinst` ($)** | De winst als je de trade vroegtijdig sluit op 80% van de maximale winst. | - | Onze vuistregel: sluit credit spreads zodra 80% van de winst binnen is om expiratierisico te vermijden. |
-| **`TTP (D)`** | *Time To Profitability*: het geschatte aantal kalenderdagen tot de positie 80% van zijn winst heeft bereikt. | 10 - 25 dagen | Hoe lager, hoe sneller het geld weer vrijkomt voor een volgende trade. |
-| **`TEI Score`** | *Theta Efficiency Index*: verhouding tussen dagelijkse tijdswinst en maximaal risico. | minimaal 1,0 | Meet hoe efficiënt het kapitaal rendeert per verstreken dag. |
+| **Bied-Laat Verschil (Spread $)** | Het verschil tussen de bied- en laatprijs op de spread (Bid-Ask Spread). | **maximaal $0,05 tot $0,08** | **Cruciale liquiditeitsfilter!** Een krap verschil betekent dat de optie liquide is en je order direct tegen een eerlijke prijs gevuld wordt zonder verborgen verlies. |
+| **Theoretische Middenprijs ($)** | De theoretische middenprijs van de spread. | Afhankelijk van strategie | Dit is je basisprijs voor de limietorder in TWS. |
+| **Laatprijs (Natural Ask $)** | De laatprijs (Natural Ask). | - | Geeft inzicht in de wijdte van de markt. |
+| **Maximale Winst ($)** | De **maximale winst in dollars per contract** als de trade 100% succesvol verloopt. | minimaal $50 per contract | Bij credit spreads is dit de ontvangen premie x 100; bij debet spreads is dit (spreadbreedte - betaalde inleg) x 100. |
+| **Sluitingswinst (80% Winstdoel $)** | De winst als je de trade vroegtijdig sluit op 80% van de maximale winst. | - | Onze vuistregel: sluit credit spreads zodra 80% van de winst binnen is om expiratierisico te vermijden. |
+| **Geschatte Dagen tot Winst (TTP)** | *Time To Profitability*: het geschatte aantal kalenderdagen tot de positie 80% van zijn winst heeft bereikt. | 10 - 25 dagen | Hoe lager, hoe sneller het geld weer vrijkomt voor een volgende trade. |
+| **Tijdsefficiëntie Index (TEI)** | *Theta Efficiency Index*: verhouding tussen dagelijkse tijdswinst en maximaal risico. | minimaal 1,0 | Meet hoe efficiënt het kapitaal rendeert per verstreken dag. |
 
 ---
 
 #### Cluster 4: Veiligheidsbuffers & Institutionele Niveaus
 | Kolom | Wat betekent het? | Gewenste Richtwaarde | Hoe gebruik je dit? |
 | :--- | :--- | :--- | :--- |
-| **`BEP` ($)** | Het **Break-Even Point** van de combinatie bij expiratie. | - | De koers waarop winst exact omslaat in verlies. |
-| **`bep_afstand_pct` (%)** | De **veiligheidsmarge in procenten**: de afstand tussen de huidige aandelenkoers en het Break-Even Point. | **minimaal 5,0% tot 8,0%** (Credit Spreads) | Dit is je stootkussen: het aandeel mag met dit percentage tegen je in bewegen zonder dat je een cent verliest! |
-| **`call_vested_wall` / `put_vested_wall`** | De **institutionele verdedigingsmuren**: strikes met de hoogste kapitaalallocatie van grote optieschrijvers (marge x openstaande contracten). | Short strike achter de muur | Biedt enorme bescherming: grote partijen verdedigen deze niveaus fel om geen marginedekking te verliezen. |
-| **`supports` / `resistances`** | Automatisch berekende technische steun- en weerstandsniveaus uit koersgrafieken. | - | Controleer of de short strike onder een sterke steun (Bull Put) of boven een weerstand (Bear Call) ligt. |
+| **Break-Even Punt (BEP $)** | Het **Break-Even Point** van de combinatie bij expiratie. | - | De koers waarop winst exact omslaat in verlies. |
+| **Afstand tot Breakeven (Buffer %)** | De **veiligheidsmarge in procenten**: de afstand tussen de huidige aandelenkoers en het Break-Even Point. | **minimaal 5,0% tot 8,0%** (Credit Spreads) | Dit is je stootkussen: het aandeel mag met dit percentage tegen je in bewegen zonder dat je een cent verliest! |
+| **Institutionele Call / Put Muren** | De **institutionele verdedigingsmuren**: strikes met de hoogste kapitaalallocatie van grote optieschrijvers (marge x openstaande contracten). | Short strike achter de muur | Biedt enorme bescherming: grote partijen verdedigen deze niveaus fel om geen marginedekking te verliezen. |
+| **Steun- en Weerstandsniveaus** | Automatisch berekende technische steun- en weerstandsniveaus uit koersgrafieken. | - | Controleer of de short strike onder een sterke steun (Bull Put) of boven een weerstand (Bear Call) ligt. |
 
 ---
 
 #### Cluster 5: Grieken & Technische Indicatoren
 | Kolom | Wat betekent het? | Gewenste Richtwaarde | Hoe gebruik je dit? |
 | :--- | :--- | :--- | :--- |
-| **`delta` / `delta_sell`** | Richtingsgevoeligheid en benadering van de uitoefenkans van de verkochte poot. | `delta_sell` tussen **0,10 en 0,25** | Een delta van 0.15 op de short put betekent circa 85% kans dat de optie waardeloos afloopt (in jouw voordeel). |
-| **`theta` ($)** | Het dagelijkse tijdswaardeverval in dollars. | Positief bij credit spreads (meer dan +$0,05 per dag) | Elke ochtend dat je wakker wordt, is dit bedrag automatisch aan winst bijgeschreven door het verstrijken van de tijd. |
-| **`gamma`** | De versnelling van Delta bij een koersbeweging van 1 dollar. | Negatief bij credit spreads | Dient zo dicht mogelijk bij 0 te liggen om koersschokken op te vangen. |
-| **`dte`** | Dagen tot expiratie. | **14 tot 45 dagen** | De ideale looptijd: Theta decay versnelt maximaal, terwijl er voldoende tijd is om te managen. |
-| **`EMA_Cross` / `Stoch_RSI`** | Technische momentum- en trendindicatoren (EMA 8/20/50 en Stochastics). | `BULLISH` of `CROSS_UP` bij stijgende trades | Bevestigt dat de onderliggende trend de trade ondersteunt. |
+| **Delta (Richtingsgevoeligheid)** | Richtingsgevoeligheid en benadering van de uitoefenkans van de verkochte poot. | `delta_sell` tussen **0,10 en 0,25** | Een delta van 0.15 op de short put betekent circa 85% kans dat de optie waardeloos afloopt (in jouw voordeel). |
+| **Theta (Dagelijkse Tijdswinst $)** | Het dagelijkse tijdswaardeverval in dollars. | Positief bij credit spreads (meer dan +$0,05 per dag) | Elke ochtend dat je wakker wordt, is dit bedrag automatisch aan winst bijgeschreven door het verstrijken van de tijd. |
+| **Gamma (Koersversnelling)** | De versnelling van Delta bij een koersbeweging van 1 dollar. | Negatief bij credit spreads | Dient zo dicht mogelijk bij 0 te liggen om koersschokken op te vangen. |
+| **Looptijd (Dagen tot Expiratie - DTE)** | Dagen tot expiratie. | **14 tot 45 dagen** | De ideale looptijd: Theta decay versnelt maximaal, terwijl er voldoende tijd is om te managen. |
+| **Trend- en Momentum Indicatoren** | Technische momentum- en trendindicatoren (EMA 8/20/50 en Stochastics). | `BULLISH` of `CROSS_UP` bij stijgende trades | Bevestigt dat de onderliggende trend de trade ondersteunt. |
 
 ---
 
@@ -896,7 +895,7 @@ De kolommen zijn logisch onderverdeeld in 5 functionele clusters:
 
 Veel handelaren vinden Grieken abstract. Hieronder volgt de **praktische, wiskundige vertaling** naar dagelijkse handelsbeslissingen:
 
-#### 1. Wat is de Gamma/Theta Ratio (`gamma_theta_ratio`)?
+#### 1. Wat is de Gamma/Theta Risicoratio?
 In de optiewetenschap (Black-Scholes) vechten twee krachten constant tegen elkaar:
 > *In de optietheorie staan twee krachten recht tegenover elkaar: de dagelijkse tijdswinst (Theta) tegenover het risico van koersbewegingen (Gamma).*
 * **Theta (Theta)** is de **tijd**: elke dag tikt er winst binnen zolang de koers stilstaat.
@@ -915,15 +914,15 @@ De verhouding Gamma / Theta meet: **"Hoeveel koersversnellingsrisico loop ik voo
 ---
 
 #### 2. Wat is de Breakeven Dagelijkse Beweging (dS_BE in dollars)?
-> **Berekening van de veilige daggrens:** `dS_BE = wortel uit (2 x dagelijkse tijdswinst / koersrisico)`
+> **De Veilige Dagschommeling:** Meet exact hoeveel dollar het aandeel per beursdag mag bewegen voordat de dagelijkse tijdswinst omslaat in verlies.
 Dit is één van de meest waardevolle getallen op het hele scherm. Het geeft exact aan: **"Hoeveel dollar mag het aandeel vandaag maximaal bewegen voordat het tijdvoordeel omslaat in verlies?"**
 
 * **Rekenvoorbeeld uit de praktijk**:
- Stel, je overweegt een Bull Put op **NVDA** (koers $125,00):
- - In de kolom staat: `dS_BE = $3.80`.
- - De normale gemiddelde dagelijkse beweging van NVDA (ATR) is bijvoorbeeld $2,50.
- - **Interpretatie**: Omdat dS_BE ($3,80) beduidend groter is dan de normale dagelijkse uitslag ($2,50), bevindt deze trade zich in de **wiskundig veilige winstzone**. Het aandeel kan zijn normale dagelijkse beweging maken zonder dat de optiecombinatie in het rood raakt; de Theta-opbrengst wint het van de koersbeweging!
- - **Waarschuwingssignaal**: Is `dS_BE` veel kleiner dan de normale dagelijkse beweging (bijv. slechts $0,80 bij een dagelijkse beweging van $3,00)? Dan is de spread te krap of te dicht bij de koers, en zal normale dagelijkse marktruis direct tot stress leiden.
+  Stel, je overweegt een Bull Put op **NVDA** (koers $125,00):
+  - In de kolom staat een veilige daggrens van **$3,80**.
+  - De normale gemiddelde dagelijkse beweging van NVDA (ATR) is bijvoorbeeld $2,50.
+  - **Interpretatie**: Omdat de veilige daggrens ($3,80) beduidend groter is dan de normale dagelijkse uitslag ($2,50), bevindt deze trade zich in de **wiskundig veilige winstzone**. Het aandeel kan zijn normale dagelijkse beweging maken zonder dat de optiecombinatie in het rood raakt; de dagelijkse tijdswinst wint het van de koersbeweging!
+  - **Waarschuwingssignaal**: Is de veilige daggrens veel kleiner dan de normale dagelijkse beweging (bijv. slechts $0,80 bij een dagelijkse beweging van $3,00)? Dan is de spread te krap of te dicht bij de koers, en zal normale dagelijkse marktruis direct tot verlies leiden.
 
 ---
 
@@ -933,9 +932,9 @@ Om niet te verdrinken in alle cijfers, hanteert de AntiGravity methodiek **vier 
 
 ```mermaid
 graph TD
- A["Pilaar A: Quant Voordeel (Verdict = EXECUTE & EV groter dan 0)"] --> B["Pilaar B: Veiligheidsbuffer (PoP minimaal 70% & BEP >= 6%)"]
- B --> C["Pilaar C: Gamma/Theta Balans (dS_BE > ATR & Ratio maximaal 0,08)"]
- C --> D["Pilaar D: Kapitaal & Liquiditeit (Cash gedekt & Bid-Ask maximaal $0,08)"]
+ A["Pilaar A: Wiskundig Voordeel (EXECUTE & Positieve Verwachte Waarde)"] --> B["Pilaar B: Veiligheidsbuffer (Winstkans >= 70% & Buffer >= 6%)"]
+ B --> C["Pilaar C: Tijd- en Risicobalans (Veilige Daggrens & Lage Risicoratio)"]
+ C --> D["Pilaar D: Kapitaal & Liquiditeit (Cash-Gedekt & Krappe Bied-Laat)"]
  D --> E["🚀 PLAATS TRADE MET HOGE ZEKERHEID"]
 ```
 
@@ -945,10 +944,10 @@ graph TD
 
 | Pilaar | Naam | Vereiste Kolomwaarden | Waarom is dit onmisbaar? |
 | :---: | :--- | :--- | :--- |
-| **A** | **Wiskundig Quant Voordeel** | `trade_verdict` = **`🟢 EXECUTE`**<br>`expected_value` meer dan +$20,00 | Garandeert dat het statistische voordeel na transactiekosten aan jouw kant staat. |
-| **B** | **Winstkans & Stootkussen** | `pop_adj` >= 70,0%<br>`bep_afstand_pct` >= 6,0% | De short strike ligt ver genoeg van de koers en wordt beschermd door Vested Value steunmuren. |
-| **C** | **Gamma/Theta Veiligheid** | `gamma_theta_ratio` maximaal 0,08<br>`dS_BE` minimaal 1,0x de dagelijkse beweging (ATR) | Theta tikt sneller aan dan de markt beweegt. Geen expiratie-gevaar (`⚠️ CLIFF`). |
-| **D** | **Kapitaaldekking & Liquiditeit** | `assignment_risk_badge` = **`🟢 VEILIG`**<br>`b_l_verschil` maximaal $0,08 | Je account heeft voldoende cash om een eventuele aanwijzing op te vangen, en de order vult direct zonder slippage. |
+| **A** | **Wiskundig Quant Voordeel** | **`🟢 EXECUTE`**<br>Verwachte Winst meer dan +$20,00 | Garandeert dat het statistische voordeel na transactiekosten aan jouw kant staat. |
+| **B** | **Winstkans & Stootkussen** | Gecorrigeerde Winstkans >= 70,0%<br>Afstand tot Breakeven >= 6,0% | De short strike ligt ver genoeg van de koers en wordt beschermd door Vested Value steunmuren. |
+| **C** | **Gamma/Theta Veiligheid** | Risicoratio maximaal 0,08<br>Veilige Daggrens minimaal 1,0x dagelijkse beweging (ATR) | Theta tikt sneller aan dan de markt beweegt. Geen expiratie-gevaar (`⚠️ CLIFF`). |
+| **D** | **Kapitaaldekking & Liquiditeit** | Aanwijzingsstatus **`🟢 VEILIG`**<br>Bied-Laat verschil maximaal $0,08 | Je account heeft voldoende cash om een eventuele aanwijzing op te vangen, en de order vult direct zonder slippage. |
 
 > ⭐ **Beslisregel Credit Spreads**: Voldoet een Bull Put of Bear Call aan **A + B + C + D**? Dan is de kans op een succesvolle, winstgevende afronding **groter dan 85%**. Dit zijn de 'no-brainer' kwaliteitskandidaten.
 
@@ -959,9 +958,9 @@ graph TD
 | Pilaar | Naam | Vereiste Kolomwaarden | Waarom is dit onmisbaar? |
 | :---: | :--- | :--- | :--- |
 | **A** | **Trend & Marktregime** | `cue` = **`🚀 UPTREND`** (Bull Call)<br>`Sentiment` = **`Bullish`** | Je vecht nooit tegen de markt; je vaart mee op de golven van institutionele optie-aankopen. |
-| **B** | **Wiskundige Winstverwachting** | `expected_value` meer dan +$0,00<br>`pop_adj` tussen 45,0% en 55,0% of hoger | Zelfs bij een lagere nominale winstkans zorgt de hefboom voor een positieve wiskundige verwachting. |
-| **C** | **Asymmetrische Risk/Reward** | `max_profit` / betaalde inleg minimaal 1,0 | Je potentiële winst moet minstens gelijk zijn aan of groter zijn dan je maximale inleg (bijv. $550 winst tegenover $450 inleg). |
-| **D** | **Liquiditeit & Vrijwaring** | `b_l_verschil` maximaal $0,08<br>`assignment_risk_badge` = **`🛡️ GEEN AANWIJZING`** | 100% risicogelimiteerd debet: je kunt *nooit* worden aangewezen om aandelen af te nemen. |
+| **B** | **Wiskundige Winstverwachting** | Verwachte Winst meer dan +$0,00<br>Gecorrigeerde Winstkans rond 50% of hoger | Zelfs bij een lagere nominale winstkans zorgt de hefboom voor een positieve wiskundige verwachting. |
+| **C** | **Asymmetrische Risk/Reward** | Maximale winst / betaalde inleg minimaal 1,0 | Je potentiële winst moet minstens gelijk zijn aan of groter zijn dan je maximale inleg (bijv. $550 winst tegenover $450 inleg). |
+| **D** | **Liquiditeit & Vrijwaring** | Bied-Laat verschil maximaal $0,08<br>Aanwijzingsstatus **`🛡️ GEEN AANWIJZING`** | 100% risicogelimiteerd debet: je kunt *nooit* worden aangewezen om aandelen af te nemen. |
 
 > ⭐ **Beslisregel Debet Spreads**: Zie je een aandeel met beperkt saldo in portefeuille? Kies dan voor een Bull Call die voldoet aan **A + B + C + D**. Zo profiteer je van de opwaartse rit zonder gigantisch marginbeslag.
 
@@ -972,9 +971,9 @@ graph TD
 | Pilaar | Naam | Vereiste Kolomwaarden | Waarom is dit onmisbaar? |
 | :---: | :--- | :--- | :--- |
 | **A** | **Zijwaarts Pinning Regime** | `cue` = **`🎯 FLAT_PINNING`** | Zowel calls als puts worden door marktmakers vastgezet; er is geen uitbraakgevaar. |
-| **B** | **Dubbele Muurbescherming** | Short Call ruim boven call_vested_wall<br>Short Put ruim onder put_vested_wall | De trade ligt ingeklemd tussen twee betonnen muren van grote institutionele partijen. |
-| **C** | **Ruime Breakeven Bandbreedte** | `dS_BE` minimaal 1,5x ATR<br>DTE tussen **20 en 40 dagen** | Voldoende speling voor dagelijkse uitschieters met optimale Theta-acceleratie. |
-| **D** | **Hoge Winstkans & Rendement** | `pop_adj` >= 75,0%<br>`max_profit` >= 100$ | Geeft een ijzersterke statistische buffer met gezonde premieontvangst aan beide zijden. |
+| **B** | **Dubbele Muurbescherming** | Short Call ruim boven de Call-Muur<br>Short Put ruim onder de Put-Muur | De trade ligt ingeklemd tussen twee betonnen muren van grote institutionele partijen. |
+| **C** | **Ruime Breakeven Bandbreedte** | Veilige Daggrens minimaal 1,5x ATR<br>Looptijd tussen 20 en 40 dagen | Voldoende speling voor dagelijkse uitschieters met optimale Theta-acceleratie. |
+| **D** | **Hoge Winstkans & Rendement** | Gecorrigeerde Winstkans >= 75,0%<br>Maximale winst >= $100 | Geeft een ijzersterke statistische buffer met gezonde premieontvangst aan beide zijden. |
 
 ---
 
@@ -984,12 +983,12 @@ graph TD
 
 Als je 's ochtends of 's middags de scan draait, doorloop je simpelweg deze 3 stappen:
 
-1. **Sorteren**: Klik op de kolomkop **`AG_Score`** (of **`expected_value`**) om de tabel van hoog naar laag te sorteren.
+1. **Sorteren**: Klik op de kolomkop **AntiGravity Score (AG Score)** of **Verwachte Dollaropbrengst** om de tabel van hoog naar laag te sorteren.
 2. **Kwalificeren (De A-B-C-D Check)**:
- - Staat er **`🟢 EXECUTE`** bij `trade_verdict`? *(Check A)*
- - Is de winstkans **`pop_adj` minimaal 70%$** en `bep_afstand_pct` ruim? *(Check B)*
- - Ligt de ratio **`gamma_theta_ratio` onder 0,08** en is `dS_BE` groter dan de dagschommeling? *(Check C)*
- - Staat er **`🟢 VEILIG`** bij `assignment_risk_badge` en is `b_l_verschil` krap? *(Check D)*
+ - Staat er **`🟢 EXECUTE`** bij het Kwantitatief Oordeel? *(Check A)*
+ - Is de **Gecorrigeerde Winstkans minimaal 70%** en de Breakeven-afstand ruim? *(Check B)*
+ - Ligt de **Risicoratio onder 0,08** en is de veilige daggrens groter dan de normale dagbeweging? *(Check C)*
+ - Staat er **`🟢 VEILIG`** bij Aanwijzingsstatus en is het Bied-Laat verschil krap? *(Check D)*
 3. **Vinken & Handelen**: Vink de spread aan via **`Selecteer`** en stuur de order via **Tab 3** naar TWS met order type **`Adaptive - Normal`** (bij single-leg opties) of **`LMT`** (bij multi-leg combinaties).
 
 *Met dit model handel je niet op onderbuikgevoel, maar als een professioneel kwantitatief hedgefonds.*
@@ -1007,7 +1006,7 @@ Om het kiezen van een trade voor **iedereen** (van beginner tot ervaren trader) 
 
 ### 🧠 A. Wat betekenen de 8 parameters en welke consequenties hebben ze?
 
-#### 1. Verdict (`trade_verdict`)
+#### 1. Kwantitatief Oordeel (Verdict)
 * **Wat betekent het?** 
  Het eindoordeel van de wiskundige Quant Engine. Dit oordeel toetst of een trade over de **volledige looptijd tot expiratie** een positieve statistische verwachting heeft (EV groter dan $0) én of de winstkans (PoP_adj) minimaal 65% bedraagt.
 * **Mogelijke waarden & Consequenties**:
@@ -1018,7 +1017,7 @@ Om het kiezen van een trade voor **iedereen** (van beginner tot ervaren trader) 
 
 ---
 
-#### 2. AG Score (`AG_Score`, 0.0 tot 100.0)
+#### 2. AntiGravity Score (AG Score)
 * **Wat betekent het?** 
  De integrale totaalscore van AntiGravity waarin **alle 5 kwantitatieve pijlers** worden samengevoegd tot één genormaliseerd getal:
  1. *Pilaar 1 (PoP)*: Gecorrigeerde winstkans (winstkans (PoP_adj)).
@@ -1044,7 +1043,7 @@ Om het kiezen van een trade voor **iedereen** (van beginner tot ervaren trader) 
 
 ---
 
-#### 4. Afstand tot BEP (`bep_afstand_pct`: < 8% vs ≥ 8%)
+#### 4. Afstand tot Breakeven (Veiligheidsmarge in %: < 8% vs ≥ 8%)
 * **Wat betekent het?** 
  Het percentage dat de huidige aandelenkoers mag dalen (bij een Bull Put) of stijgen (bij een Bear Call) voordat je op het Break-Even Point (BEP) belandt en verlies begint te maken.
 * **Mogelijke waarden & Consequenties**:
@@ -1053,7 +1052,7 @@ Om het kiezen van een trade voor **iedereen** (van beginner tot ervaren trader) 
 
 ---
 
-#### 5. TEI Waarde (Theta Efficiency Index / Bjerksund-Stensland Grens)
+#### 5. Tijdsefficiëntie (TEI Score / Bjerksund-Stensland Grens)
 * **Wat betekent het?** 
  Meet hoe efficiënt de optie tijdswaarde genereert ten opzichte van het risico, gekoppeld aan het Amerikaanse Bjerksund-Stensland vroege-uitoefeningsmodel.
 * **Mogelijke waarden & Consequenties**:
@@ -1062,7 +1061,7 @@ Om het kiezen van een trade voor **iedereen** (van beginner tot ervaren trader) 
 
 ---
 
-#### 6. Efficient (`🟦 Ja` vs `⬜ Nee`)
+#### 6. Snelle Verzilvering (Efficiënt: 🟦 Ja vs ⬜ Nee)
 * **Wat betekent het?** 
  Een combinatievlag die toetst of kapitaal optimaal rendeert. De trade krijgt een `🟦 Ja` als **TEI groter dan 1,2 én TTP sneller dan de helft van de looptijd**.
 * **Mogelijke waarden & Consequenties**:
@@ -1071,26 +1070,26 @@ Om het kiezen van een trade voor **iedereen** (van beginner tot ervaren trader) 
 
 ---
 
-#### 7. Aanwijzing (`assignment_risk_badge`: Veilig vs Waarschuwing vs Alarm & Ex-Dividend)
+#### 7. Aanwijzingsveiligheid (Toewijzingsrisico & Ex-Dividend)
 * **Wat betekent het?** 
  Toetst het risico dat de tegenpartij de door jou verkochte optiepoot vroegtijdig uitoefent (Early Assignment), waardoor je verplicht 100 aandelen per contract moet afnemen of leveren. Dit hangt primair af van de resterende extrinsieke waarde (`extrinsic_val_short`) en de **ex-dividend datum** van het aandeel.
 * **Mogelijke waarden & Consequenties**:
  * **`🟢 Veilig` (Tijdswaarde > 0.10 - 0.25)**: **Consequentie**: Geen enkel risico op vroege aanwijzing. De tegenpartij zou immers zijn eigen resterende tijdswaarde vernietigen door vroegtijdig uit te oefenen.
  * **`⚠️ Misschien / Waarschuwing` (Tijdswaarde $0.05 - 0.10)**: **Consequentie**: Opletten geblazen, met name rond de ex-dividend datum van het aandeel of wanneer de koers door de strike breekt.
  * **`🚨 Hoog / Alarm` (Tijdswaarde $<= 0.05)**: **Consequentie**: Zeer acuut aanwijzingsgevaar. Direct de positie sluiten of doorrollen naar een latere expiratieperiode.
- * **`🚨 EX-DIV ARBITRAGE` (Dividend $\ge$ Resterende Tijdswaarde)**: **Consequentie**: **ACUUT TOEWYSINGSGEVAAR (Kans ~95%)**. De tegenpartij bezit een In-the-Money calloptie en zal deze daags vóór de ex-dividend datum vroegtijdig uitoefenen om het contante dividend te innen. Het dividend overtreft immers de verloren tijdswaarde! **Actie**: Onmiddellijk sluiten (`DIRECT_SLUITEN`) of tijdig doorrollen.
+ * **`🚨 EX-DIV ARBITRAGE` (Dividend gelijk aan of groter dan Resterende Tijdswaarde)**: **Consequentie**: **ACUUT TOEWYSINGSGEVAAR (Kans ~95%)**. De tegenpartij bezit een In-the-Money calloptie en zal deze daags vóór de ex-dividend datum vroegtijdig uitoefenen om het contante dividend te innen. Het dividend overtreft immers de verloren tijdswaarde! **Actie**: Onmiddellijk sluiten (`DIRECT_SLUITEN`) of tijdig doorrollen.
  * **`⚠️ EX-DIV RISICO`**: De geschreven call staat In-the-Money en de ex-dividend datum valt binnen 3 dagen vóór expiratie. Verhoogde alertheid vereist.
  * **`⚠️ EX-DIV ALERT`**: De koers bevindt zich vlakbij de strike (< 3% Out-of-the-Money) vlak voor ex-dividend; bij een kleine stijging ontstaat arbitragegevaar.
  * **`ℹ️ Ex-Div over Xd`**: Informatief signaal dat er binnenkort dividend wordt uitgekeerd, maar de geschreven optie staat nog veilig ver uit het geld (OTM).
 
 > [!IMPORTANT]
 > **Waarom geldt Ex-Dividend risico wél voor Calls en géén Puts?**
-> * **Geschreven Calls (Bear Call, Covered Call, PMCC)**: De koper van de call wil het aandeel bezitten vóór beursopening op de ex-dividend datum om recht te hebben op de dividenduitkering. Als de resterende extrinsieke waarde kleiner is dan het dividendbedrag ($Div \ge Extrinsic$), is vroege uitoefening economisch 100% rationeel.
+> * **Geschreven Calls (Bear Call, Covered Call, PMCC)**: De koper van de call wil het aandeel bezitten vóór beursopening op de ex-dividend datum om recht te hebben op de dividenduitkering. Als de resterende extrinsieke waarde kleiner is dan het dividendbedrag (waarbij het dividend groter is dan de resterende tijdswaarde), is vroege uitoefening economisch 100% rationeel.
 > * **Geschreven Puts (Bull Put Spreads)**: Op de ex-dividend datum zakt de aandelenkoers met exact het dividendbedrag. Een koersdaling maakt een putoptie méér waard, nooit minder. De koper van een put heeft er dus financieel alle belang bij om de put aan te houden en nooit vroegtijdig uit te oefenen voor dividend.
 
 ---
 
-#### 8. Min Winst (`max_profit`: ≥ $100 vs < $100 per contract)
+#### 8. Minimale Winst per Contract (≥ $100 vs < $100)
 * **Wat betekent het?** 
  De maximale nominale dollaropbrengst die per contract kan worden verdiend.
 * **Mogelijke waarden & Consequenties**:
@@ -1099,24 +1098,24 @@ Om het kiezen van een trade voor **iedereen** (van beginner tot ervaren trader) 
 
 ---
 
-#### 9. Dual-Trigger Signaal (`Dual_Trigger`: Squeeze vs Pullback)
+#### 9. Momentum Signaal (Dual-Trigger: Squeeze vs Pullback)
 * **Wat betekent het?** 
  Geeft aan of het aandeel momenteel een actieve wiskundige momentum-setup vertoont volgens het gecombineerde Bollinger Bands Squeeze & EMA Ribbon model.
 * **Mogelijke waarden & Consequenties**:
- * **`🔥 Squeeze Breakout (X d)`**: De volatiliteit is geëxplodeerd na een periode van compressie (`Upper_BB < Upper_KC`). De koers breekt opwaarts uit met bevestiging van `EMA5 > EMA13`. **Consequentie**: Ideale timing voor zowel Bull Call Spreads als Bull Put Spreads met een zeer hoge initiële impuls.
- * **`⚡ Trend Pullback (X d)`**: De koers bevindt zich in een gezonde opwaartse trend boven de `EMA34` en de snelle `EMA5` kruist opwaarts over de `EMA13`. **Consequentie**: Vroege instap in een hernieuwde trendswing, ruim vóór de grote massa instapt.
+ * **`🔥 Squeeze Breakout (X d)`**: De beweeglijkheid explodeert opwaarts na een periode van extreme stilte en compressie, met krachtig stijgend kortetermijnmomentum. **Consequentie**: Ideale timing voor zowel Bull Call Spreads als Bull Put Spreads met een zeer hoge initiële impuls.
+ * **`⚡ Trend Pullback (X d)`**: De koers bevindt zich in een gezonde opwaartse trend en veert na een adempauze direct weer opwaarts op. **Consequentie**: Vroege instap in een hernieuwde trendswing, ruim vóór de grote massa instapt.
  * **`🚀 Squeeze + Pullback (X d)`**: Zeldzaam dubbel signaal met de allerhoogste statistische slaagkans.
  * **`Geen`**: Geen actieve technische trigger; trade baseert zich puur op de statistische optiegrieken en expected move.
 
 ---
 
-#### 10. Bewakend Profit Stop Advies (`Profit_Stop_Advice`)
+#### 10. Bewakend Winstdoel Advies (Take-Profit & Momentum Stop)
 * **Wat betekent het?** 
  Het kant-en-klare exit-orderadvies voor Interactive Brokers TWS om de winst tijdig te borgen vóórdat de markt eventueel keert.
 * **Mogelijke waarden & Consequenties**:
  * **`Target: Sluit @ $0.45 (70% winst = +$105)`**: Bij een credit spread van $1.50 sluit je de positie terug door een buy-to-close limietorder in te leggen op $0.45.
  * **`Target: Sluit @ $3.50 (70% winst = +$210)`**: Bij een debet spread stelt de tool de take-profit limietorder vast op 70% van de maximale spreadwinst.
- * **`Momentum Stop: Sluit bij EMA5 < EMA13`**: Geeft aan dat de positie beschermd wordt tegen momentumomkeer.
+ * **`Momentum Stop: Sluit bij trendomkeer`**: Geeft aan dat de positie beschermd wordt tegen momentumomkeer.
 
 ---
 
@@ -1285,27 +1284,26 @@ Deze geavanceerde strategie is speciaal ontwikkeld om **minstens 80% tot 90% win
 Het model combineert twee krachtige technische systemen die elkaar perfect aanvullen:
 
 #### Trigger A: Squeeze Breakout (Consolidatie Ontbranding)
-1. **Compressiefase (`Squeeze_On`)**:
-   - Bollinger Bands ($20, 2.0$) vallen volledig **binnen** de Keltner Channels ($20, 1.3 \times ATR20$):
-     $$\text{Upper\_BB} < \text{Upper\_KC} \quad \text{en} \quad \text{Lower\_BB} > \text{Lower\_KC}$$
-   - Dit signaleert dat de markt zich in een toestand van extreme rust en compressie bevindt. De markt bouwt potentiële energie op als een ingedrukte springveer.
-2. **Ontbrandingsfase (`Squeeze_Fire_Up`)**:
-   - De squeeze ontspant (`Squeeze_On` was waar op de vorige candle en nu niet meer).
-   - De slotkoers breekt opwaarts uit boven de 20-daagse SMA ($Close > SMA20$).
-   - De ultrasnelle trend is opwaarts ($EMA5 > EMA13$).
+1. **Compressiefase**:
+   - De koersbanden (Bollinger Bands) trekken volledig samen binnen het normale beweeglijkheidskanaal.
+   - Dit signaleert dat de markt zich in een toestand van extreme stilte en compressie bevindt. De markt bouwt potentiële energie op als een ingedrukte veer.
+2. **Ontbrandingsfase**:
+   - De markt ontspant uit de compressie.
+   - De slotkoers breekt overtuigend opwaarts uit boven het 20-daags gemiddelde.
+   - De ultrasnelle trend wijst krachtig omhoog.
    - **Gevolg**: Een krachtige, explosieve beweging start.
 
 #### Trigger B: Trend Pullback / Vroeg Momentum
 1. **Doel**: Het vangen van vroege instapkansen binnen een sterke, gevestigde opwaartse trend, zonder achter de feiten aan te lopen.
-2. **Condities (`Pullback_Entry`)**:
-   - $EMA5$ kruist opwaarts over $EMA13$ ($\text{Cross Up}$).
-   - De koers bevindt zich boven het langetermijn trendanker ($Close > EMA34$).
-   - De candle sluit groen ($Close > Close_{t-1}$).
-   - **Gevolg**: Dit signaleert dat een adempauze (pullback) voorbij is en de primaire stijgende trend direct herneemt.
+2. **Condities**:
+   - De snelle 5-daagse trendlijn kruist opwaarts over de 13-daagse signaallijn.
+   - De koers bevindt zich ruim boven het langetermijn trendanker (34-daags gemiddelde).
+   - De beursdag sluit met een positieve groene candle.
+   - **Gevolg**: Dit signaleert dat een adempauze voorbij is en de primaire stijgende trend direct herneemt.
 
 #### Exit / Verzwakking Signaal
-- **Conditie (`Exit_Signal`)**: $EMA5 < EMA13$.
-- Wanneer de snelle 5-daagse exponentiële gemiddelde onder de 13-daagse duikt, verliest de opwaartse impuls zijn kracht. Het systeem gebruikt dit om winsten vroegtijdig veilig te stellen en te voorkomen dat een winnende trade omslaat in verlies.
+- **Conditie**: De snelle trendlijn duikt onder de signaallijn.
+- Wanneer de snelle 5-daagse trend onder de 13-daagse duikt, verliest de opwaartse impuls zijn kracht. Het systeem gebruikt dit om winsten vroegtijdig veilig te stellen en te voorkomen dat een winnende trade omslaat in verlies.
 
 ---
 
@@ -1315,13 +1313,13 @@ Een belangrijk inzicht in optiehandel is dat **winst die op tafel blijft liggen 
 
 | Strategie | Type | 70% Profit Target (Aanbevolen) | Concreet Orderplan in TWS |
 | :--- | :--- | :--- | :--- |
-| **Bull Put Spread** | Credit | Sluit zodra **70% van de ontvangen premie** binnen is. | Leg direct een **GTC Buy-to-Close Limit Order** in op **30% van de ontvangen credit** (bijv. ontvangen $\$1.50 \rightarrow$ terugkopen op $\$0.45$). |
-| **Bull Call Spread** | Debit | Sluit zodra **70% van de maximale spreadwinst** bereikt is. | Leg een **GTC Sell-to-Close Limit Order** in op: $\text{Debit} + 0.70 \times (\text{Breedte} - \text{Debit})$. |
-| **Long Call** | Debit | Sluit op $+60\%$ of $+70\%$ winst boven aankoopkoers. | Leg een verkooporder in op $1.70 \times \text{Betaalde Premie}$. |
+| **Bull Put Spread** | Credit | Sluit zodra **70% van de ontvangen premie** binnen is. | Leg direct een **GTC Buy-to-Close Limit Order** in op **30% van de ontvangen credit** (bijv. ontvangen $1,50 terugkopen op $0,45). |
+| **Bull Call Spread** | Debit | Sluit zodra **70% van de maximale spreadwinst** bereikt is. | Leg een **GTC Sell-to-Close Limit Order** in op: betaalde inleg plus 70% van de nettowinstmarge. |
+| **Long Call** | Debit | Sluit op $+60\%$ of $+70\%$ winst boven aankoopkoers. | Leg een verkooporder in op 1,70x de betaalde premie. |
 
 > [!TIP]
 > **Waarom Bull Call Spreads superieur zijn aan Naked Long Calls**:
-> In historische backtests behaalde de Bull Call Spread met de Dual-Trigger entry een **winstkans van 80.0%** met een gemiddelde bewaartijd van **13.7 dagen**. Een losse (naked) Long Call behaalde op dezelfde signalen slechts ~25% winstkans. De reden? Bij een losse call vreet het dagelijkse tijdswaardeverval (theta decay) aan de positie als het aandeel na de uitbraak even 2 of 3 dagen pauzeert. Bij een Bull Call Spread compenseert de geschreven hogere call dit verlies volledig!
+> In historische backtests behaalde de Bull Call Spread met de Dual-Trigger entry een **winstkans van 80,0%** met een gemiddelde bewaartijd van **13,7 dagen**. Een losse (naked) Long Call behaalde op dezelfde signalen slechts ~25% winstkans. De reden? Bij een losse call vreet het dagelijkse tijdswaardeverval (theta decay) aan de positie als het aandeel na de uitbraak even 2 of 3 dagen pauzeert. Bij een Bull Call Spread compenseert de geschreven hogere call dit verlies volledig!
 
 ---
 
@@ -1333,10 +1331,10 @@ In **Tab 3 ("Hitrate & Backtesting")** kun je deze strategie met één klik vali
 3. Selecteer je gewenste profit target (standaard **70%**).
 4. Klik op **Start Backtest**.
 
-Het algoritme toetst de 10 meest recente historische triggercandles bar-voor-bar via een gesloten Black-Scholes formule. In de resultatentabel zie je exact:
-- **`entry_signal`**: Of de trade werd geopend op een Squeeze Breakout of een Trend Pullback.
-- **`exit_reason`**: Waarom de trade sloot (`Profit Target 70%`, `Momentum Drop (EMA5<13)` of `Expiration`).
-- **`days_held`**: Het werkelijke aantal beursdagen dat de trade openstond (daalt van 21 naar gemiddeld 13 dagen!).
+Het algoritme toetst de 10 meest recente historische triggercandles bar-voor-bar via een gesloten wiskundig waarderingsmodel. In de resultatentabel zie je exact:
+- **Instapsignaal**: Of de trade werd geopend op een Squeeze Breakout of een Trend Pullback.
+- **Uitstapreden**: Waarom de trade sloot (Winstdoel 70% bereikt, Trendomkeer of Expiratie).
+- **Dagen in Positie**: Het werkelijke aantal beursdagen dat de trade openstond (daalt van 21 naar gemiddeld 13 dagen!).
 
 ---
 
@@ -1350,7 +1348,7 @@ Het algoritme toetst de 10 meest recente historische triggercandles bar-voor-bar
    - Klik op **"Start Volledige Scanner & Analyseer Selectie"**.
    - Het systeem toont uitsluitend fondsen die nu in een uitbraak of vroege trendswing zitten.
 3. **Selecteren & Order Klaarzetten**:
-   - Controleer in de tabel de kolommen **`Dual_Trigger`** (moet een groen of oranje icoon tonen) en **`Profit_Stop_Advice`**.
+   - Controleer in de tabel de kolommen **Momentum Signaal** (moet een groen of oranje icoon tonen) en **Bewakend Winstdoel Advies**.
    - Vink de gewenste trade aan en ga naar Tab 2 / Tab 4 om de order inclusief de winstnemer direct naar TWS te verzenden.
 
 ---

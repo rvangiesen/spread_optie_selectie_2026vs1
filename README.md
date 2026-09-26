@@ -16,19 +16,19 @@ Zie de volledige stap-voor-stap handleiding: **[Handleiding_Project2_Laptop_Inst
 ---
 
 ## 🌟 Nieuwste Functies & Validaties
-* **🛡️ Preventieve Ex-Dividend Toewijzingsbewaking (Early Assignment Arbitrage)**: Wiskundige detectie van ex-dividend risico op short calls (Bear Call Spreads, Covered Calls, PMCC). Slaat direct alarm met `🚨 EX-DIV ARBITRAGE` wanneer dividend per aandeel $\ge$ resterende tijdswaarde (waarbij de koper vrijwel zeker daags vóór ex-div uitoefenen zal), toont de datum in de nieuwe kolom `Ex-Div Datum` en biedt een preventief uitsluitingsfilter (`🛡️ Ex-Dividend Toewijzingsfilter`) in de sidebar.
-* **🎯 Horizon-Bescherming in Auto-Optimalisatie**: Garandeert dat de gekozen beleggingshorizon van de handelaar (zoals *Maand Spreads 30–75 DTE* of handmatige DTE $\ge 28$d) te allen tijde strikt gerespecteerd wordt en niet meer kan worden overschreven door een 14–25 DTE week-profiel uit eerdere sweeps.
-* **🔥 Dual-Trigger Entry Strategie (Squeeze & Trend Pullback)**: Kwantitatief instapmodel gericht op 80–90% winstkans. Combineert Bollinger Bands Squeeze Breakouts (`Upper_BB < Upper_KC` ontbranding met `Close > SMA20` & `EMA5 > EMA13`) en Trend Pullbacks (`EMA5` kruist opwaarts over `EMA13` boven `EMA34`). Volledig in- en uitschakelbaar in de scanner.
-* **🎯 Bewakende Profit Stop Engine**: Dynamische winstbewaking met vaste take-profit percentages (60%, 70% aanbevolen, 100%) en actieve trailing momentum exits (`EMA5 < EMA13`). Berekent direct het concrete TWS limietorderadvies en dollarwinst in de resultatentabel.
-* **🧪 10-Trades per Aandeel Backtest Engine**: Historische trigger-detectie met gekalibreerde dag-op-dag Black-Scholes optieprijsbepaling. Analyseert vroege winstexits en toont de daling in gemiddelde bewaartijd (bijv. van 21 naar 13.7 dagen met 80% hit rate).
-* **⚖️ Kapitaalbewuste Selectie: Bull Put vs Bull Call**: Automatische bescherming tegen aandelen-toewijzing (Early Assignment). Berekent het benodigde kapitaal ($Strike \times 100$) en geeft bij beperkte cash automatisch voorrang aan risico-gelimiteerde Bull Call debet spreads.
-* **🛡️ Early Assignment Risk Engine**: Real-time berekening van resterende tijdswaarde (extrinsieke waarde) en toewijzingskans op geschreven opties. Waarschuwing bij $\le \$0.10$ en direct noodsluitingsalarm bij $\le \$0.05$.
-* **🔧 TWS Error 201 Fix**: Canonieke pootdefinitie voor credit spreads, waardoor bracket orders (Take Profit & Stop Loss) direct en foutloos worden geaccepteerd door Interactive Brokers zonder "risicoloze order" afwijzingen.
-* **📊 Option Chain Predictiemodel (Spec V1 & V2)**:
+* **🛡️ Preventieve Ex-Dividend Toewijzingsbewaking**: Detecteert het risico op vroege uitoefening (Early Assignment) op geschreven calls (Bear Call Spreads, Covered Calls). Slaat direct alarm met `🚨 EX-DIV ARBITRAGE` wanneer het dividend per aandeel gelijk is aan of groter is dan de resterende tijdswaarde (waarbij de koper vrijwel zeker daags vóór ex-dividend zal uitoefenen), toont de datum in de kolom *Ex-Div Datum* en biedt een preventief uitsluitingsfilter (`🛡️ Ex-Dividend Toewijzingsfilter`) in de zijbalk.
+* **🎯 Horizon-Bescherming in Auto-Optimalisatie**: Garandeert dat de gekozen beleggingshorizon van de handelaar (zoals *Maand Spreads 30–75 DTE* of een handmatige looptijd van minimaal 28 dagen) altijd strikt gerespecteerd wordt en niet meer wordt overschreven door een korter week-profiel.
+* **🔥 Dual-Trigger Entry Strategie (Squeeze & Trend Pullback)**: Kwantitatief instapmodel gericht op 80–90% winstkans. Combineert uitbraken na extreme marktcompressie (Bollinger Bands binnen Keltner Channels) met trend pullbacks (vroege instap in een hervatte opwaartse trend). Volledig in- en uitschakelbaar in de scanner.
+* **🎯 Bewakende Profit Stop Engine**: Dynamische winstbewaking met vaste winstdoelen (60%, 70% aanbevolen, 100%) en actieve trailing momentum exits zodra de kortetermijntrend afzwakt. Berekent direct het concrete limietorderadvies en de dollarwinst in de resultatentabel.
+* **🧪 10-Trades per Aandeel Backtest Engine**: Historische signaal-detectie met gekalibreerde dag-op-dag optieprijsbepaling. Analyseert vroege winstexits en toont de verkorting in gemiddelde bewaartijd (bijv. van 21 naar 13,7 dagen met meer dan 80% hit rate).
+* **⚖️ Kapitaalbewuste Selectie: Bull Put vs Bull Call**: Automatische bescherming tegen aandelen-toewijzing (Early Assignment). Berekent het benodigde kapitaal (Uitoefenprijs x 100 aandelen) en geeft bij beperkte cash automatisch voorrang aan risico-gelimiteerde Bull Call debet spreads.
+* **🛡️ Early Assignment Risk Engine**: Real-time berekening van de resterende tijdswaarde en toewijzingskans op geschreven opties. Waarschuwing bij $0,10 of minder tijdswaarde en direct noodsluitingsalarm bij $0,05 of minder.
+* **🔧 TWS Error 201 Fix**: Canonieke pootdefinitie voor credit spreads, waardoor gecombineerde winst- en stoploss-orders direct en foutloos worden geaccepteerd door Interactive Brokers.
+* **📊 Option Chain Predictiemodel**:
   - 4-Kwadranten Delta OI analyse voor richting- en regimedetectie (`🚀 UPTREND`, `🎯 PINNING`, etc.).
-  - Vested Value muren ($Margin \times OI$) als werkelijke institutionele steun- en weerstandslijnen.
-  - Black-Scholes Gamma/Theta kwantificering ($\delta S_{BE}$ dagelijkse breakeven beweging), Bayesiaanse $PoP_{adj}$ en Expected Value ($EV$).
-* **🛡️ Anti-Assignment Verdedigingsroutine (Tab 0: Portfolio Bewaking)**: Live monitoring van alle openstaande TWS optieposities met 1-klik noodsluiting als combinatieorder.
+  - Institutionele verdedigingsmuren (Marge x Openstaande contracten) als werkelijke steun- en weerstandslijnen.
+  - Berekening van de dagelijkse veilige breakeven koersuitslag (dS_BE), gecorrigeerde winstkans (PoP) en verwachte dollarwinst (EV).
+* **🛡️ Anti-Assignment Verdedigingsroutine (Tab 0: Portfolio Bewaking)**: Live monitoring van alle openstaande optieposities in het handelsplatform met 1-klik noodsluiting als combinatieorder.
 * **⚡ 1-Klik Optimalisatie & Benchmark**: Evalueer instellingen tegen de gevalideerde benchmark en backtest met 1 klik.
 
 ---
