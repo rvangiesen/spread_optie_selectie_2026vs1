@@ -3519,7 +3519,7 @@ with tab3:
                                 "Winstdoel (Take Profit $)", 
                                 min_value=5.0, 
                                 max_value=float(max(10.0, max_possible_credit_dollar)), 
-                                value=float(min(default_tp, max_possible_credit_dollar)), 
+                                value=float(max(5.0, min(default_tp, max_possible_credit_dollar))), 
                                 step=10.0, 
                                 help=f"Automatisch sluiten bij dit winstbedrag in USD.{' (Max credit is $' + str(round(max_possible_credit_dollar)) + ')' if is_credit else ''}"
                             )

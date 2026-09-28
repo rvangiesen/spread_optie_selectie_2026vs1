@@ -898,5 +898,20 @@
     "total_trades": 3,
     "status": "VALID",
     "notes": "Geoptimaliseerd via snelle sweep (1.00x EM, $2.5 breedte)"
+  },
+  "QQQ": {
+    "symbol": "QQQ",
+    "best_em_multiplier": 1.2,
+    "best_width": 15.0,
+    "best_min_dte": 14,
+    "best_max_dte": 25,
+    "best_min_bep_dist": 6.0,
+    "profit_target_pct": 50.0,
+    "last_sweep_date": "2026-09-28",
+    "hit_rate": 100.0,
+    "avg_pnl": 432.0,
+    "total_trades": 3,
+    "status": "VALID",
+    "notes": "Geoptimaliseerd via snelle sweep (1.20x EM, $15.0 breedte)"
   }
 }
