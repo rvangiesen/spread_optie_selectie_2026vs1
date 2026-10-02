@@ -16,6 +16,7 @@ Zie de volledige stap-voor-stap handleiding: **[Handleiding_Project2_Laptop_Inst
 ---
 
 ## 🌟 Nieuwste Functies & Validaties
+* **📈 1-Maands Trend Model met Stochastic RSI Filter**: Geavanceerd 5-pijler trendmodel met automatische dip- en duikvluchtbeveiliging. Voorkomt instappen op aandelen die tijdelijk wegzakken (vallende messen). In de empirische evaluatie over 150 trades (5 aandelen, 10 instapmomenten, Bull Calls, Bull Puts en Long Calls) steeg de totale winstkans van 73,6% naar 81,0%, verviervoudigde de nettowinst van $790 naar $3.592, en werden losse Long Calls omgebogen van zwaar verliesgevend (-$3.998) naar winstgevend (+$1.526).
 * **🛡️ Preventieve Ex-Dividend Toewijzingsbewaking**: Detecteert het risico op vroege uitoefening (Early Assignment) op geschreven calls (Bear Call Spreads, Covered Calls). Slaat direct alarm met `🚨 EX-DIV ARBITRAGE` wanneer het dividend per aandeel gelijk is aan of groter is dan de resterende tijdswaarde (waarbij de koper vrijwel zeker daags vóór ex-dividend zal uitoefenen), toont de datum in de kolom *Ex-Div Datum* en biedt een preventief uitsluitingsfilter (`🛡️ Ex-Dividend Toewijzingsfilter`) in de zijbalk.
 * **🎯 Horizon-Bescherming in Auto-Optimalisatie**: Garandeert dat de gekozen beleggingshorizon van de handelaar (zoals *Maand Spreads 30–75 DTE* of een handmatige looptijd van minimaal 28 dagen) altijd strikt gerespecteerd wordt en niet meer wordt overschreven door een korter week-profiel.
 * **🔥 Dual-Trigger Entry Strategie (Squeeze & Trend Pullback)**: Kwantitatief instapmodel gericht op 80–90% winstkans. Combineert uitbraken na extreme marktcompressie (Bollinger Bands binnen Keltner Channels) met trend pullbacks (vroege instap in een hervatte opwaartse trend). Volledig in- en uitschakelbaar in de scanner.
@@ -34,9 +35,11 @@ Zie de volledige stap-voor-stap handleiding: **[Handleiding_Project2_Laptop_Inst
 ---
 
 ## 📖 Gebruikershandleidingen
+* **Desktop Installatie (1-Klik na Thuiskomst)**: [Handleiding_Project2_Desktop_Installatie.md](Handleiding_Project2_Desktop_Installatie.md) (1-klik clonen en opstarten via AntiGravity Agent).
 * **Laptop Installatie**: [Handleiding_Project2_Laptop_Installatie.md](Handleiding_Project2_Laptop_Installatie.md) (1-klik setup, `.venv` herstel & agent instructies).
 * **Gebruik van de App & Resultaten Gids**: [Handleiding_Optie_Contract_Selectie.md](Handleiding_Optie_Contract_Selectie.md) (volledige uitleg van alle knoppen, EM85, filters, sentiment, orderplaatsing, en in **Sectie 22** een complete gids van alle resultatenkolommen, Gamma/Theta ratio en het A-B-C-D besluitvormingsmodel).
 * **Project Opstarten & GitHub**: [Handleiding_Project2_Opstarten_en_Git.md](Handleiding_Project2_Opstarten_en_Git.md).
+
 
 ---
 

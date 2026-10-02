@@ -139,4 +139,8 @@ Je wijzigingen staan nu live op GitHub!
  - 4-Kwadranten Delta OI analyse voor trendvoorspelling (`🚀 UPTREND`, `🎯 PINNING`, etc.).
  - Vested Value steun- en weerstandsmuren (Marge x Openstaande contracten).
  - Breakeven dagelijkse koersbeweging (dS_BE), Bayesiaanse winstkans (winstkans (PoP_adj)) en Verwachte Winst (EV).
+5. **📈 1-Maands Trend Model met Stochastic RSI Filter**:
+ - 5-pijler richtingsmodel met geïntegreerde dip-beveiliging.
+ - Voorkomt instappen op aandelen die tijdelijk in een correctie wegzakken (vallende messen).
+ - In een empirische validatie over 150 trades steeg de totale winstkans van 73,6% naar 81,0% en werden losse Long Calls omgebogen van zwaar verlieslatend (-$3.998) naar winstgevend (+$1.526).
 
