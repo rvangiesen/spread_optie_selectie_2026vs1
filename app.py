@@ -1468,7 +1468,7 @@ st.sidebar.markdown("**📈 1-Maands Trend Model (Koersvoorspelling)**")
 use_1m_trend_filter = st.sidebar.checkbox(
     "Filter op 1-Maands Trend (Stijging/Daling)",
     value=False,
-    help="Analyseert 30-d Regressie, MACD, DMI en EMA-structuur om een duidelijke stijgings- of dalingsrichting te eisen."
+    help="Analyseert 30-d Regressie, MACD, DMI, EMA-structuur én STO(RSI)>STO_D momentum om een duidelijke richting te eisen en instappen bij een duikvlucht te blokkeren."
 )
 trend_expected_direction = st.sidebar.selectbox(
     "Verwachte Koersrichting",
@@ -2018,8 +2018,8 @@ with tab1:
                                      # --- 1-Maands Trend Model (Koersvoorspelling) Check ---
                                      if use_1m_trend_filter and not hist_data.empty:
                                          trend_1m = scanner.predict_1month_trend(hist_data)
-                                         log(f"   📈 1-Maands Trend Model: {trend_1m['forecast']} (Score: {trend_1m['score']}/+4)")
-                                         log(f"      Pijlers: Regressie={trend_1m['details'].get('regression', 'N/A')}, MACD={trend_1m['details'].get('macd', 'N/A')}, DMI={trend_1m['details'].get('dmi', 'N/A')}")
+                                         log(f"   📈 1-Maands Trend Model: {trend_1m['forecast']} (Score: {trend_1m['score']}/+5)")
+                                         log(f"      Pijlers: Regr={trend_1m['details'].get('regression', 'N/A')}, MACD={trend_1m['details'].get('macd', 'N/A')}, DMI={trend_1m['details'].get('dmi', 'N/A')}, STO={trend_1m['details'].get('stoch_rsi', 'N/A')}")
                                          
                                          req_bull = ("Bullish" in trend_expected_direction) or ("Automatisch" in trend_expected_direction and "Bullish" in marktvisie)
                                          req_bear = ("Bearish" in trend_expected_direction) or ("Automatisch" in trend_expected_direction and "Bearish" in marktvisie)
@@ -2030,7 +2030,7 @@ with tab1:
                                          elif req_bear and not trend_1m['passed_bearish']:
                                              log(f"   ⛔ {sym} gefilterd door 1-Maands Trend Model (Verwachte Daling niet overtuigend, Score {trend_1m['score']})")
                                              continue
-                                         log(f"   ✅ {sym} doorstaat 1-Maands Trend Model filter")
+                                         log(f"   ✅ {sym} doorstaat 1-Maands Trend Model filter (incl. STO > STO_D)")
 
                                      if use_auto_sentiment:
                                          indicators = {'gex': curr_gex, 'dex': curr_dex, 'pc_ratio': curr_pc}

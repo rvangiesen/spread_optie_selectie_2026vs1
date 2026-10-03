@@ -413,28 +413,33 @@ class SpreadScanner:
         rsi = 100 - (100 / (1 + rs))
         return rsi.fillna(50)
 
-    def calculate_stoch_rsi(self, df, rsi_period=14, stoch_period=9, k_period=3, d_period=6):
+    def calculate_stoch_rsi(self, df, rsi_period=14, stoch_period=14, k_period=3, d_period=3):
         """
-        Calculates Stochastic RSI (similar to TradingView).
-        Parameters: 14, 9, 3, 6 (RSI, Stoch, K_smooth, D_smooth)
+        Calculates Stochastic RSI: STO(RSI(14), 3, 3) and STO_D(RSI(14), 3, 3).
+        Parameters: 14, 14, 3, 3 (RSI, Stoch, K_smooth, D_smooth).
+        Case-insensitive column handling for 'close' / 'Close'.
         """
-        if 'close' not in df.columns: return pd.DataFrame()
+        if df is None or df.empty:
+            return pd.DataFrame()
+            
+        close_col = 'close' if 'close' in df.columns else ('Close' if 'Close' in df.columns else None)
+        if close_col is None:
+            return pd.DataFrame()
         
-        rsi = self.calculate_rsi(df['close'], rsi_period)
+        rsi = self.calculate_rsi(df[close_col], rsi_period)
         
         # Stochastic component: (RSI - Lowest RSI) / (Highest RSI - Lowest RSI)
         rsi_min = rsi.rolling(window=stoch_period).min()
         rsi_max = rsi.rolling(window=stoch_period).max()
+        rsi_range = (rsi_max - rsi_min).replace(0, np.nan)
         
-        stoch_rsi = (rsi - rsi_min) / (rsi_max - rsi_min).replace(0, np.nan)
-        stoch_rsi = stoch_rsi.fillna(0) * 100
+        stoch_rsi = ((rsi - rsi_min) / rsi_range).fillna(0.5) * 100.0
         
-        # K and D smoothing
-        # TradingView uses SMA for smoothing K and D in Stochastic RSI
+        # K and D smoothing (SMA of Stoch RSI and SMA of K)
         k = stoch_rsi.rolling(window=k_period).mean()
         d = k.rolling(window=d_period).mean()
         
-        return pd.DataFrame({'k': k, 'd': d}, index=df.index)
+        return pd.DataFrame({'k': k, 'd': d, 'stoch_rsi': stoch_rsi, 'rsi': rsi}, index=df.index)
 
     def get_technical_signals(self, hist_df, price):
         """
@@ -589,13 +594,16 @@ class SpreadScanner:
     def predict_1month_trend(self, hist_df):
         """
         Calculates a multi-factor 1-month directional forecast (Stijging vs Daling) for the next 30 days.
-        Combines 4 independent technical pillars:
+        Combines 5 independent technical pillars:
         1. 30-Day Linear Regression Slope (% angle)
         2. MACD (12, 26, 9) Momentum & Histogram
         3. DMI / ADX Direction (+DI vs -DI) over 14 bars
         4. EMA 20 & EMA 50 Structural Alignment (Price > EMA20 > EMA50)
+        5. Stochastic RSI Filter: STO(RSI(14), 3, 3) > STO_D(RSI(14), 3, 3)
         
-        Returns a dict with score (-4 to +4) and forecast.
+        Returns a dict with score (-5 to +5), forecast, and passed_bullish / passed_bearish flags.
+        The STO(RSI(14),3,3) > STO_D(RSI(14),3,3) condition serves as a strict guardrail to
+        prevent buying when the price is actively falling or experiencing a sharp breakdown.
         """
         result = {
             'score': 0,
@@ -603,13 +611,24 @@ class SpreadScanner:
             'confidence': 0.5,
             'passed_bullish': False,
             'passed_bearish': False,
+            'sto_k': 50.0,
+            'sto_d': 50.0,
+            'stoch_bullish': False,
+            'stoch_bearish': False,
             'details': {}
         }
         
-        if hist_df is None or hist_df.empty or 'close' not in hist_df.columns or len(hist_df) < 30:
+        if hist_df is None or hist_df.empty:
             return result
 
-        closes = hist_df['close'].astype(float).values
+        # Standardize column names to lower case for case-insensitivity ('close', 'Close', etc.)
+        df = hist_df.copy()
+        df.columns = [str(c).lower() for c in df.columns]
+
+        if 'close' not in df.columns or len(df) < 30:
+            return result
+
+        closes = df['close'].astype(float).values
         price = closes[-1]
         score = 0
         details = {}
@@ -630,8 +649,8 @@ class SpreadScanner:
             details['regression'] = f"Neutraal (Hoek {slope_pct:.1f}%)"
 
         # 2. MACD (12, 26, 9)
-        ema12 = hist_df['close'].ewm(span=12, adjust=False).mean()
-        ema26 = hist_df['close'].ewm(span=26, adjust=False).mean()
+        ema12 = df['close'].ewm(span=12, adjust=False).mean()
+        ema26 = df['close'].ewm(span=26, adjust=False).mean()
         macd_line = ema12 - ema26
         signal_line = macd_line.ewm(span=9, adjust=False).mean()
         macd_hist = macd_line - signal_line
@@ -645,9 +664,9 @@ class SpreadScanner:
             details['macd'] = f"Bearish (Hist {curr_macd_hist:.2f})"
 
         # 3. DMI (+DI vs -DI over 14 bars)
-        if 'high' in hist_df.columns and 'low' in hist_df.columns:
-            highs = hist_df['high'].astype(float).values
-            lows = hist_df['low'].astype(float).values
+        if 'high' in df.columns and 'low' in df.columns:
+            highs = df['high'].astype(float).values
+            lows = df['low'].astype(float).values
             
             up_move = highs[1:] - highs[:-1]
             down_move = lows[:-1] - lows[1:]
@@ -681,8 +700,8 @@ class SpreadScanner:
             details['dmi'] = "N/A"
 
         # 4. EMA 20 vs EMA 50 Alignment
-        ema20 = self.calculate_ema(hist_df, 20)
-        ema50 = self.calculate_ema(hist_df, 50)
+        ema20 = self.calculate_ema(df, 20)
+        ema50 = self.calculate_ema(df, 50)
         
         if not ema20.empty and not ema50.empty:
             c_ema20 = float(ema20.iloc[-1])
@@ -698,6 +717,30 @@ class SpreadScanner:
         else:
             details['ema_structure'] = "N/A"
 
+        # 5. Stochastic RSI Filter: STO(RSI(14), 3, 3) > STO_D(RSI(14), 3, 3)
+        stoch_df = self.calculate_stoch_rsi(df, rsi_period=14, stoch_period=14, k_period=3, d_period=3)
+        sto_k = 50.0
+        sto_d = 50.0
+        stoch_bullish = False
+        stoch_bearish = False
+
+        if not stoch_df.empty and len(stoch_df) >= 3 and not pd.isna(stoch_df['k'].iloc[-1]) and not pd.isna(stoch_df['d'].iloc[-1]):
+            sto_k = float(stoch_df['k'].iloc[-1])
+            sto_d = float(stoch_df['d'].iloc[-1])
+            stoch_bullish = sto_k > sto_d
+            stoch_bearish = sto_k < sto_d
+            
+            if stoch_bullish:
+                score += 1
+                details['stoch_rsi'] = f"Bullish (STO {sto_k:.1f} > STO_D {sto_d:.1f})"
+            elif stoch_bearish:
+                score -= 1
+                details['stoch_rsi'] = f"Bearish (STO {sto_k:.1f} <= STO_D {sto_d:.1f})"
+            else:
+                details['stoch_rsi'] = f"Neutraal (STO {sto_k:.1f} == STO_D {sto_d:.1f})"
+        else:
+            details['stoch_rsi'] = "N/A"
+
         # Final Evaluation
         if score >= 2:
             forecast = "Duidelijk Verwachte Stijging (Bullish)"
@@ -706,11 +749,20 @@ class SpreadScanner:
         else:
             forecast = "Zijwaarts / Neutraal"
 
+        # The STO(RSI(14), 3, 3) > STO_D(RSI(14), 3, 3) filter ensures we do NOT enter
+        # when momentum is collapsing or stock is dipping down:
+        passed_bullish = (score >= 2) and stoch_bullish
+        passed_bearish = (score <= -2) and stoch_bearish
+
         result['score'] = score
         result['forecast'] = forecast
-        result['confidence'] = min(1.0, abs(score) / 4.0)
-        result['passed_bullish'] = score >= 2
-        result['passed_bearish'] = score <= -2
+        result['confidence'] = min(1.0, abs(score) / 5.0)
+        result['passed_bullish'] = passed_bullish
+        result['passed_bearish'] = passed_bearish
+        result['sto_k'] = round(sto_k, 2)
+        result['sto_d'] = round(sto_d, 2)
+        result['stoch_bullish'] = stoch_bullish
+        result['stoch_bearish'] = stoch_bearish
         result['details'] = details
         return result
 
