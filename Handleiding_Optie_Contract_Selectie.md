@@ -470,7 +470,7 @@ Het model evalueert **5 onafhankelijke technische pijlers** over de afgelopen 30
 ##### 🛡️ De Cruciale Poortwachter-Functie (Voorkomen van Vallende Messen)
 De grootste kracht van deze toevoeging is de **strikte poortwachter-beveiliging**. Zelfs wanneer een aandeel over de afgelopen maand een mooie stijgende score heeft (+2 of hoger), maar op de dag van instappen in een scherpe tussentijdse dip wegzakt, duikt de snelle momentumlijn onder de signaallijn. 
 
-Het systeem **blokkeert dan direct elke kooporder (Bull Call, Bull Put of Long Call)**. Er wordt pas ingestapt zodra de verkoopdruk opdroogt en de snelle lijn weer boven de signaallijn kruist. In een historische test over 150 trades bleek dit filter de winstkans te verhogen van **73,6% naar 81,0%** en voorkwam het duizenden dollars verlies op vroegtijdig ingestapte posities.
+Het systeem **blokkeert dan direct elke kooporder (Bull Call, Bull Put of Long Call)**. Er wordt pas ingestapt zodra de verkoopdruk opdroogt en de snelle lijn weer boven de signaallijn kruist. In een empirische validatie over 150 trades onder de standaard $10 spreadbreedte en koersafhankelijke instellingen verhoogde dit filter de winstkans van **70,8% naar 81,0%**, verdubbelde het de nettowinst naar ruim **$5.600 tot $5.860** en voorkwam het duizenden dollars verlies op vroegtijdig ingestapte posities.
 
 ##### 🎯 Uitkomst & Praktijk-Interpretatie:
 * **Score van +2 of hoger én Opwaarts Momentum**: 🟢 **Duidelijk Verwachte Stijging (Bullish)** — De markt heeft een sterke meerderheid aan positieve pijlers én opwaarts momentum. Uitstekend geschikt voor Bull Put Spreads, Bull Call Spreads en Long Calls.

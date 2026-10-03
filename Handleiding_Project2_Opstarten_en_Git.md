@@ -142,5 +142,5 @@ Je wijzigingen staan nu live op GitHub!
 5. **📈 1-Maands Trend Model met Stochastic RSI Filter**:
  - 5-pijler richtingsmodel met geïntegreerde dip-beveiliging.
  - Voorkomt instappen op aandelen die tijdelijk in een correctie wegzakken (vallende messen).
- - In een empirische validatie over 150 trades steeg de totale winstkans van 73,6% naar 81,0% en werden losse Long Calls omgebogen van zwaar verlieslatend (-$3.998) naar winstgevend (+$1.526).
+ - In een empirische validatie over 150 trades onder de standaard $10 en koersafhankelijke spreadbreedtes steeg de totale winstkans van 70,8% naar 81,0%, verdubbelde de nettowinst naar $5.617 tot $5.863 en werden losse Long Calls omgebogen van zwaar verlieslatend (-$3.998) naar winstgevend (+$1.526).
 

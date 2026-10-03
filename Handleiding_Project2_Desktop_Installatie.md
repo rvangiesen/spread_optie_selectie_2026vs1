@@ -45,7 +45,7 @@ Wanneer u morgen opstart, profiteert u direct van de nieuwste innovaties:
 1. **📈 1-Maands Trend Model met Stochastic RSI Filter**:
    - Uitgebreid naar een 5-pijler trendmodel met automatische dip-beveiliging.
    - **Voorkomt instappen op vallende messen**: Zelfs als een aandeel een positieve maandtrend heeft, wordt een kooptransactie direct tegengehouden zolang het kortetermijnmomentum omlaag wijst.
-   - **Empirisch bewezen**: In een historische validatie over 150 trades steeg de winstkans naar **81,0%**, verviervoudigde de nettowinst en werden losse Long Calls omgebogen van zwaar verlieslatend naar solide winstgevend.
+   - **Empirisch bewezen**: In een historische validatie over 150 trades onder de standaard $10 en koersafhankelijke spreadbreedtes steeg de winstkans naar **81,0%**, verdubbelde de nettowinst naar ruim **$5.600 tot $5.860** en werden losse Long Calls omgebogen van zwaar verlieslatend naar solide winstgevend.
 2. **🛡️ Ex-Dividend Toewijzingsbewaking**:
    - Automatische detectie van toewijzingsgevaar op geschreven calls daags voor de ex-dividenddatum.
 3. **⚖️ Kapitaalbewuste Selectie (Bull Call vs Bull Put)**:
